@@ -11,20 +11,19 @@ and may cross cluster boundaries.
 
 The repo ships **only the API server**. `kube-state-metrics`, the service-graph
 producer, VictoriaMetrics, and Kind are external dependencies. The in-repo
-`cmd/vm-fixtures` binary (synthetic kube_*/service-graph emitter, used by no
-deployed component but kept as a building block for future scenarios) and the
-`local/kind/` rig are local-only scaffolding, not deliverables. The local rig
-itself uses **kube-state-metrics** (scraping the kind cluster, with a
-`cluster=kind-local` relabel) to produce the kube_* topology series, NOT
-vm-fixtures. Service-graph metrics are not produced in the local rig — that
-code path is exercised by integration tests in `internal/integration/`.
+The `local/kind/` rig is local-only scaffolding, not a deliverable. It uses
+**kube-state-metrics** (scraping the kind cluster, with a `cluster=kind-local`
+relabel injected by VictoriaMetrics' scrape config) to produce the kube_*
+topology series the API consumes. Service-graph metrics
+(`traces_service_graph_request_total`) are not produced in the local rig —
+that code path is exercised by integration tests in `internal/integration/`
+via the testcontainers-go VictoriaMetrics container.
 
 ## Common commands
 
 ```bash
 # Build / test loop
 make build                                  # ./bin/kube-state-graph
-make fixtures                               # ./bin/vm-fixtures (optional, not used by default rig)
 make test                                   # go test ./... -count=1 -race -shuffle=on
 make vet                                    # go vet
 make lint                                   # golangci-lint (must be installed)
@@ -175,6 +174,6 @@ When making non-trivial behaviour changes, update the relevant artifact
   rejected — see D1 / D16. Tests and harness tooling are exempt.
 - Don't add dependencies casually. Current direct deps: Gin, Prometheus
   client_golang, Ristretto v2, google/uuid, cespare/xxhash v2, golang.org/x/sync,
-  yaml.v3 (cmd/vm-fixtures only), testify v1.10.0 (test-only),
+  testify v1.10.0 (test-only),
   testcontainers-go (integration test-only), swaggo/swag/v2 (codegen tool, not
   imported at runtime). Adding more requires a design-doc note.

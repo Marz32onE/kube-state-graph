@@ -10,9 +10,9 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.67.5
 	github.com/stretchr/testify v1.11.1
+	github.com/swaggo/swag/v2 v2.0.0-rc5
 	github.com/testcontainers/testcontainers-go v0.42.0
 	golang.org/x/sync v0.20.0
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -87,7 +87,6 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/sv-tools/openapi v0.4.0 // indirect
-	github.com/swaggo/swag/v2 v2.0.0-rc5 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
@@ -109,6 +108,7 @@ require (
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 

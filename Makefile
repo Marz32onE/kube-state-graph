@@ -1,4 +1,4 @@
-.PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down local-up local-down local-smoke smoke fixtures clean
+.PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down local-up local-down local-smoke smoke clean
 
 BIN_DIR := bin
 BIN     := $(BIN_DIR)/kube-state-graph
@@ -8,10 +8,6 @@ LDFLAGS := -s -w
 build:
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/kube-state-graph
-
-fixtures:
-	@mkdir -p $(BIN_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/vm-fixtures ./cmd/vm-fixtures
 
 test:
 	go test ./... -count=1 -race -shuffle=on
