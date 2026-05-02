@@ -11,15 +11,20 @@ and may cross cluster boundaries.
 
 The repo ships **only the API server**. `kube-state-metrics`, the service-graph
 producer, VictoriaMetrics, and Kind are external dependencies. The in-repo
-`cmd/vm-fixtures` binary and `local/grafana/` Kind rig are local-only scaffolding,
-not deliverables.
+`cmd/vm-fixtures` binary (synthetic kube_*/service-graph emitter, used by no
+deployed component but kept as a building block for future scenarios) and the
+`local/kind/` rig are local-only scaffolding, not deliverables. The local rig
+itself uses **kube-state-metrics** (scraping the kind cluster, with a
+`cluster=kind-local` relabel) to produce the kube_* topology series, NOT
+vm-fixtures. Service-graph metrics are not produced in the local rig — that
+code path is exercised by integration tests in `internal/integration/`.
 
 ## Common commands
 
 ```bash
 # Build / test loop
 make build                                  # ./bin/kube-state-graph
-make fixtures                               # ./bin/vm-fixtures
+make fixtures                               # ./bin/vm-fixtures (optional, not used by default rig)
 make test                                   # go test ./... -count=1 -race -shuffle=on
 make vet                                    # go vet
 make lint                                   # golangci-lint (must be installed)
@@ -32,11 +37,11 @@ go test ./internal/api/ -run TestGolden -v
 # Update golden files (after changing serialiser shape on purpose)
 go test ./internal/api/ -update -run Golden
 
-# Manual Grafana visual rig (NOT run by CI; requires Docker + Kind on host).
+# Local kind rig (NOT run by CI; requires Docker + Kind on host).
 # Aliases: kind-up == local-up, kind-down == local-down, smoke == local-smoke.
-make kind-up                                # ./local/grafana/bootstrap.sh
-make smoke                                  # ./local/grafana/smoke.sh
-make kind-down                              # ./local/grafana/teardown.sh
+make kind-up                                # ./local/kind/bootstrap.sh
+make smoke                                  # ./local/kind/smoke.sh
+make kind-down                              # ./local/kind/teardown.sh
 
 # Run binary directly
 ./bin/kube-state-graph --prom-url=http://localhost:8428 --listen-addr=:8080
@@ -133,7 +138,7 @@ methods — never through type switches in the serialiser.
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | Wire-format snapshots; run with `-update` to refresh. |
 | Property | `internal/graph/property_test.go` | Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
 | Integration | `internal/integration/*` | testcontainers-go VictoriaMetrics suite; gated `SkipIfDockerUnavailable` — skips locally without Docker, runs full on CI (ubuntu-latest). |
-| Manual rig | `local/grafana/smoke.sh` | curl checks against the Kind + Grafana visual harness; not executed by CI. |
+| Manual rig | `local/kind/smoke.sh` | curl checks against the kind-based local rig (kube-state-metrics + VM + API + Grafana); not executed by CI. |
 
 ## OpenSpec workflow
 

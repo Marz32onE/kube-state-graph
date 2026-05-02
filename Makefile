@@ -46,16 +46,16 @@ check-docs: docs
 refresh-docs-ui:
 	./scripts/refresh-docs-ui.sh
 
-## Manual Grafana visual rig (NOT run by CI; see local/grafana/).
+## Local kind rig (NOT run by CI; see local/kind/).
 
 kind-up local-up:
-	./local/grafana/bootstrap.sh
+	./local/kind/bootstrap.sh
 
 kind-down local-down:
-	./local/grafana/teardown.sh
+	./local/kind/teardown.sh
 
 smoke local-smoke:
-	./local/grafana/smoke.sh
+	./local/kind/smoke.sh
 
 clean:
 	rm -rf $(BIN_DIR) coverage.out

@@ -63,15 +63,15 @@ data:
     global:
       scrape_interval: 5s
     scrape_configs:
-      - job_name: vm-fixtures
-        static_configs:
-          - targets:
-              - vm-fixtures.kube-state-graph.svc:8080
-
-      # Real kube-state-metrics scraped from the kind cluster itself. The
-      # `cluster` label is injected here because kube-state-metrics emits no
-      # cluster identity by default; kube-state-graph requires every series
-      # to carry one (graph-api spec § "Cluster-scoped IDs").
+      # kube-state-metrics scrapes the kind cluster directly. The `cluster`
+      # label is injected here via relabel because kube-state-metrics emits no
+      # cluster identity by default; kube-state-graph requires every series to
+      # carry one (graph-api spec § "Cluster-scoped IDs"). This single-cluster
+      # local rig stands in for what a real central VictoriaMetrics would
+      # build by vmagent remote_write with `external_labels` per source
+      # cluster. Service-graph series (traces_service_graph_request_total)
+      # are not emitted in the local rig — covered by integration tests in
+      # internal/integration/ via VM container ingest.
       - job_name: kube-state-metrics
         static_configs:
           - targets:
