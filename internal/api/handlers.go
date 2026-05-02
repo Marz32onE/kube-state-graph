@@ -23,6 +23,25 @@ import (
 
 // ----- /v1/graph (Cytoscape.js) ---------------------------------------------
 
+// handleGraph returns the multi-cluster pod / node / PVC graph for [start,end].
+//
+//	@Summary		Get multi-cluster graph (Cytoscape.js)
+//	@Description	Returns the multi-cluster pod / node / PVC graph for the supplied [start, end] window in Cytoscape.js shape. Filter via cluster/namespace/node/edge_type; traverse via root/depth/direction.
+//	@Tags			graph
+//	@Produce		json
+//	@Param			start		query		string	true	"RFC 3339 or Unix-seconds timestamp"
+//	@Param			end			query		string	true	"RFC 3339 or Unix-seconds timestamp"
+//	@Param			cluster		query		[]string	false	"Restrict to listed clusters"	collectionFormat(multi)
+//	@Param			namespace	query		[]string	false	"Restrict to listed namespaces"	collectionFormat(multi)
+//	@Param			node		query		[]string	false	"Restrict to listed K8s node names"	collectionFormat(multi)
+//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types"	collectionFormat(multi)
+//	@Param			root		query		string	false	"Cluster-scoped node ID anchoring a traversal"
+//	@Param			depth		query		int		false	"Traversal depth (0..6, default 2 when root is set)"
+//	@Param			direction	query		string	false	"Traversal direction"	Enums(in,out,both)
+//	@Success		200			{object}	cytoscapeBody
+//	@Failure		400			{object}	errorBody
+//	@Failure		503			{object}	errorBody
+//	@Router			/v1/graph [get]
 func (s *Server) handleGraph(c *gin.Context) {
 	req, errBody := s.parseGraphRequest(c)
 	if errBody != nil {
@@ -42,6 +61,23 @@ func (s *Server) handleGraph(c *gin.Context) {
 
 // ----- /v1/graph/nodegraph (Grafana) ----------------------------------------
 
+// handleNodeGraph returns the same graph as /v1/graph in Grafana Node Graph
+// datasource shape.
+//
+//	@Summary		Get multi-cluster graph (Grafana Node Graph datasource)
+//	@Description	Same data as /v1/graph but projected into the parallel-array shape Grafana's Node Graph panel expects when consumed via the JSON / Infinity datasource.
+//	@Tags			graph
+//	@Produce		json
+//	@Param			start		query		string	true	"RFC 3339 or Unix-seconds timestamp"
+//	@Param			end			query		string	true	"RFC 3339 or Unix-seconds timestamp"
+//	@Param			cluster		query		[]string	false	"Restrict to listed clusters"	collectionFormat(multi)
+//	@Param			namespace	query		[]string	false	"Restrict to listed namespaces"	collectionFormat(multi)
+//	@Param			node		query		[]string	false	"Restrict to listed K8s node names"	collectionFormat(multi)
+//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types"	collectionFormat(multi)
+//	@Success		200			{object}	grafanaBody
+//	@Failure		400			{object}	errorBody
+//	@Failure		503			{object}	errorBody
+//	@Router			/v1/graph/nodegraph [get]
 func (s *Server) handleNodeGraph(c *gin.Context) {
 	req, errBody := s.parseGraphRequest(c)
 	if errBody != nil {
@@ -59,6 +95,25 @@ func (s *Server) handleNodeGraph(c *gin.Context) {
 	s.writeJSONWithCaching(c, body, req.bucket, res.CacheStatus, "nodegraph")
 }
 
+// clustersBody is the response shape of GET /v1/clusters.
+type clustersBody struct {
+	APIVersion string        `json:"apiVersion"`
+	Clusters   []ClusterInfo `json:"clusters"`
+}
+
+// edgeTypesBody is the response shape of GET /v1/edge-types.
+type edgeTypesBody struct {
+	APIVersion string                     `json:"apiVersion"`
+	EdgeTypes  []graph.EdgeTypeDefinition `json:"edge_types"`
+}
+
+// debugLastQueriesBody is the response shape of GET /debug/last-queries.
+type debugLastQueriesBody struct {
+	APIVersion string   `json:"apiVersion"`
+	Queries    []string `json:"queries"`
+	Note       string   `json:"note"`
+}
+
 // ----- /v1/clusters ---------------------------------------------------------
 
 type discoveryCache struct {
@@ -73,6 +128,16 @@ type ClusterInfo struct {
 	Name string `json:"name"`
 }
 
+// handleClusters returns the list of clusters with data in centralised
+// VictoriaMetrics over the discovery lookback.
+//
+//	@Summary		List clusters
+//	@Description	Returns the set of clusters observed in `kube_node_info` over the configured discovery lookback (default 1 h). Intersected with --clusters-allowlist when set.
+//	@Tags			discovery
+//	@Produce		json
+//	@Success		200	{object}	clustersBody
+//	@Failure		502	{object}	errorBody
+//	@Router			/v1/clusters [get]
 func (s *Server) handleClusters(c *gin.Context) {
 	clusters, err := s.discoverClusters(c.Request.Context())
 	if err != nil {
@@ -145,6 +210,15 @@ func stringSliceToSet(values []string) map[string]struct{} {
 
 // ----- /v1/edge-types -------------------------------------------------------
 
+// handleEdgeTypes returns the static catalogue of edge types this server
+// can produce.
+//
+//	@Summary		Edge-type catalogue
+//	@Description	Static catalogue of edge types this server can produce. No upstream calls. Long-lived Cache-Control + ETag.
+//	@Tags			discovery
+//	@Produce		json
+//	@Success		200	{object}	edgeTypesBody
+//	@Router			/v1/edge-types [get]
 func (s *Server) handleEdgeTypes(c *gin.Context) {
 	body := map[string]any{
 		"apiVersion": APIVersion,
@@ -163,10 +237,26 @@ func (s *Server) handleEdgeTypes(c *gin.Context) {
 
 // ----- /livez, /readyz ------------------------------------------------------
 
+// handleLivez is the liveness probe.
+//
+//	@Summary	Liveness
+//	@Tags		health
+//	@Produce	plain
+//	@Success	200	{string}	string	"ok"
+//	@Router		/livez [get]
 func (s *Server) handleLivez(c *gin.Context) {
 	c.String(http.StatusOK, "ok")
 }
 
+// handleReadyz is the readiness probe — issues a 1 s upstream `up{}` query.
+//
+//	@Summary	Readiness
+//	@Description	Returns 200 only when a 1 s `up{}` probe against the configured upstream succeeds.
+//	@Tags		health
+//	@Produce	plain
+//	@Success	200	{string}	string	"ok"
+//	@Failure	503	{object}	errorBody
+//	@Router		/readyz [get]
 func (s *Server) handleReadyz(c *gin.Context) {
 	probeCtx, cancel := context.WithTimeout(c.Request.Context(), time.Second)
 	defer cancel()
@@ -180,11 +270,25 @@ func (s *Server) handleReadyz(c *gin.Context) {
 
 // ----- /admin/cache, /debug/last-queries ------------------------------------
 
+// handleAdminCacheFlush flushes the in-process Ristretto cache.
+//
+//	@Summary	Flush in-process graph cache
+//	@Tags		admin
+//	@Success	204
+//	@Router		/admin/cache [delete]
 func (s *Server) handleAdminCacheFlush(c *gin.Context) {
 	s.cache.Clear()
 	c.Status(http.StatusNoContent)
 }
 
+// handleDebugLastQueries returns the raw upstream query strings of the most
+// recent build (only available with --enable-debug).
+//
+//	@Summary	Debug: last upstream queries
+//	@Tags		debug
+//	@Produce	json
+//	@Success	200	{object}	debugLastQueriesBody
+//	@Router		/debug/last-queries [get]
 func (s *Server) handleDebugLastQueries(c *gin.Context) {
 	c.JSON(http.StatusOK, map[string]any{
 		"apiVersion": APIVersion,

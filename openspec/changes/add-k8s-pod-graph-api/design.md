@@ -384,19 +384,20 @@ Operator endpoints:
 
 ### D13. Testing layers
 
-The test stack has five layers; each MUST exist before this change is archived:
+The test stack has six layers, all CI-runnable except the last; each MUST exist before this change is archived:
 
-| Layer | Scope | Tool |
-|------|------|------|
-| Unit | Pure join / parse / project functions on hand-crafted multi-cluster `model.Vector` and `model.Matrix` inputs (intra-cluster, cross-cluster, and mixed) | `go test` |
-| Component | Build pipeline end-to-end against an `httptest.Server` mocking the Prometheus query API; covers cache, singleflight, concurrency cap, time-bucket alignment, and `--clusters-allowlist` injection | `go test` |
-| Golden | Canned scenarios (single-cluster, two-cluster with cross-cluster edge, three-cluster with traversal pruning) → `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types` JSON compared to checked-in `.golden.json` | `go test` |
-| Property | Random topology + edge inputs across N synthetic clusters + random filters → invariants (no orphan edges, no duplicate IDs, every endpoint resolves, filtered ⊆ unfiltered, traversal stays within `depth`, cross-cluster edges have distinct cluster endpoints) | `testing/quick` or `gopter` |
-| Integration | Single Kind cluster with in-cluster VictoriaMetrics + `vm-fixtures` producer emitting multi-cluster series; smoke script hits `/v1/clusters`, `/v1/graph` per-cluster filtered, `/v1/graph` multi-cluster filtered, asserts at least one edge whose `labels.client_cluster` differs from `labels.server_cluster` | `bash` smoke script |
+| Layer | CI? | Scope | Tool |
+|------|-----|------|------|
+| Unit | yes | Pure join / parse / project functions on hand-crafted multi-cluster `model.Vector` and `model.Matrix` inputs (intra-cluster, cross-cluster, and mixed) | `go test` |
+| Component | yes | Build pipeline end-to-end against an `httptest.Server` mocking the Prometheus query API; covers cache, singleflight, concurrency cap, time-bucket alignment, and `--clusters-allowlist` injection | `go test` |
+| Golden | yes | Canned scenarios (single-cluster, two-cluster with cross-cluster edge, three-cluster with traversal pruning) → `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types` JSON compared to checked-in `.golden.json` | `go test` |
+| Property | yes | Random topology + edge inputs across N synthetic clusters + random filters → invariants (no orphan edges, no duplicate IDs, every endpoint resolves, filtered ⊆ unfiltered, traversal stays within `depth`, cross-cluster edges have distinct cluster endpoints) | `testing/quick` or `gopter` |
+| **Container integration** (capability `container-integration`) | yes | Per-package VictoriaMetrics container started via testcontainers-go; series injected via VM's `/api/v1/import/prometheus`; in-process API server pointed at the container; assertions over real PromQL evaluation, real cache, real ETag flow | `go test` + Docker |
+| **Manual visual rig** (capability `verification-harness`) | **no** | Single Kind cluster with VictoriaMetrics + fake-fixtures producer + API server + Grafana Pod with the checked-in Node Graph dashboard, run on demand by an operator. Used for visual sanity verification of the rendered graph; not exercised by CI | `bash` bootstrap + browser |
 
-Unit, component, golden, and property layers run on every PR (seconds). Integration runs on PRs that touch `cmd/`, `internal/build/`, `internal/cache/`, `deploy/kind/`, or harness code; otherwise nightly.
+The first five layers run on every PR via `go test ./...`. The Kind manual rig is exercised by operators on demand only — see D20 for testcontainer rationale and D21 for static analysis / vulnerability scanning policy.
 
-- Why: integration alone leaves logic regressions undetectable in PR feedback. Layered tests make the feedback loop fast and the failure mode precise. Multi-cluster invariants live in unit + property layers; the integration layer proves the wire format works against real VictoriaMetrics.
+- Why: integration alone leaves logic regressions undetectable in PR feedback; mock-only component tests miss real PromQL semantics; Kind alone is too slow and fragile for per-PR feedback. The split puts every behavioural assertion in the CI path against real PromQL, while the Grafana rig keeps human-in-the-loop verification first-class without coupling it to merge gates.
 
 ### D14. Versioning
 
@@ -541,6 +542,156 @@ Two flags bound the worst-case upstream load when many clusters share the centra
 - `--max-pods <n>` — fail fast (`503` with `reason: "cluster_too_large"`) when the count of distinct `kube_pod_info` series in scope exceeds the configured ceiling (default `5000`).
 
 Together these keep the v1 design within its stated cluster-size budget without surprising operators when their VictoriaMetrics grows.
+
+### D20. Container integration via testcontainers-go
+
+The CI integration layer uses **testcontainers-go** (`github.com/testcontainers/testcontainers-go`) to spin up a real VictoriaMetrics container from inside `go test`. Tests run in `internal/integration/`.
+
+Architecture:
+
+```
+go test ./internal/integration/
+  │
+  ├─ TestMain (per package)
+  │     └─ start vmsingle container (image pinned, e.g. victoriametrics/victoria-metrics:v1.107.0)
+  │
+  ├─ test helper: ingest(t, exposition string)
+  │     POST <vm.URL>/api/v1/import/prometheus
+  │
+  └─ each test:
+        ├─ ingest synthetic kube_* + traces_service_graph_* exposition with absolute timestamps
+        ├─ wait for VM to acknowledge data (poll up{} or count(kube_pod_info) until non-empty, ≤ 10 s)
+        ├─ start the API server in-process: srv := api.New(cfg, ...).Handler() + httptest.NewServer
+        └─ exercise /v1/* endpoints, assert HTTP shape / headers / cache behaviour
+```
+
+Decisions:
+
+- **One container per package**, not per test: bootstrapping VM costs ~5–10 s, far more than each test. Tests inside a package use unique series-label discriminators (e.g., a `test=<TestName>` label) so they never collide.
+- **Direct injection via `/api/v1/import/prometheus`**, not a scrape stub: keeps the test process self-contained (no second container, no scrape interval to tune), and the API server only sees series in VM regardless of how they got there. The Prometheus exposition format is hand-written by the test, supports per-sample timestamps, and is the same format the manual-rig fixtures producer emits.
+- **In-process API server** (`api.New(...).Handler()` against `httptest.NewServer`): no third container; tests can introspect server state, share types, and avoid Docker round-trips. Containerised server behaviour is covered by the manual rig instead.
+- **Absolute timestamps in fixtures**: tests use fixed timestamps (e.g., `time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)`) and pass the same window to the API. This makes time-bucket alignment fully deterministic — a class of bugs the httptest mock layer cannot expose.
+- **VM image is pinned** by tag in test code; no `:latest`. Image is pre-pulled in CI to remove first-run noise.
+- **Docker socket required**: the integration-test job runs on `ubuntu-latest` GitHub Actions runners (Docker socket native). macOS / Windows runners are out of scope for this layer.
+- **Ristretto async-write race**: the existing `cache.Wait()` after `Set` already serialises visibility for the next request. Tests that assert cache `MISS`/`HIT` ordering rely on that contract; do not relax it without re-reading D6.
+
+What testcontainers does **not** cover (and so the manual rig still does):
+
+- Kubernetes Service / Deployment / ConfigMap wiring.
+- Real scrape pipeline (vmagent → VM).
+- Visual rendering correctness in Grafana.
+
+- Why this split: a container-only CI layer gives us real PromQL evaluation, deterministic time semantics, and parallel-safe per-package tests, without the operational cost of Kind on every PR.
+- Alternatives considered:
+  - Replace Kind harness entirely (rejected — visual verification in Grafana is still high-leverage for human review of edge-rendering correctness; Kind earns its keep as the platform for that, just not as a CI gate).
+  - Run the API server as a third container (rejected — no benefit over in-process for the assertions this layer makes; the Dockerfile is exercised by the manual rig).
+  - Inject series via a scrape stub container (rejected — adds a container, a scrape interval, and a startup race for no behavioural benefit since the API only ever reads from VM).
+
+### D21. Static analysis and vulnerability scanning
+
+Two CI gates beyond `go test`:
+
+**1. `golangci-lint` — curated linter set.** A repository-level `.golangci.yml` enables the following linters (alphabetical):
+
+- Correctness: `errcheck`, `gosimple`, `govet`, `ineffassign`, `staticcheck`, `unused`, `gocritic`, `exhaustive`.
+- Modern Go idioms: `copyloopvar`, `intrange`, `revive`.
+- Error handling: `errorlint`, `nilerr`.
+- Security: `gosec`.
+- Complexity: `gocyclo`, `gocognit`, `funlen`.
+- Performance: `prealloc`, `bodyclose`, `unconvert`.
+- Style: `misspell`, `gofmt`, `goimports`.
+- Dead code / duplication: `dupl`, `unparam`.
+- Magic numbers: `mnd`.
+
+Complexity caps:
+- `gocyclo`: cyclomatic complexity ≤ 15 per function.
+- `gocognit`: cognitive complexity ≤ 20 per function.
+- `funlen`: ≤ 100 lines / ≤ 50 statements per function.
+
+Test files are exempted from `errcheck` and the strictest complexity / duplication rules (table-driven tests legitimately repeat structure).
+
+**2. `govulncheck` — dependency vulnerability scanner.** A separate CI step runs `golang.org/x/vuln/cmd/govulncheck@latest ./...` on every PR. Detected vulnerabilities MUST be either fixed (dependency bump) or triaged with an explicit suppression comment + linked tracking issue before merge.
+
+CI integration sketch (workflow snippet):
+
+```yaml
+jobs:
+  lint:
+    steps:
+      - uses: golangci/golangci-lint-action@v8
+        with: { args: --timeout=5m }
+  vuln:
+    steps:
+      - run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+  test:
+    steps:
+      - run: go test ./... -count=1 -race -shuffle=on
+```
+
+`lint`, `vuln`, and `test` run as parallel jobs (no `needs` edges) so PR feedback latency = max, not sum.
+
+- Why: linter set covers the trending Go quality dimensions (complexity, security, error handling, modern idioms) without enabling everything (`golangci-lint` ships ~100 linters; many overlap or fight each other). The set above is intentionally curated to maximise signal and minimise false positives.
+- Why `govulncheck` separately from golangci-lint: govulncheck reads call-graph reachability, not just static patterns, and is the official Go security-team tool. Keeping it as its own CI job makes failure mode obvious in the GitHub UI.
+- Alternatives considered:
+  - Enable every golangci-lint linter (rejected — high false-positive rate, lint fatigue, churn from linter authors).
+  - Use `gosec` only without `golangci-lint` (rejected — narrower coverage, redundant tooling).
+  - Run `govulncheck` only on tagged releases (rejected — a vulnerable dependency lands the day it's introduced, not on release; per-PR is the only useful cadence).
+
+### D22. OpenAPI generation and offline-capable Scalar UI
+
+**Generation: `swaggo/swag` v2.** Handler functions in `internal/api/handlers.go` carry annotation comments (`// @Summary`, `// @Description`, `// @Tags`, `// @Param`, `// @Success`, `// @Failure`, `// @Router`, `// @Header`); the `cmd/kube-state-graph/main.go` entry point carries the document-level annotations (`// @title`, `// @version v1`, `// @license.name Apache 2.0`, `// @BasePath /v1`). Running `swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal` regenerates `docs/swagger.json`, `docs/swagger.yaml`, and `docs/docs.go`. Generated files are checked in.
+
+**OpenAPI version: 3.0.** Stable in swag v2; swag v2's 3.1 mode is still maturing and 3.0 covers everything we need (`additionalProperties: { type: string }` for the strict `map[string]string` `labels` invariant from D9, error-envelope component, etc.). Bump to 3.1 once swag v2's 3.1 path has shipped GA.
+
+**Routes for spec + UI**:
+
+| Route | What | Cache |
+|------|------|------|
+| `GET /openapi.yaml` | Generated YAML, served from embedded `docs/swagger.yaml` | `Cache-Control: public, max-age=3600` + ETag |
+| `GET /openapi.json` | Generated JSON, served from embedded `docs/swagger.json` | same |
+| `GET /docs` | HTML page that renders the spec via the Scalar API Reference viewer | `Cache-Control: public, max-age=300` |
+| `GET /docs/assets/*` | Static Scalar JS / CSS bundle, served from embedded assets | `Cache-Control: public, max-age=86400, immutable` |
+
+**Scalar UI is vendored in the binary**, not loaded from a CDN. The Scalar `@scalar/api-reference` standalone bundle (currently ~600 KB minified+gzipped) is checked in under `internal/api/static/scalar/` and embedded via `embed.FS`. The HTML at `/docs` references `/docs/assets/scalar.js` (relative path), so the page renders correctly behind reverse proxies, in air-gapped clusters, on isolated VPNs, and on developer laptops without internet — no exception cases.
+
+The vendored bundle version is pinned (e.g., `@scalar/api-reference@1.x.y`) and refreshed via a `make refresh-docs-ui` script that re-downloads the pinned version, validates the SHA-256, and updates the embedded files. The script's expected SHA is committed alongside.
+
+**Drift gate**: a `make check-docs` target re-runs `swag init` and exits non-zero if the working tree changes. The same step runs in CI; PRs that touch `internal/api/*.go` without regenerating `docs/swagger.{json,yaml,go}` fail.
+
+**Route ↔ spec contract test** (Go-side): the test parses `docs/swagger.json` via `kin-openapi`, walks Gin's `engine.Routes()` after `Server.Handler()`, and asserts bidirectional `(method, path)` set-equality modulo a small allowlist for infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/admin/cache`, `/debug/last-queries`, `/openapi.yaml`, `/openapi.json`, `/docs/*`). Any divergence — handler added without an annotation, annotation pointing at a removed route — fails the test.
+
+- Why swag v2: lowest churn for an existing Gin codebase. Annotations live next to the handlers that implement the documented behaviour. Generated artefacts double as input to the drift gate and to the contract test.
+- Why Scalar over Swagger UI: better default UX, smaller payload, native dark-mode, modern aesthetic. Drop-in replacement — both consume the same OpenAPI 3.0 spec.
+- Why vendoring the UI bundle: deployment topology assumes restricted-network environments (Kubernetes operators, internal tools). A `/docs` route that requires reaching `cdn.jsdelivr.net` is silently broken in those environments. Vendoring guarantees the route works wherever the binary runs.
+- Alternatives considered:
+  - Hand-maintained `docs/openapi.yaml` (rejected — drift risk; swag v2 reduces effort while preserving control via annotations).
+  - Huma (rejected — full framework refactor, see D20-style trade-off).
+  - CDN-loaded UI (rejected — air-gap-incompatible).
+  - Swagger UI bundled instead of Scalar (rejected — heavier bundle, dated UX; spec consumers still get the same JSON/YAML).
+
+### D23. Test framework: testify across the repository
+
+**Adoption scope**: every test file under `internal/`, `tests/`, and `cmd/` uses `github.com/stretchr/testify/{assert,require,suite}`. No test file mixes stdlib `t.Errorf` / `t.Fatal` patterns with testify in the same suite (one style per file).
+
+**Migration cadence**: a single dedicated PR converts all 57 existing tests in one pass. Mechanical refactor; no behaviour changes. Smaller PRs deferred — the larger one-shot diff is easier to review than ten micro-PRs each with the same shape.
+
+**Patterns**:
+
+- **`require`** for "if this fails, the rest of the test is meaningless" — fixture setup, container start, JSON unmarshal of the response under test.
+- **`assert`** for individual checks within a test — encourages the test to surface multiple failures per run.
+- **`suite.Suite`** for the testcontainers integration package only. `SetupSuite` starts the VictoriaMetrics container; `TearDownSuite` stops it; `SetupTest` resets fixtures; tests are methods on the suite struct. Stdlib unit / golden / property tests stay function-shaped.
+- **`assert.JSONEq`** for wire-shape comparisons in golden tests so byte-for-byte diff isn't required.
+- **`assert.Eventually`** for the VM-readiness poll in integration tests.
+
+**`testifylint`** is added to the curated `golangci-lint` set (D21) and configured with `enable-all: true`. It catches the common testify misuses (`assert.True(t, a == b)` → `assert.Equal`, missing `t.Helper()` in helpers, `assert` calls inside goroutines without `t.Cleanup`, etc.).
+
+- Why testify across the whole repo, not just integration: a single style is easier for contributors to read and grep. The mass-migration cost is one focused PR; the long-tail cost of mixed styles is forever.
+- Why one PR rather than per-package: the diff is mechanical, the cognitive load of reviewing it is the same across packages; bundling reduces churn windows where new code lands in the old style and needs re-translation.
+- Alternatives considered:
+  - Stay on stdlib (rejected — integration tests with testcontainers benefit materially from `suite.Suite` and `require`; the rest of the repo is along for consistency).
+  - Adopt `gotest.tools/v3` instead (rejected — testify is the dominant Go ecosystem choice and what `testifylint` polices; staying with the stream).
 
 ## Risks / Trade-offs
 

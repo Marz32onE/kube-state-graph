@@ -5,6 +5,9 @@ import (
 	"math/rand"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // genGraph generates a deterministic random graph from rand.New(seed) for
@@ -65,12 +68,10 @@ func TestProperty_EveryEdgeEndpointResolves(t *testing.T) {
 	for seed := int64(1); seed <= 25; seed++ {
 		g := genGraph(seed, 3, 5, 12)
 		for _, e := range g.Edges {
-			if _, ok := g.NodesByID[e.Source]; !ok {
-				t.Fatalf("seed=%d: edge %s has unresolved source %s", seed, e.ID, e.Source)
-			}
-			if _, ok := g.NodesByID[e.Target]; !ok {
-				t.Fatalf("seed=%d: edge %s has unresolved target %s", seed, e.ID, e.Target)
-			}
+			_, srcOK := g.NodesByID[e.Source]
+			_, tgtOK := g.NodesByID[e.Target]
+			require.Truef(t, srcOK, "seed=%d: edge %s has unresolved source %s", seed, e.ID, e.Source)
+			require.Truef(t, tgtOK, "seed=%d: edge %s has unresolved target %s", seed, e.ID, e.Target)
 		}
 	}
 }
@@ -85,9 +86,7 @@ func TestProperty_FilteredSubsetUnfiltered(t *testing.T) {
 			fullIDs[n.ID()] = true
 		}
 		for _, n := range filtered.Nodes {
-			if !fullIDs[n.ID()] {
-				t.Fatalf("seed=%d: filtered contains node %s not in unfiltered", seed, n.ID())
-			}
+			require.Truef(t, fullIDs[n.ID()], "seed=%d: filtered contains node %s not in unfiltered", seed, n.ID())
 		}
 	}
 }
@@ -102,7 +101,6 @@ func TestProperty_TraversalDepthRespected(t *testing.T) {
 		}
 		for d := 0; d <= 3; d++ {
 			v := Project(g, Scope{Root: root, Depth: d, Direction: DirectionBoth})
-			// Re-run BFS from result root, count distance to each node, verify ≤ d.
 			dist := map[string]int{root: 0}
 			frontier := []string{root}
 			for hop := 0; hop < d && len(frontier) > 0; hop++ {
@@ -125,12 +123,8 @@ func TestProperty_TraversalDepthRespected(t *testing.T) {
 			}
 			for _, n := range v.Nodes {
 				dd, ok := dist[n.ID()]
-				if !ok {
-					t.Errorf("seed=%d depth=%d: node %s in view but not reachable from root", seed, d, n.ID())
-				}
-				if dd > d {
-					t.Errorf("seed=%d depth=%d: node %s at distance %d > depth", seed, d, n.ID(), dd)
-				}
+				assert.Truef(t, ok, "seed=%d depth=%d: node %s in view but not reachable from root", seed, d, n.ID())
+				assert.LessOrEqualf(t, dd, d, "seed=%d depth=%d: node %s at distance %d > depth", seed, d, n.ID(), dd)
 			}
 		}
 	}
@@ -144,9 +138,8 @@ func TestProperty_CrossClusterEdgesHaveDistinctClusterEndpoints(t *testing.T) {
 				continue
 			}
 			if e.Labels["client_cluster"] != e.Labels["server_cluster"] {
-				if e.Labels["client_cluster"] == "" || e.Labels["server_cluster"] == "" {
-					t.Errorf("seed=%d: cross-cluster edge missing cluster label: %v", seed, e.Labels)
-				}
+				assert.NotEmpty(t, e.Labels["client_cluster"])
+				assert.NotEmpty(t, e.Labels["server_cluster"])
 			}
 		}
 	}
@@ -158,8 +151,8 @@ func TestProperty_EdgeIDsUniquePerTuple(t *testing.T) {
 		ids := map[string]string{}
 		for _, e := range g.Edges {
 			tuple := string(e.Type) + "|" + e.Source + "|" + e.Target
-			if existing, ok := ids[e.ID]; ok && existing != tuple {
-				t.Fatalf("seed=%d: edge id %s shared by %q and %q", seed, e.ID, existing, tuple)
+			if existing, ok := ids[e.ID]; ok {
+				require.Equalf(t, existing, tuple, "seed=%d: edge id %s shared by %q and %q", seed, e.ID, existing, tuple)
 			}
 			ids[e.ID] = tuple
 		}

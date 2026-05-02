@@ -30,12 +30,24 @@ kubectl -n "$NAMESPACE" delete configmap vm-fixtures-data --ignore-not-found
 kubectl -n "$NAMESPACE" create configmap vm-fixtures-data \
   --from-file=fixtures.yaml="$REPO_ROOT/tests/harness/vm-fixtures/fixtures.yaml"
 
-echo "==> Restarting workloads to pick up fresh ConfigMap"
-kubectl -n "$NAMESPACE" rollout restart deploy/vm-fixtures deploy/victoria-metrics deploy/kube-state-graph
+echo "==> Loading Grafana dashboard ConfigMap"
+kubectl -n "$NAMESPACE" delete configmap grafana-dashboard-nodegraph --ignore-not-found
+kubectl -n "$NAMESPACE" create configmap grafana-dashboard-nodegraph \
+  --from-file=kube-state-graph-nodegraph.json="$REPO_ROOT/deploy/grafana/kube-state-graph-nodegraph.json"
+
+echo "==> Restarting workloads to pick up fresh ConfigMaps"
+kubectl -n "$NAMESPACE" rollout restart \
+  deploy/vm-fixtures deploy/victoria-metrics deploy/kube-state-graph deploy/grafana
 
 echo "==> Waiting for rollouts"
-for d in victoria-metrics vm-fixtures kube-state-graph; do
+for d in victoria-metrics vm-fixtures kube-state-graph grafana; do
   kubectl -n "$NAMESPACE" rollout status deploy/$d --timeout=180s
 done
 
-echo "==> Cluster ready: kubectl --context kind-$CLUSTER_NAME get pods -n $NAMESPACE"
+cat <<MSG
+==> Manual rig ready.
+    API:     http://localhost:30080  (kube-state-graph)
+    VM:      http://localhost:30428  (Prometheus-compatible API)
+    Grafana: http://localhost:30300  (admin / admin)
+    Open Grafana, click on the kube-state-graph dashboard, observe the multi-cluster Node Graph panel.
+MSG

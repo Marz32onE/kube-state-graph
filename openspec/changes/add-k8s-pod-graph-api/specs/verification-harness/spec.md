@@ -1,13 +1,27 @@
 ## ADDED Requirements
 
+### Requirement: Manual-only visual verification rig
+
+The verification harness SHALL be operated manually by a human; it SHALL NOT be exercised by CI. Its purpose is end-to-end visual verification of the multi-cluster graph in Grafana, not regression testing. CI integration coverage is provided by the `container-integration` capability instead.
+
+#### Scenario: No CI workflow runs the harness
+
+- **WHEN** an operator inspects the repository's CI workflow files
+- **THEN** no CI job invokes the harness bootstrap script or its smoke script
+
+#### Scenario: README documents manual operation
+
+- **WHEN** a developer reads the harness `README.md` (or top-level documentation)
+- **THEN** the documented entry points are `make local-up`, `make local-smoke`, and `make local-down` (or equivalent), each clearly labelled as manual
+
 ### Requirement: Single Kind cluster bootstrap
 
-The harness SHALL provision exactly one local Kubernetes cluster using Kind. The cluster SHALL be created from a checked-in `deploy/kind/kind-config.yaml` configuration. The harness SHALL NOT spin up multiple Kind clusters.
+The harness SHALL provision exactly one local Kubernetes cluster using Kind. The cluster SHALL be created from a checked-in Kind configuration file (e.g., `deploy/kind/kind-config.yaml` or `local/grafana/kind-config.yaml`). The harness SHALL NOT spin up multiple Kind clusters.
 
-#### Scenario: kind-config.yaml present
+#### Scenario: Kind config file present
 
-- **WHEN** an operator inspects the repository at `deploy/kind/kind-config.yaml`
-- **THEN** a Kind configuration file exists declaring a single cluster
+- **WHEN** an operator inspects the harness directory
+- **THEN** a Kind configuration file exists declaring exactly one cluster
 
 #### Scenario: bootstrap creates one cluster
 
@@ -16,7 +30,7 @@ The harness SHALL provision exactly one local Kubernetes cluster using Kind. The
 
 ### Requirement: In-cluster VictoriaMetrics installation
 
-The bootstrap script SHALL install a VictoriaMetrics single-node deployment inside the Kind cluster, exposed at a stable in-cluster Service name (e.g., `victoria-metrics:8428`). The installation SHALL NOT require multi-tenant vmcluster mode.
+The bootstrap script SHALL install a VictoriaMetrics single-node deployment inside the Kind cluster, exposed at a stable in-cluster Service name (e.g., `victoria-metrics:8428`). The installation SHALL NOT use multi-tenant vmcluster mode.
 
 #### Scenario: VictoriaMetrics reachable in-cluster
 
@@ -30,7 +44,7 @@ The bootstrap script SHALL install a VictoriaMetrics single-node deployment insi
 
 ### Requirement: Fake fixtures producer
 
-The harness SHALL include a Go program at `tests/harness/vm-fixtures/` that exposes a `/metrics` Prometheus exposition endpoint emitting hand-crafted multi-cluster fixtures. VictoriaMetrics SHALL scrape this endpoint as its only source of `kube_*` and `traces_service_graph_*` series. Real `kube-state-metrics`, real OTLP collectors, and real OTel SDKs SHALL NOT be installed in the harness.
+The harness SHALL include a Go program that exposes a `/metrics` Prometheus exposition endpoint emitting hand-crafted multi-cluster fixtures. VictoriaMetrics SHALL scrape this endpoint as its only source of `kube_*` and `traces_service_graph_*` series. Real `kube-state-metrics`, real OTLP collectors, and real OTel SDKs SHALL NOT be installed in the harness.
 
 #### Scenario: Fixtures program exposes /metrics
 
@@ -65,7 +79,7 @@ The fixtures producer SHALL emit, at minimum, the following synthetic series for
 
 ### Requirement: Fixture configuration
 
-The fixtures program SHALL load its series definitions from a YAML file checked into the repository (`tests/harness/vm-fixtures/fixtures.yaml`) so test scenarios are deterministic. The fixtures program SHALL re-read the file on a SIGHUP signal and SHALL emit a metric `vm_fixtures_reloaded_total` whose value increments on each successful reload.
+The fixtures program SHALL load its series definitions from a YAML file checked into the repository so test scenarios are deterministic. The fixtures program SHALL re-read the file on a SIGHUP signal and SHALL emit a metric `vm_fixtures_reloaded_total` whose value increments on each successful reload.
 
 #### Scenario: SIGHUP reload
 
@@ -74,11 +88,11 @@ The fixtures program SHALL load its series definitions from a YAML file checked 
 
 ### Requirement: API server installed in the harness
 
-The harness SHALL install the `kube-state-graph` API server inside the Kind cluster, configured to point at the in-cluster VictoriaMetrics endpoint, and exposed via a NodePort or `kubectl port-forward` so the smoke script can reach it from the host. The harness SHALL set `KSG_EXTERNAL_NAME_PATTERN="://"` on the API server Deployment so the smoke script can validate the external-name-pattern rule.
+The harness SHALL install the `kube-state-graph` API server inside the Kind cluster, configured to point at the in-cluster VictoriaMetrics endpoint, and exposed via a NodePort or `kubectl port-forward` so the operator can reach it from the host. The harness SHALL set `KSG_EXTERNAL_NAME_PATTERN="://"` on the API server Deployment.
 
 #### Scenario: API server reachable
 
-- **WHEN** the bootstrap has completed and the smoke script port-forwards the API service
+- **WHEN** the bootstrap has completed and the operator port-forwards (or hits the NodePort for) the API service
 - **THEN** `GET /v1/livez` against the forwarded port returns 200
 
 #### Scenario: External name pattern configured
@@ -86,9 +100,35 @@ The harness SHALL install the `kube-state-graph` API server inside the Kind clus
 - **WHEN** an operator inspects the API server Deployment in the harness
 - **THEN** the env section contains `KSG_EXTERNAL_NAME_PATTERN` set to `"://"`
 
-### Requirement: Smoke script assertions
+### Requirement: Grafana Pod with provisioned dashboard
 
-A `tests/smoke/` script SHALL run after bootstrap and verify the following assertions against the running API server. Any failure SHALL exit non-zero.
+The harness SHALL install a Grafana Pod inside the Kind cluster, expose it via NodePort or port-forward on the host (default `:3000`), and pre-provision both:
+
+- A datasource pointing at the in-cluster `kube-state-graph` Service (suitable for the JSON / Infinity datasource), and
+- The Node Graph dashboard checked in at `deploy/grafana/kube-state-graph-nodegraph.json`.
+
+The operator SHALL be able to load Grafana, sign in with the bootstrap credentials, and see the rendered multi-cluster graph immediately, without manually configuring datasources or importing dashboards.
+
+#### Scenario: Grafana reachable
+
+- **WHEN** the bootstrap has completed and the operator opens the Grafana URL
+- **THEN** the Grafana login page is served and bootstrap credentials are documented in the harness README
+
+#### Scenario: Dashboard pre-provisioned
+
+- **WHEN** the operator opens Grafana after bootstrap
+- **THEN** the kube-state-graph Node Graph dashboard appears under Dashboards without manual import and renders nodes / edges from the running API server
+
+#### Scenario: Datasource pre-provisioned
+
+- **WHEN** the operator opens Grafana → Connections → Data sources
+- **THEN** a datasource is already configured pointing at `http://kube-state-graph.kube-state-graph.svc:8080`
+
+### Requirement: Manual smoke script
+
+The harness SHALL ship a smoke script (e.g., `tests/smoke/run.sh` or `local/grafana/smoke.sh`) that an operator MAY run after bootstrap to sanity-check the API surface end-to-end without opening Grafana. The script SHALL exit non-zero on any failure. CI SHALL NOT run this script.
+
+The script SHALL verify, at minimum:
 
 - `GET /v1/livez` returns 200.
 - `GET /v1/readyz` returns 200 within a configurable readiness budget (default 60 s).
@@ -99,36 +139,27 @@ A `tests/smoke/` script SHALL run after bootstrap and verify the following asser
 - `GET /v1/graph?start=<now-5m>&end=<now>&cluster=cluster-alpha` returns nodes whose `data.labels.cluster` is `cluster-alpha`, plus any cross-cluster edge endpoints in `cluster-beta`.
 - Every node in any `/v1/graph` response carries `data.id`, `data.name`, `data.type`, and `data.labels` (a JSON object whose values are all strings). Every edge carries `data.id` (RFC 4122 UUID), `data.type`, `data.source`, `data.target`, and `data.labels` (a JSON object whose values are all strings).
 - `GET /v1/graph?start=<now-5m>&end=<now>&edge_type=pod-calls-pod` returns at least one node whose `data.type` is `"external"` and whose `data.name` contains the configured pattern substring (e.g., `://`).
-- `GET /v1/metrics` returns 200 in Prometheus exposition format.
+- `GET /metrics` returns 200 in Prometheus exposition format.
 
 #### Scenario: Smoke script success path
 
-- **WHEN** the harness is bootstrapped and the smoke script runs
+- **WHEN** the harness is bootstrapped and the operator runs the smoke script
 - **THEN** every assertion above passes and the script exits 0
 
 #### Scenario: Cross-cluster edge present
 
-- **WHEN** the smoke script issues `GET /v1/graph?...&edge_type=pod-calls-pod`
+- **WHEN** the operator runs the smoke script and it issues `GET /v1/graph?...&edge_type=pod-calls-pod`
 - **THEN** the response contains at least one edge whose `data.labels.client_cluster` differs from `data.labels.server_cluster`
 
 #### Scenario: Canonical schema enforced
 
-- **WHEN** the smoke script inspects any `/v1/graph` response
+- **WHEN** the operator runs the smoke script and it inspects any `/v1/graph` response
 - **THEN** every node has `data.id`, `data.name`, `data.type`, `data.labels`, and every edge has `data.id` (UUID), `data.type`, `data.source`, `data.target`, `data.labels`; every value inside any `data.labels` map is a JSON string
 
 #### Scenario: External node produced by KSG_EXTERNAL_NAME_PATTERN
 
-- **WHEN** the smoke script issues `GET /v1/graph?...&edge_type=pod-calls-pod` against the harness (which sets `KSG_EXTERNAL_NAME_PATTERN="://"`)
+- **WHEN** the operator runs the smoke script against the harness (which sets `KSG_EXTERNAL_NAME_PATTERN="://"`)
 - **THEN** the response contains at least one node whose `data.type` is `"external"` and whose `data.name` contains `"://"`
-
-### Requirement: Optional Grafana dashboard
-
-The harness SHALL ship a Grafana dashboard JSON at `deploy/grafana/kube-state-graph-nodegraph.json` that uses the JSON / Infinity datasource against `GET /v1/graph/nodegraph` so an operator can visually verify the multi-cluster graph. Installing Grafana itself SHALL be optional; the smoke script SHALL NOT require Grafana to pass.
-
-#### Scenario: Dashboard JSON checked in
-
-- **WHEN** an operator inspects `deploy/grafana/`
-- **THEN** a Grafana dashboard JSON file exists and references `/v1/graph/nodegraph` as a datasource URL template
 
 ### Requirement: Reproducible teardown
 
@@ -138,12 +169,3 @@ The harness SHALL provide a teardown command that deletes the Kind cluster and r
 
 - **WHEN** an operator runs the teardown script
 - **THEN** `kind get clusters` no longer lists the harness cluster and no Docker containers from the harness remain
-
-### Requirement: CI invocation
-
-The repository SHALL include a CI job definition that runs the smoke script against the harness on PRs that modify any of `cmd/`, `internal/build/`, `internal/cache/`, `deploy/kind/`, or `tests/harness/`. The same job SHALL run nightly regardless of changed paths.
-
-#### Scenario: CI workflow exists
-
-- **WHEN** an operator inspects the repository's CI configuration
-- **THEN** a workflow exists that invokes the harness bootstrap and the smoke script

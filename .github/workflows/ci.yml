@@ -1,6 +1,7 @@
 name: CI
 
-# `lint` and `test` are separate jobs; they run in parallel (no `needs` edges).
+# `lint`, `vuln`, `test`, and `docs-drift` are separate jobs; they run in
+# parallel (no `needs` edges) so PR feedback latency = max, not sum.
 on:
   pull_request:
 
@@ -22,6 +23,22 @@ jobs:
         with:
           args: --timeout=5m
 
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -32,5 +49,29 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run unit tests
+      - name: Run unit + integration tests
         run: go test ./... -count=1 -race -shuffle=on
+
+  docs-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install swag v2
+        run: go install github.com/swaggo/swag/v2/cmd/swag@latest
+
+      - name: Regenerate OpenAPI spec
+        run: swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=false
+
+      - name: Verify no drift
+        run: |
+          if ! git diff --quiet -- docs/; then
+            echo "::error::docs/ is out of sync with handler annotations. Run 'make docs' locally and commit."
+            git --no-pager diff -- docs/
+            exit 1
+          fi

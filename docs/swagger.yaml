@@ -1,0 +1,106 @@
+openapi: 3.0.0
+info:
+  title: kube-state-graph API
+  description: |
+    Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and
+    pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics
+    and returns the joined cross-cluster graph as Cytoscape.js JSON or in the
+    Grafana Node Graph datasource shape.
+
+    NOTE: this YAML is a hand-written placeholder committed so the binary
+    builds before `swag init` is run. CI's docs-drift job regenerates it from
+    handler annotations on every PR.
+  version: v1
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+servers:
+  - url: /
+paths:
+  /v1/graph:
+    get:
+      tags: [graph]
+      summary: Get multi-cluster graph (Cytoscape.js)
+      parameters:
+        - { name: start, in: query, required: true, schema: { type: string } }
+        - { name: end,   in: query, required: true, schema: { type: string } }
+        - { name: cluster,    in: query, schema: { type: array, items: { type: string } }, style: form, explode: true }
+        - { name: namespace,  in: query, schema: { type: array, items: { type: string } }, style: form, explode: true }
+        - { name: node,       in: query, schema: { type: array, items: { type: string } }, style: form, explode: true }
+        - { name: edge_type,  in: query, schema: { type: array, items: { type: string } }, style: form, explode: true }
+        - { name: root,       in: query, schema: { type: string } }
+        - { name: depth,      in: query, schema: { type: integer, minimum: 0, maximum: 6 } }
+        - { name: direction,  in: query, schema: { type: string, enum: [in, out, both] } }
+      responses:
+        "200": { description: OK }
+        "400": { description: Bad Request }
+        "503": { description: Service Unavailable }
+  /v1/graph/nodegraph:
+    get:
+      tags: [graph]
+      summary: Get multi-cluster graph (Grafana Node Graph)
+      responses:
+        "200": { description: OK }
+  /v1/clusters:
+    get:
+      tags: [discovery]
+      summary: List clusters
+      responses:
+        "200": { description: OK }
+        "502": { description: Bad Gateway }
+  /v1/edge-types:
+    get:
+      tags: [discovery]
+      summary: Edge-type catalogue
+      responses:
+        "200": { description: OK }
+  /openapi.yaml:
+    get:
+      tags: [docs]
+      summary: OpenAPI spec (YAML)
+      responses:
+        "200": { description: OK }
+  /openapi.json:
+    get:
+      tags: [docs]
+      summary: OpenAPI spec (JSON)
+      responses:
+        "200": { description: OK }
+  /docs:
+    get:
+      tags: [docs]
+      summary: API reference UI (Scalar, vendored offline)
+      responses:
+        "200": { description: HTML }
+  /livez:
+    get:
+      tags: [health]
+      summary: Liveness
+      responses:
+        "200": { description: OK }
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness
+      responses:
+        "200": { description: OK }
+        "503": { description: Service Unavailable }
+  /metrics:
+    get:
+      tags: [observability]
+      summary: Prometheus self-metrics
+      responses:
+        "200": { description: text/plain exposition }
+  /admin/cache:
+    delete:
+      tags: [admin]
+      summary: Flush in-process graph cache
+      responses:
+        "204": { description: No Content }
+  /debug/last-queries:
+    get:
+      tags: [debug]
+      summary: Debug — last upstream queries
+      responses:
+        "200": { description: OK }
+        "404": { description: Not Found (when --enable-debug not set) }

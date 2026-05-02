@@ -335,3 +335,60 @@ Every served HTTP request SHALL emit exactly one structured log line via `log/sl
 
 - **WHEN** the server serves a request
 - **THEN** stdout receives a JSON object with the listed fields and a top-level `level` field set to `INFO` for non-error responses
+
+### Requirement: OpenAPI specification served by the API
+
+The server SHALL serve the auto-generated OpenAPI 3.0 specification at two routes:
+
+- `GET /openapi.yaml` SHALL return the YAML form with `Content-Type: application/yaml`.
+- `GET /openapi.json` SHALL return the JSON form with `Content-Type: application/json`.
+
+Both responses SHALL carry `Cache-Control: public, max-age=3600` and a stable `ETag` derived from the embedded spec contents. Both SHALL honour `If-None-Match` with `304 Not Modified`. The spec SHALL be generated from handler annotations via `swaggo/swag` v2; the generated `docs/swagger.{json,yaml,go}` artefacts SHALL be checked into the repository.
+
+#### Scenario: YAML spec served
+
+- **WHEN** a client sends `GET /openapi.yaml`
+- **THEN** the response is 200 with `Content-Type: application/yaml` and a body whose first non-empty line begins with `openapi:`
+
+#### Scenario: JSON spec served
+
+- **WHEN** a client sends `GET /openapi.json`
+- **THEN** the response is 200 with `Content-Type: application/json` and a body whose top-level object contains an `"openapi"` key
+
+#### Scenario: Conditional GET on the spec
+
+- **WHEN** a client repeats the request with `If-None-Match` matching the previous `ETag`
+- **THEN** the server returns 304 Not Modified
+
+### Requirement: Scalar API Reference UI served at /docs
+
+The server SHALL serve the Scalar API Reference UI at `GET /docs`, rendering the OpenAPI spec from `/openapi.yaml`. All Scalar JS / CSS assets MUST be vendored in the binary (embedded via `embed.FS`) and served from `/docs/assets/*`. The HTML page returned by `/docs` MUST reference those assets via relative paths so the UI renders correctly behind reverse proxies and in air-gapped environments without internet access.
+
+#### Scenario: /docs renders without external network
+
+- **WHEN** the server is reachable from a client and the host has no internet connectivity, and the client sends `GET /docs`
+- **THEN** the response is 200, `Content-Type: text/html`, and every `<script>` and `<link>` tag references either the same origin or a relative path; no `<script src="https://…">` or `<link href="https://…">` tag is present
+
+#### Scenario: Vendored bundle served at /docs/assets/
+
+- **WHEN** the HTML page references `/docs/assets/<file>` for the Scalar bundle
+- **THEN** `GET /docs/assets/<file>` returns 200 with appropriate `Content-Type` and `Cache-Control: public, max-age=86400, immutable`
+
+### Requirement: Route ↔ spec drift contract test
+
+The repository SHALL include a Go test that parses the embedded OpenAPI spec and asserts that:
+
+- Every `(method, path)` pair declared in the spec corresponds to a registered Gin route in `Server.Handler()`.
+- Every Gin route registered in `Server.Handler()` corresponds to a `(method, path)` pair declared in the spec, modulo an explicit allowlist of infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/admin/cache`, `/debug/last-queries`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*`).
+
+The test SHALL run on every PR via `go test ./...` and SHALL fail when annotations and routes drift.
+
+#### Scenario: Handler added without annotation
+
+- **WHEN** a contributor adds a new `/v1/<route>` handler without `// @Router` and `// @Summary` annotations
+- **THEN** running `go test ./internal/api/` fails with a clear message naming the undocumented route
+
+#### Scenario: Annotation pointing at removed route
+
+- **WHEN** a contributor removes a Gin route but leaves the corresponding `// @Router` annotation in place (and forgets to regenerate the spec)
+- **THEN** running `go test ./internal/api/` fails with a clear message naming the orphan documented path

@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/graph"
 )
@@ -60,26 +63,18 @@ func TestGolden_EdgeTypes(t *testing.T) {
 func compareGolden(t *testing.T, file string, body any) {
 	t.Helper()
 	got, err := json.MarshalIndent(body, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got = append(got, '\n')
 	path := filepath.Join("testdata", "golden", file)
 
 	if *update {
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(path, got, 0o644))
 		return
 	}
 
 	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden: %v (run with -update)", err)
-	}
-	if !bytes.Equal(want, got) {
-		t.Errorf("golden mismatch for %s\n--- want\n%s\n--- got\n%s", file, want, got)
-	}
+	require.NoErrorf(t, err, "read golden (run with -update)")
+	assert.Truef(t, bytes.Equal(want, got), "golden mismatch for %s\n--- want\n%s\n--- got\n%s", file, want, got)
 }
 
 // ----- canned scenarios -----------------------------------------------------

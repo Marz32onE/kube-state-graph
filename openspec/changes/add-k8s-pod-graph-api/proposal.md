@@ -13,7 +13,11 @@ Modern service meshes and OTLP collectors already emit pod-UID-resolved trace me
 - Expose the graph in **Cytoscape.js** JSON shape on `GET /v1/graph` and a **Grafana Node Graph** datasource shape on `GET /v1/graph/nodegraph` for free visual verification through a Grafana dashboard.
 - Provide cluster discovery (`GET /v1/clusters`) and a static edge-type catalogue (`GET /v1/edge-types`) so callers can populate filter dropdowns without reading documentation.
 - Use Go's standard library `log/slog` for structured logging across the server.
-- Ship a Kind-based integration-test harness with a single Kind cluster, VictoriaMetrics installed inside it, and a **fake fixtures producer** that injects synthetic multi-cluster `kube-state-metrics`-shaped and service-graph-shaped series straight into VictoriaMetrics. Real `kube-state-metrics` and a real OTLP / Alloy collector are explicitly out of scope for the harness; the fake fixtures keep the test focused on the API server and deterministic across runs.
+- Run **CI integration tests via testcontainers-go**: a real VictoriaMetrics container started from inside `go test`, with synthetic series injected directly via VM's `/api/v1/import/prometheus` endpoint, and the API server run in-process against the container's URL. No Kubernetes, no scrape pipeline — fast, deterministic, runs on every PR.
+- Ship a separate **manual visual-verification rig** (Kind cluster + VictoriaMetrics + fake-fixtures producer + Grafana Pod with the checked-in Node Graph dashboard) so an operator can boot the rig locally and eyeball the graph in Grafana. This rig is **not exercised by CI** — it exists for human verification only.
+- Enforce a curated **static-analysis suite** in CI covering complexity, security, error handling, performance, and modern Go idioms, plus **`govulncheck`** for dependency-vulnerability scanning on every PR.
+- Auto-generate an **OpenAPI 3.0 specification** from annotated handlers via `swaggo/swag` v2, served at `/openapi.yaml` and `/openapi.json`. Serve the **Scalar API Reference** UI at `/docs` with all assets **vendored** in the binary so the documentation works in air-gapped or otherwise isolated networks (no CDN dependency at view time). A drift gate in CI fails any PR where the generated spec is out of sync with the annotations.
+- Adopt **`stretchr/testify`** as the single test-assertion library across the whole repository, with `testify/suite` driving the testcontainers-based integration tests' shared container lifecycle and `testifylint` policing usage in the static-analysis suite.
 
 ## Capabilities
 
@@ -22,7 +26,10 @@ Modern service meshes and OTLP collectors already emit pod-UID-resolved trace me
 - `graph-api`: HTTP API surface (Gin) that returns the combined cross-cluster pod / node / PVC graph as Cytoscape.js JSON, with a Grafana Node Graph compatibility route, time-range parameters, filtering, partial-graph traversal, edge-type discovery, and cluster discovery.
 - `cluster-topology-source`: Reader that issues PromQL queries against centralised VictoriaMetrics for `kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels`, etc., honouring the per-source `cluster` external label and assembling per-cluster pod / node / PVC entities keyed by `(cluster, pod-uid)` and `(cluster, node-name)`.
 - `pod-service-graph`: Pod-UID-scoped service graph reader: PromQL queries against centralised VictoriaMetrics for `traces_service_graph_*` series labelled with `client_cluster`, `server_cluster`, `client_k8s_pod_uid`, `server_k8s_pod_uid`, joined with topology to produce typed edges between pod and node graph nodes — including cross-cluster edges where `client_cluster != server_cluster`.
-- `verification-harness`: Single-Kind-cluster harness with VictoriaMetrics installed in-cluster and a fake fixtures producer that emits multi-cluster `kube_*` and `traces_service_graph_*` series directly to VictoriaMetrics. Smoke script asserts the API server's responses end to end across single-cluster and cross-cluster scenarios.
+- `verification-harness`: Single-Kind-cluster **manual-only** rig with VictoriaMetrics installed in-cluster, a fake-fixtures producer that emits multi-cluster `kube_*` and `traces_service_graph_*` series, the `kube-state-graph` API server, and a Grafana Pod pre-provisioned with a Node Graph dashboard. The rig is run on demand by a human for visual verification of the rendered graph; it is not part of the CI test path.
+- `container-integration`: CI-driven integration tests using testcontainers-go to start a single VictoriaMetrics container per test package, inject synthetic series via VM's HTTP import API, run the API server in-process, and assert the wire shape and behaviour of every `/v1/*` endpoint against a real PromQL backend.
+- `static-analysis-suite`: Repository-level static-analysis policy: a curated `golangci-lint` configuration covering complexity, security, error-handling, performance, modern-Go-idiom checks, and `testifylint`; a `swag init` drift gate; plus `govulncheck` runs on every PR to detect dependency vulnerabilities. All run in CI and gate merges.
+- `api-docs`: Auto-generated OpenAPI 3.0 specification (via `swaggo/swag` v2) served at `/openapi.yaml` and `/openapi.json`, plus a Scalar API Reference UI served at `/docs` with all JS / CSS assets vendored into the Go binary so documentation works offline / air-gapped. A drift contract test asserts every Gin route is documented and every documented path exists.
 
 ### Modified Capabilities
 
@@ -32,6 +39,9 @@ Modern service meshes and OTLP collectors already emit pod-UID-resolved trace me
 
 - New Go module with Gin, Prometheus Go client, `github.com/dgraph-io/ristretto/v2`, `golang.org/x/sync/{singleflight,errgroup,semaphore}`, and `log/slog` as primary dependencies. VictoriaMetrics is consumed over HTTP via the Prometheus query API and is not vendored. No `client-go`, no informers, no Kubernetes API access.
 - New HTTP API surface (`/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types`, `/v1/livez`, `/v1/readyz`, `/metrics`, optional `/admin/cache`, `/debug/last-queries`) that downstream UIs and scripts will depend on.
-- New verification artefacts under the repo (Kind config, in-cluster VictoriaMetrics manifest, fake fixtures producer, smoke scripts, optional Grafana dashboard) used by CI / local verification.
+- New verification artefacts under the repo:
+  - `internal/integration/` — CI-driven testcontainers tests.
+  - Manual rig assets (Kind config, VictoriaMetrics manifests, fake-fixtures producer, Grafana Pod manifest + dashboard, local smoke script) — run on demand, not by CI.
+- New static-analysis artefacts (`.golangci.yml` enabling the curated linter set, CI workflow steps for `golangci-lint` and `govulncheck`).
 - Each upstream cluster operator becomes responsible for ensuring its scrape pipeline applies the `cluster` external label uniformly across `kube-state-metrics` and service-graph metrics. This is documented but not enforced in code.
 - No existing code paths or specs are modified.

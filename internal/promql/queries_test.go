@@ -1,47 +1,37 @@
 package promql
 
 import (
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestRender_AllowlistInjection(t *testing.T) {
 	got := Render(QPodInfo, time.Minute, "alpha|beta")
-	if !strings.Contains(got, `cluster=~"alpha|beta"`) {
-		t.Errorf("expected cluster regex selector, got %q", got)
-	}
+	assert.Contains(t, got, `cluster=~"alpha|beta"`)
 }
 
 func TestRender_ServiceGraphInjectsBothEndpoints(t *testing.T) {
 	got := Render(QServiceGraphTotal, time.Minute, "alpha|beta")
-	if !strings.Contains(got, `client_cluster=~"alpha|beta"`) {
-		t.Errorf("missing client_cluster selector: %q", got)
-	}
-	if !strings.Contains(got, `server_cluster=~"alpha|beta"`) {
-		t.Errorf("missing server_cluster selector: %q", got)
-	}
+	assert.Contains(t, got, `client_cluster=~"alpha|beta"`)
+	assert.Contains(t, got, `server_cluster=~"alpha|beta"`)
 }
 
 func TestRender_NoAllowlist(t *testing.T) {
 	got := Render(QPodInfo, time.Minute, "")
-	if strings.Contains(got, "cluster=~") {
-		t.Errorf("did not expect selector for empty allowlist, got %q", got)
-	}
+	assert.NotContains(t, got, "cluster=~")
 }
 
 func TestAllowlistRegex_EscapesMetacharacters(t *testing.T) {
 	got := AllowlistRegex([]string{"prod.east", "stg(eu)"})
-	if !strings.Contains(got, `prod\.east`) || !strings.Contains(got, `stg\(eu\)`) {
-		t.Errorf("escape failed: %q", got)
-	}
+	assert.Contains(t, got, `prod\.east`)
+	assert.Contains(t, got, `stg\(eu\)`)
 }
 
 func TestRender_NodeAddressesIncludesExternalIPSelector(t *testing.T) {
 	got := Render(QNodeAddresses, time.Minute, "")
-	if !strings.Contains(got, `type="ExternalIP"`) {
-		t.Errorf("expected type=\"ExternalIP\" selector, got %q", got)
-	}
+	assert.Contains(t, got, `type="ExternalIP"`)
 }
 
 func TestFormatDuration(t *testing.T) {
@@ -52,8 +42,6 @@ func TestFormatDuration(t *testing.T) {
 		90 * time.Second: "90s",
 	}
 	for in, want := range cases {
-		if got := FormatDuration(in); got != want {
-			t.Errorf("FormatDuration(%s) = %s, want %s", in, got, want)
-		}
+		assert.Equal(t, want, FormatDuration(in), "FormatDuration(%s)", in)
 	}
 }

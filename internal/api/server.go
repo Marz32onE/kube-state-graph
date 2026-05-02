@@ -65,6 +65,11 @@ func (s *Server) Handler() http.Handler {
 	r.GET("/readyz", s.handleReadyz)
 	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(s.metrics.Registry, promhttp.HandlerOpts{})))
 
+	r.GET("/openapi.yaml", s.handleOpenAPIYAML)
+	r.GET("/openapi.json", s.handleOpenAPIJSON)
+	r.GET("/docs", s.handleDocs)
+	r.GET("/docs/assets/*path", s.handleDocsAsset)
+
 	r.DELETE("/admin/cache", s.handleAdminCacheFlush)
 	if s.cfg.EnableDebug {
 		r.GET("/debug/last-queries", s.handleDebugLastQueries)

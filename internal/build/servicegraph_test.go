@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/prometheus/common/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/marz32one/kube-state-graph/internal/graph"
 )
@@ -37,9 +39,7 @@ func TestParseServiceGraph_DropsZeroRate(t *testing.T) {
 		Value: 0,
 	})
 	res := parseServiceGraph(vec, "", sampleTopology())
-	if len(res.Edges) != 0 {
-		t.Errorf("expected 0 edges for zero-rate series, got %d", len(res.Edges))
-	}
+	assert.Empty(t, res.Edges)
 }
 
 func TestParseServiceGraph_CrossClusterEdge(t *testing.T) {
@@ -55,17 +55,12 @@ func TestParseServiceGraph_CrossClusterEdge(t *testing.T) {
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, "", sampleTopology())
-	if len(res.Edges) != 1 {
-		t.Fatalf("expected 1 edge, got %d", len(res.Edges))
-	}
+	require.Len(t, res.Edges, 1)
 	e := res.Edges[0]
-	if e.Labels["client_cluster"] != "cluster-alpha" || e.Labels["server_cluster"] != "cluster-beta" {
-		t.Errorf("cluster labels mismatch: %v", e.Labels)
-	}
+	assert.Equal(t, "cluster-alpha", e.Labels["client_cluster"])
+	assert.Equal(t, "cluster-beta", e.Labels["server_cluster"])
 	for _, k := range []string{"rate", "p99_ms", "error_rate", "cross_cluster", "ghost"} {
-		if _, ok := e.Labels[k]; ok {
-			t.Errorf("unexpected label %q in v1 edge labels", k)
-		}
+		assert.NotContains(t, e.Labels, k, "unexpected label %q in v1 edge labels", k)
 	}
 }
 
@@ -82,32 +77,16 @@ func TestParseServiceGraph_ExternalSubstitution_ClientSide(t *testing.T) {
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, "://", sampleTopology())
-	if len(res.Edges) != 1 {
-		t.Fatalf("expected 1 edge, got %d", len(res.Edges))
-	}
-	if len(res.ExternalNodes) != 1 {
-		t.Fatalf("expected 1 external node, got %d", len(res.ExternalNodes))
-	}
+	require.Len(t, res.Edges, 1)
+	require.Len(t, res.ExternalNodes, 1)
 	ext := res.ExternalNodes[0]
-	if ext.NameValue != "http://api.example.com" {
-		t.Errorf("name: got %q, want http://api.example.com", ext.NameValue)
-	}
-	if ext.LabelsValue["pattern"] != "://" {
-		t.Errorf("pattern label missing or wrong: %v", ext.LabelsValue)
-	}
-	if _, ok := ext.LabelsValue["cluster"]; ok {
-		t.Errorf("external nodes must not carry cluster label")
-	}
+	assert.Equal(t, "http://api.example.com", ext.NameValue)
+	assert.Equal(t, "://", ext.LabelsValue["pattern"])
+	assert.NotContains(t, ext.LabelsValue, "cluster", "external nodes must not carry cluster label")
 	e := res.Edges[0]
-	if e.Source != "external/http://api.example.com" {
-		t.Errorf("source: got %q", e.Source)
-	}
-	if e.Labels["client_cluster"] != "" {
-		t.Errorf("client_cluster for external endpoint must be empty, got %q", e.Labels["client_cluster"])
-	}
-	if e.Labels["server_cluster"] != "cluster-alpha" {
-		t.Errorf("server_cluster: got %q", e.Labels["server_cluster"])
-	}
+	assert.Equal(t, "external/http://api.example.com", e.Source)
+	assert.Empty(t, e.Labels["client_cluster"], "client_cluster for external endpoint must be empty")
+	assert.Equal(t, "cluster-alpha", e.Labels["server_cluster"])
 }
 
 func TestParseServiceGraph_PatternEmpty_DisablesRule(t *testing.T) {
@@ -123,15 +102,9 @@ func TestParseServiceGraph_PatternEmpty_DisablesRule(t *testing.T) {
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, "", sampleTopology())
-	if len(res.ExternalNodes) != 0 {
-		t.Errorf("expected no external nodes when pattern is empty, got %d", len(res.ExternalNodes))
-	}
-	if len(res.Edges) != 1 {
-		t.Fatalf("expected 1 edge, got %d", len(res.Edges))
-	}
-	if res.Edges[0].Source != "cluster-alpha/abc" {
-		t.Errorf("source: got %q, want cluster-alpha/abc (pod resolution)", res.Edges[0].Source)
-	}
+	assert.Empty(t, res.ExternalNodes)
+	require.Len(t, res.Edges, 1)
+	assert.Equal(t, "cluster-alpha/abc", res.Edges[0].Source)
 }
 
 func TestParseServiceGraph_GhostFallback(t *testing.T) {
@@ -147,23 +120,15 @@ func TestParseServiceGraph_GhostFallback(t *testing.T) {
 		Value: 1,
 	})
 	res := parseServiceGraph(vec, "", sampleTopology())
-	if len(res.SynthPods) != 1 {
-		t.Fatalf("expected 1 synthesised pod, got %d", len(res.SynthPods))
-	}
+	require.Len(t, res.SynthPods, 1)
 	sp := res.SynthPods[0]
-	if sp.IDValue != "cluster-beta/missing-uid" {
-		t.Errorf("id: got %q", sp.IDValue)
-	}
-	if _, ok := sp.LabelsValue["ghost"]; ok {
-		t.Errorf("ghost label must NOT be set in v1")
-	}
+	assert.Equal(t, "cluster-beta/missing-uid", sp.IDValue)
+	assert.NotContains(t, sp.LabelsValue, "ghost", "ghost label must NOT be set in v1")
 }
 
 func TestParseServiceGraph_EmptyVectorIsNotAnError(t *testing.T) {
 	res := parseServiceGraph(nil, "", sampleTopology())
-	if len(res.Edges) != 0 {
-		t.Errorf("expected zero edges, got %d", len(res.Edges))
-	}
+	assert.Empty(t, res.Edges)
 }
 
 func TestParseServiceGraph_NoForbiddenNumericLabels(t *testing.T) {
@@ -184,9 +149,7 @@ func TestParseServiceGraph_NoForbiddenNumericLabels(t *testing.T) {
 	})
 	for _, e := range res.Edges {
 		for _, k := range []string{"rate", "p99_ms", "error_rate"} {
-			if _, ok := e.Labels[k]; ok {
-				t.Errorf("v1 edges must not carry numeric label %q", k)
-			}
+			assert.NotContains(t, e.Labels, k)
 		}
 	}
 }

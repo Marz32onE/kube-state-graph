@@ -1,0 +1,5 @@
+# SHA-256 of the upstream @scalar/api-reference standalone bundle pinned in VERSION.
+# Populated by scripts/refresh-docs-ui.sh after first successful download.
+# Format:
+#   <sha256-hex>  scalar.js
+#   <sha256-hex>  scalar.css

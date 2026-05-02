@@ -152,5 +152,66 @@
 
 - [x] 17.1 Run `openspec verify "add-k8s-pod-graph-api"` and confirm every requirement maps to an implementation file or test.
 - [ ] 17.2 Confirm `go test ./... -cover` reports ≥ 80 % coverage on `internal/build`, `internal/graph`, `internal/cache`, `internal/api`. _(Current: 41.4 % across the four packages; deferred — needs additional handler / orchestrator tests.)_
-- [ ] 17.3 Run the harness bootstrap + smoke script locally; record the resulting Grafana panel screenshot in `docs/`. _(Requires Docker + Kind on the host; not exercised in this session.)_
+- [ ] 17.3 Run the manual Grafana rig locally; record the resulting Grafana panel screenshot in `docs/`. _(Requires Docker + Kind on the host; not exercised in this session.)_
 - [ ] 17.4 Tag a `v0.1.0` release once all preceding tasks are checked.
+
+## 18. Container integration tests (capability: container-integration)
+
+- [x] 18.1 Add `github.com/testcontainers/testcontainers-go` (and its `wait` subpkg) as a direct test dependency.
+- [x] 18.2 Create `internal/integration/` package with `VMSuite` (`testify/suite.Suite`) whose `SetupSuite` starts a single VictoriaMetrics container (image pinned `victoriametrics/victoria-metrics:v1.107.0`) and `TearDownSuite` tears it down.
+- [x] 18.3 Implement `IngestExpFmt(exposition string)` on `VMSuite` that POSTs to `<vm.URL>/api/v1/import/prometheus`, plus `WaitForSeries(query, budget)` polling helper.
+- [x] 18.4 Implement readiness wait that polls VM `/-/ready` until 200 within a configurable budget (default 10 s); fail with `vm_not_ready` on timeout.
+- [x] 18.5 Implement an in-process API-server-under-test factory (`StartAPIServer(configure func(*config.Config)) *httptest.Server`) on `VMSuite` that wires `api.New(...).Handler()`.
+- [x] 18.6 Author absolute-timestamp fixtures and corresponding tests for: single-cluster `pod-runs-on-node`, cross-cluster `pod-calls-pod`, `KSG_EXTERNAL_NAME_PATTERN` substitution producing an external node, ETag round-trip 304, `X-Cache: MISS` → `HIT`, `/v1/clusters` discovery, `/v1/edge-types` shape.
+- [x] 18.7 Per-test discriminator: each `SetupTest` writes fixtures labelled with `test="<TestName>"` so concurrent runs don't collide.
+- [x] 18.8 CI workflow runs `go test ./...` on `ubuntu-latest`; the suite uses `SkipIfDockerUnavailable(t)` to skip cleanly on developer machines / runners without Docker.
+- [x] 18.9 `httptest.Server` mock layer retained for sub-second inner-loop dev; container layer adds value at PR-feedback level. Decision documented in design D20.
+
+## 19. Static-analysis suite (capability: static-analysis-suite)
+
+- [x] 19.1 Update `.golangci.yml` to enable the curated linter set: `errcheck`, `gosimple`, `govet`, `ineffassign`, `staticcheck`, `unused`, `gocritic`, `exhaustive`, `copyloopvar`, `intrange`, `revive`, `errorlint`, `nilerr`, `gosec`, `gocyclo`, `gocognit`, `funlen`, `prealloc`, `bodyclose`, `unconvert`, `misspell`, `gofmt`, `goimports`, `dupl`, `unparam`, `mnd`.
+- [x] 19.2 Configure complexity caps: `gocyclo` ≤ 15, `gocognit` ≤ 20, `funlen` ≤ 100 lines / 50 statements; relax for `_test.go` files.
+- [x] 19.3 Add an `excludes` block for known-safe patterns (e.g., flag-binding magic numbers in `internal/config/config.go`) and document the rationale alongside each entry.
+- [x] 19.4 Add a `vuln` CI job that installs `govulncheck` and runs `govulncheck ./...`; gate merges on its success.
+- [x] 19.5 Update the CI workflow so `lint`, `vuln`, and `test` are independent jobs (no `needs` edges) running in parallel.
+- [x] 19.6 Add `make lint`, `make vuln`, `make test` Makefile targets that mirror the CI configuration.
+- [ ] 19.7 Run the full lint + vuln suite against the existing source tree; fix or `//nolint:<name>` (with rationale comments + tracked issues) the resulting findings. _(Deferred — `golangci-lint` not installed in this session; lint output cannot be triaged here.)_
+- [ ] 19.8 Document the suite in `docs/operations.md` (link to `static-analysis-suite/spec.md` for the authoritative requirements).
+
+## 20. Manual rig polish (capability: verification-harness — modified)
+
+- [x] 20.1 Move integration-only assets out of CI-implying paths: `deploy/kind/` → `local/grafana/`; smoke script → `local/grafana/smoke.sh`. `tests/harness/vm-fixtures/` retained (Go program; bootstrap references it).
+- [x] 20.2 Add a Grafana Pod Deployment + Service to the rig manifests. Pin the Grafana image tag (`grafana/grafana:11.4.0`).
+- [x] 20.3 Add a Grafana datasource provisioning ConfigMap pointing at the in-cluster `kube-state-graph` Service via the JSON / Infinity datasource.
+- [x] 20.4 Add a Grafana dashboards provisioning ConfigMap that auto-imports `kube-state-graph-nodegraph.json` on Grafana boot.
+- [x] 20.5 Document Grafana bootstrap credentials, NodePort, and expected URLs (banner in `bootstrap.sh`).
+- [x] 20.6 Update `Makefile` targets: `local-up`/`local-down`/`local-smoke` aliases alongside the legacy `kind-*` / `smoke` names.
+- [x] 20.7 Remove any CI workflow steps that invoke the manual rig (the user-modified `.github/workflows/ci.yml` already does this; verified).
+- [ ] 20.8 Capture a Grafana panel screenshot post-bootstrap and commit it to `docs/grafana-screenshot.png`; reference it from `README.md`. _(Requires running the rig on a Docker host; deferred.)_
+
+## 21. OpenAPI generation + offline Scalar UI (capability: api-docs / graph-api)
+
+- [x] 21.1 Install `swag` v2 toolchain (`go install github.com/swaggo/swag/v2/cmd/swag@latest`); document the install step in `Makefile` (auto-installs on first `make docs`).
+- [x] 21.2 Add document-level annotations on `cmd/kube-state-graph/main.go`: `@title`, `@version v1`, `@license.name Apache 2.0`, `@BasePath`, `@host` placeholder.
+- [x] 21.3 Annotate every Gin handler in `internal/api/handlers.go` and `internal/api/docs.go` with `@Summary`, `@Description`, `@Tags`, `@Param` (per query parameter), `@Success` / `@Failure`, `@Router`. Covers all `/v1/*`, `/livez`, `/readyz`, `/metrics`, `/admin/cache`, `/debug/last-queries`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*`.
+- [x] 21.4 Error-envelope component (`errorBody`) referenced from every 4xx / 5xx response in annotations.
+- [x] 21.5 Add `make docs` target that runs `swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal`; placeholder `docs/swagger.{json,yaml}` checked in.
+- [x] 21.6 Add `make check-docs` target: `make docs` followed by `git diff --exit-code docs/`.
+- [x] 21.7 Add CI job (`docs-drift`) that runs the same; fails PRs with annotation drift.
+- [x] 21.8 Implement `/openapi.yaml` and `/openapi.json` Gin handlers serving the embedded spec via `embed.FS`, with `Cache-Control: max-age=3600`, ETag, and `If-None-Match` 304.
+- [x] 21.9 Vendor the Scalar API Reference standalone bundle into `internal/api/static/scalar/`. Pin via `VERSION`; placeholder bundle ships so the binary builds offline; `SHA256.expected` populated by the refresh script on first run.
+- [x] 21.10 Add `make refresh-docs-ui` target invoking `scripts/refresh-docs-ui.sh`: downloads pinned Scalar version, validates SHA-256, writes bundle into `internal/api/static/scalar/`.
+- [x] 21.11 Implement the `/docs` Gin handler: returns embedded HTML referencing `/docs/assets/scalar.js` (relative path) and `/openapi.yaml`. Test `TestDocs_OfflineInvariant` asserts no `https://` references in the served HTML.
+- [x] 21.12 Implement the `/docs/assets/*path` Gin handler serving embedded files with `Cache-Control: public, max-age=86400, immutable`. Includes a path-traversal guard.
+- [ ] 21.13 Implement the route ↔ spec drift contract test in `internal/api/`: parse `docs/swagger.json` via `kin-openapi`, walk `engine.Routes()`, assert bidirectional set-equality modulo allowlist. _(Deferred — adds `kin-openapi` dependency; placeholder spec covers all routes manually for now.)_
+- [ ] 21.14 Add `docs/api.md` cross-link to the live `/docs` viewer; add a screenshot of the rendered Scalar UI. _(Screenshot needs running server + real Scalar bundle; deferred with 17.3.)_
+- [x] 21.15 Add an offline-rendering integration test: `TestDocs_OfflineInvariant` (no `https://` script / link references) plus `TestDocs_AssetsServed` (200, non-empty body) plus `TestDocs_AssetsRejectsTraversal`.
+
+## 22. testify migration (capability: static-analysis-suite + container-integration)
+
+- [x] 22.1 Add `github.com/stretchr/testify` and `github.com/stretchr/testify/suite` as direct test dependencies; run `go mod tidy`.
+- [x] 22.2 Add `testifylint` to `.golangci.yml` curated linters (D21) with `enable-all: true`.
+- [x] 22.3 Refactor every existing `_test.go` file under `internal/` to use `assert` / `require` from testify. All 57 prior tests preserved; new docs / integration tests follow the same convention.
+- [x] 22.4 Integration tests in `internal/integration/` are `suite.Suite`-based via `VMSuite`: `SetupSuite` starts VM container, `TearDownSuite` stops it, `SetupTest` writes discriminator-labelled fixtures.
+- [x] 22.5 Run `make test` and (when available) `make lint` after migration; all 62 tests pass after migration.
+- [ ] 22.6 Update CONTRIBUTING / docs to state the testify-only convention: no `t.Errorf` / bare `t.Fatal` in new tests. _(Deferred — minor doc task.)_

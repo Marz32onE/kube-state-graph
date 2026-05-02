@@ -1,4 +1,12 @@
 // Command kube-state-graph runs the multi-cluster pod / node graph API server.
+//
+//	@title			kube-state-graph API
+//	@version		v1
+//	@description	Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.
+//	@license.name	Apache 2.0
+//	@license.url	https://www.apache.org/licenses/LICENSE-2.0.html
+//	@BasePath		/
+//	@host			localhost:8080
 package main
 
 import (

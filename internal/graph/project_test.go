@@ -3,6 +3,8 @@ package graph
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func sampleGraph() *Graph {
@@ -29,80 +31,54 @@ func sampleGraph() *Graph {
 }
 
 func TestProject_NoFilter(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{})
-	if len(v.Nodes) != 5 {
-		t.Errorf("nodes: got %d, want 5", len(v.Nodes))
-	}
-	if len(v.Edges) != 5 {
-		t.Errorf("edges: got %d, want 5", len(v.Edges))
-	}
+	v := Project(sampleGraph(), Scope{})
+	assert.Len(t, v.Nodes, 5)
+	assert.Len(t, v.Edges, 5)
 }
 
 func TestProject_ClusterFilter(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{Clusters: map[string]struct{}{"cluster-alpha": {}}})
+	v := Project(sampleGraph(), Scope{Clusters: map[string]struct{}{"cluster-alpha": {}}})
 	for _, n := range v.Nodes {
-		if c := n.Labels()["cluster"]; c != "cluster-alpha" {
-			t.Errorf("unexpected cluster %q in filtered view", c)
-		}
+		assert.Equal(t, "cluster-alpha", n.Labels()["cluster"])
 	}
 }
 
 func TestProject_NamespaceFilter(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{Namespaces: map[string]struct{}{"shop": {}}})
+	v := Project(sampleGraph(), Scope{Namespaces: map[string]struct{}{"shop": {}}})
 	for _, n := range v.Nodes {
-		if n.Type() == NodeTypePod && n.Labels()["namespace"] != "shop" {
-			t.Errorf("unexpected namespace %q", n.Labels()["namespace"])
+		if n.Type() == NodeTypePod {
+			assert.Equal(t, "shop", n.Labels()["namespace"])
 		}
 	}
 }
 
 func TestProject_EdgeTypeFilter(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{EdgeTypes: map[EdgeType]struct{}{EdgeTypePodCallsPod: {}}})
+	v := Project(sampleGraph(), Scope{EdgeTypes: map[EdgeType]struct{}{EdgeTypePodCallsPod: {}}})
 	for _, e := range v.Edges {
-		if e.Type != EdgeTypePodCallsPod {
-			t.Errorf("unexpected edge type %q", e.Type)
-		}
+		assert.Equal(t, EdgeTypePodCallsPod, e.Type)
 	}
-	if len(v.Edges) != 2 {
-		t.Errorf("expected 2 pod-calls-pod edges, got %d", len(v.Edges))
-	}
+	assert.Len(t, v.Edges, 2)
 }
 
 func TestProject_TraversalBoundedByDepth(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{Root: "cluster-alpha/p1", Depth: 1, Direction: DirectionOut})
+	v := Project(sampleGraph(), Scope{Root: "cluster-alpha/p1", Depth: 1, Direction: DirectionOut})
 	ids := map[string]bool{}
 	for _, n := range v.Nodes {
 		ids[n.ID()] = true
 	}
-	// depth=1 from p1 (out): p1, worker-0, p2, p3
-	want := []string{"cluster-alpha/p1", "cluster-alpha/worker-0", "cluster-alpha/p2", "cluster-beta/p3"}
-	for _, w := range want {
-		if !ids[w] {
-			t.Errorf("expected %s in traversal result, missing", w)
-		}
+	for _, want := range []string{"cluster-alpha/p1", "cluster-alpha/worker-0", "cluster-alpha/p2", "cluster-beta/p3"} {
+		assert.Truef(t, ids[want], "expected %s in traversal result", want)
 	}
 }
 
 func TestProject_UnknownRootEmpty(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{Root: "does-not-exist", Depth: 2, Direction: DirectionBoth})
-	if len(v.Nodes) != 0 || len(v.Edges) != 0 {
-		t.Errorf("expected empty result, got %d nodes, %d edges", len(v.Nodes), len(v.Edges))
-	}
+	v := Project(sampleGraph(), Scope{Root: "does-not-exist", Depth: 2, Direction: DirectionBoth})
+	assert.Empty(t, v.Nodes)
+	assert.Empty(t, v.Edges)
 }
 
 func TestProject_DepthZero(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{Root: "cluster-alpha/p1", Depth: 0, Direction: DirectionBoth})
-	if len(v.Nodes) != 1 {
-		t.Errorf("expected 1 node at depth 0, got %d", len(v.Nodes))
-	}
-	if v.Nodes[0].ID() != "cluster-alpha/p1" {
-		t.Errorf("unexpected root node %q", v.Nodes[0].ID())
-	}
+	v := Project(sampleGraph(), Scope{Root: "cluster-alpha/p1", Depth: 0, Direction: DirectionBoth})
+	assert.Len(t, v.Nodes, 1)
+	assert.Equal(t, "cluster-alpha/p1", v.Nodes[0].ID())
 }
