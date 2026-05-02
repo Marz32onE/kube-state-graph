@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: vm-fixtures
-          image: kube-state-graph/vm-fixtures:dev
+          image: localhost/kube-state-graph/vm-fixtures:dev
           imagePullPolicy: Never
           args:
             - "--listen-addr=:8080"

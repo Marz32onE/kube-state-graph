@@ -11,7 +11,7 @@ build:
 
 fixtures:
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/vm-fixtures ./tests/harness/vm-fixtures
+	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/vm-fixtures ./cmd/vm-fixtures
 
 test:
 	go test ./... -count=1 -race -shuffle=on
@@ -32,13 +32,14 @@ cover:
 	go tool cover -func=coverage.out | tail -1
 
 docs:
-	@command -v swag >/dev/null 2>&1 || { echo "installing swag v2..."; go install github.com/swaggo/swag/v2/cmd/swag@latest; }
-	swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=false
+	go tool swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=false
+	@cp docs/swagger.yaml internal/api/static/openapi/openapi.yaml
+	@cp docs/swagger.json internal/api/static/openapi/openapi.json
 
 check-docs: docs
-	@if ! git diff --quiet -- docs/; then \
-		echo "FAIL: docs/ is out of sync. Run 'make docs' and commit."; \
-		git --no-pager diff -- docs/; \
+	@if ! git diff --quiet -- docs/ internal/api/static/openapi/; then \
+		echo "FAIL: docs are out of sync. Run 'make docs' and commit."; \
+		git --no-pager diff -- docs/ internal/api/static/openapi/; \
 		exit 1; \
 	fi
 

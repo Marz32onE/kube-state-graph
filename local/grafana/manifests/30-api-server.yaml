@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: server
-          image: kube-state-graph/server:dev
+          image: localhost/kube-state-graph/server:dev
           imagePullPolicy: Never
           env:
             - name: KSG_PROM_URL

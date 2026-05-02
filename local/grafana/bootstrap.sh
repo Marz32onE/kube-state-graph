@@ -5,6 +5,11 @@ CLUSTER_NAME=kube-state-graph
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 NAMESPACE=kube-state-graph
+DOCKER="${DOCKER:-$(command -v docker || command -v podman)}"
+if [[ -z "$DOCKER" ]]; then
+  echo "ERROR: neither docker nor podman found on PATH" >&2
+  exit 1
+fi
 
 echo "==> Creating Kind cluster $CLUSTER_NAME"
 if ! kind get clusters | grep -q "^$CLUSTER_NAME$"; then
@@ -15,8 +20,8 @@ fi
 
 echo "==> Building images"
 (cd "$REPO_ROOT" && make build fixtures)
-docker build -t kube-state-graph/server:dev    -f "$REPO_ROOT/deploy/docker/server.Dockerfile"      "$REPO_ROOT"
-docker build -t kube-state-graph/vm-fixtures:dev -f "$REPO_ROOT/deploy/docker/vm-fixtures.Dockerfile" "$REPO_ROOT"
+"$DOCKER" build -t kube-state-graph/server:dev    -f "$REPO_ROOT/deploy/docker/server.Dockerfile"      "$REPO_ROOT"
+"$DOCKER" build -t kube-state-graph/vm-fixtures:dev -f "$REPO_ROOT/deploy/docker/vm-fixtures.Dockerfile" "$REPO_ROOT"
 
 echo "==> Loading images into Kind"
 kind load docker-image kube-state-graph/server:dev    --name "$CLUSTER_NAME"
@@ -28,7 +33,7 @@ kubectl apply -f "$SCRIPT_DIR/manifests/"
 echo "==> Generating fixtures ConfigMap"
 kubectl -n "$NAMESPACE" delete configmap vm-fixtures-data --ignore-not-found
 kubectl -n "$NAMESPACE" create configmap vm-fixtures-data \
-  --from-file=fixtures.yaml="$REPO_ROOT/tests/harness/vm-fixtures/fixtures.yaml"
+  --from-file=fixtures.yaml="$SCRIPT_DIR/fixtures/fixtures.yaml"
 
 echo "==> Loading Grafana dashboard ConfigMap"
 kubectl -n "$NAMESPACE" delete configmap grafana-dashboard-nodegraph --ignore-not-found

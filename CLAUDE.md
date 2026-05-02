@@ -10,8 +10,9 @@ VictoriaMetrics. Edges between pods come from `traces_service_graph_*` metrics
 and may cross cluster boundaries.
 
 The repo ships **only the API server**. `kube-state-metrics`, the service-graph
-producer, VictoriaMetrics, and Kind are external dependencies; the in-repo
-`tests/harness/` directory is integration scaffolding, not deliverables.
+producer, VictoriaMetrics, and Kind are external dependencies. The in-repo
+`cmd/vm-fixtures` binary and `local/grafana/` Kind rig are local-only scaffolding,
+not deliverables.
 
 ## Common commands
 
@@ -19,7 +20,7 @@ producer, VictoriaMetrics, and Kind are external dependencies; the in-repo
 # Build / test loop
 make build                                  # ./bin/kube-state-graph
 make fixtures                               # ./bin/vm-fixtures
-make test                                   # go test ./...
+make test                                   # go test ./... -count=1 -race -shuffle=on
 make vet                                    # go vet
 make lint                                   # golangci-lint (must be installed)
 make cover                                  # go test ./... -coverprofile=coverage.out
@@ -31,10 +32,11 @@ go test ./internal/api/ -run TestGolden -v
 # Update golden files (after changing serialiser shape on purpose)
 go test ./internal/api/ -update -run Golden
 
-# Integration harness (requires Docker + Kind on host)
-make kind-up                                # boots Kind, builds + loads images, applies manifests
-make smoke                                  # runs tests/smoke/run.sh against the running cluster
-make kind-down
+# Manual Grafana visual rig (NOT run by CI; requires Docker + Kind on host).
+# Aliases: kind-up == local-up, kind-down == local-down, smoke == local-smoke.
+make kind-up                                # ./local/grafana/bootstrap.sh
+make smoke                                  # ./local/grafana/smoke.sh
+make kind-down                              # ./local/grafana/teardown.sh
 
 # Run binary directly
 ./bin/kube-state-graph --prom-url=http://localhost:8428 --listen-addr=:8080
@@ -130,7 +132,8 @@ methods — never through type switches in the serialiser.
 | Component | `internal/api/server_test.go` | Gin handlers against a `httptest.Server` mocking the Prometheus HTTP API. |
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | Wire-format snapshots; run with `-update` to refresh. |
 | Property | `internal/graph/property_test.go` | Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
-| Integration | `tests/smoke/run.sh` | Live HTTP against Kind harness with multi-cluster fixtures. |
+| Integration | `internal/integration/*` | testcontainers-go VictoriaMetrics suite; gated `SkipIfDockerUnavailable` — skips locally without Docker, runs full on CI (ubuntu-latest). |
+| Manual rig | `local/grafana/smoke.sh` | curl checks against the Kind + Grafana visual harness; not executed by CI. |
 
 ## OpenSpec workflow
 
@@ -167,4 +170,6 @@ When making non-trivial behaviour changes, update the relevant artifact
   rejected — see D1 / D16. Tests and harness tooling are exempt.
 - Don't add dependencies casually. Current direct deps: Gin, Prometheus
   client_golang, Ristretto v2, google/uuid, cespare/xxhash v2, golang.org/x/sync,
-  yaml.v3 (vm-fixtures only). Adding more requires a design-doc note.
+  yaml.v3 (cmd/vm-fixtures only), testify v1.10.0 (test-only),
+  testcontainers-go (integration test-only), swaggo/swag/v2 (codegen tool, not
+  imported at runtime). Adding more requires a design-doc note.
