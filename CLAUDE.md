@@ -1,0 +1,170 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project purpose
+
+`kube-state-graph` is a Go HTTP API that returns a unified pod / node / PVC graph
+for **one or more Kubernetes clusters** read from a single centralised
+VictoriaMetrics. Edges between pods come from `traces_service_graph_*` metrics
+and may cross cluster boundaries.
+
+The repo ships **only the API server**. `kube-state-metrics`, the service-graph
+producer, VictoriaMetrics, and Kind are external dependencies; the in-repo
+`tests/harness/` directory is integration scaffolding, not deliverables.
+
+## Common commands
+
+```bash
+# Build / test loop
+make build                                  # ./bin/kube-state-graph
+make fixtures                               # ./bin/vm-fixtures
+make test                                   # go test ./...
+make vet                                    # go vet
+make lint                                   # golangci-lint (must be installed)
+make cover                                  # go test ./... -coverprofile=coverage.out
+
+# Single test
+go test ./internal/graph/ -run TestProject_ClusterFilter -v
+go test ./internal/api/ -run TestGolden -v
+
+# Update golden files (after changing serialiser shape on purpose)
+go test ./internal/api/ -update -run Golden
+
+# Integration harness (requires Docker + Kind on host)
+make kind-up                                # boots Kind, builds + loads images, applies manifests
+make smoke                                  # runs tests/smoke/run.sh against the running cluster
+make kind-down
+
+# Run binary directly
+./bin/kube-state-graph --prom-url=http://localhost:8428 --listen-addr=:8080
+```
+
+Module path: `github.com/marz32one/kube-state-graph`. Go 1.22+.
+
+## Architecture (the 90 % you need to know)
+
+### Request lifecycle
+
+```
+HTTP /v1/graph?start=&end=&...
+   │
+   ▼
+parseGraphRequest        ── cache.Bucket(start, end, now) → (StartActual, EndActual, BucketSeconds, TTL)
+   │                        cache.Key(bucket) → uint64   (time-only key)
+   ▼
+Orchestrator.Resolve(ctx, key, bucket)
+   ├─ cache.Get(key)               ── HIT  → return *Graph
+   └─ singleflight.Do(key, …)
+         ├─ semaphore.TryAcquire   ── overflow → 503 capacity
+         ├─ context.WithTimeout    ── exceeded → 503 timeout
+         ├─ Builder.Build(ctx, window, end)
+         │     ├─ probeClusterSize        ── overflow → 503 cluster_too_large
+         │     ├─ ReadTopology  (errgroup of 5 PromQL queries in parallel)
+         │     ├─ ReadServiceGraph (1 PromQL, joined with topology)
+         │     └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
+         └─ cache.Set(key, *Graph, cost, TTL)
+   ▼
+graph.Project(g, scope)            ── filters + traversal applied here, NOT during build
+   ▼
+serialiseCytoscape / serialiseGrafanaNodeGraph
+   ▼
+ETag = sha256(body); Cache-Control = public, max-age=<from time class>
+```
+
+### Load-bearing design rules
+
+These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
+(D1–D19) before changing any of them.
+
+- **Cache key is time-only** (`start_bucket, end_bucket, bucket_size`). Filters
+  (`cluster`, `namespace`, `node`, `edge_type`, traversal) are applied at
+  response time over the cached `*Graph`. Adding filters to the key would
+  fragment the cache catastrophically — D5/D7.
+- **Time-bucketing classes**: `live` (15s/30s TTL), `recent` (60s/5m), `historical`
+  (5m/1h), `frozen` (5m/24h). Both `start` and `end` are floored to the bucket;
+  callers receive `start_actual`/`end_actual` so they know what window they got.
+- **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
+  no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,
+  `error_rate`) and boolean flags (`cross_cluster`, `ghost`) are **deferred to a
+  future typed struct field**. Cross-cluster status is derived by string
+  comparison of `labels.client_cluster` vs `labels.server_cluster` — D9.
+- **Edge IDs are UUIDv5** with a fixed compiled-in namespace (`graph.edgeNamespace`)
+  and the canonical input `<type>|<source>|<target>`. Stable across rebuilds —
+  required for golden tests and HTTP `ETag` reproducibility. Bumping the
+  namespace UUID is a v2 break.
+- **Cluster-scoped IDs everywhere.** Pods: `<cluster>/<uid>`, K8s nodes:
+  `<cluster>/<node>`, PVCs: `<cluster>/<namespace>/<claim>`, externals:
+  `external/<value>`. Node names are not globally unique without the prefix.
+- **External-endpoint substitution rule** (`KSG_EXTERNAL_NAME_PATTERN`): when set
+  and the substring matches the upstream `client` or `server` label, that
+  endpoint becomes a `type="external"` node with `id="external/<value>"` and
+  the verbatim label as `name`. Per-endpoint independent — both sides of a
+  single edge can be evaluated separately. Edge `type` stays `pod-calls-pod`.
+  External endpoints get `client_cluster` / `server_cluster = ""`.
+- **Allowlist injection** is the only filter pushed to PromQL. `--clusters-allowlist`
+  injects `{cluster=~"a|b|c"}` (and `client_cluster=~/server_cluster=~` for
+  service-graph queries). All caller-supplied filters are projection-time only.
+- **Ristretto async-write race with singleflight**: the `singleflight.Do`
+  callback returns the *built `*Graph` value*, not a "go re-read the cache"
+  signal. Waiters see the same `*Graph`. We additionally call `cache.Wait()`
+  inside `cache.Set` so the entry is visible to the *next* request. Don't
+  rewrite this without re-reading D6.
+- **`/v1/edge-types` reads from `graph.EdgeTypes` only** — a single in-code
+  registry shared with the builder. Adding an edge type = update both the
+  builder and the registry in the same change; the API can never list a type
+  the builder cannot produce.
+
+### Sealed graph types
+
+`graph.GraphNode` is a sealed interface (`isGraphNode()` unexported). Concrete
+types: `PodNode`, `K8sNode`, `PVCNode`, `ExternalNode`. All four expose
+`ID()`, `Name()`, `Type()`, `Labels()`. Serialisation goes through these
+methods — never through type switches in the serialiser.
+
+### Test stack layers
+
+| Layer | Where | What it covers |
+|---|---|---|
+| Unit | `internal/{graph,cache,build,promql,config}/*_test.go` | Pure functions: parsers, joins, projection, cache key, edge IDs. |
+| Component | `internal/api/server_test.go` | Gin handlers against a `httptest.Server` mocking the Prometheus HTTP API. |
+| Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | Wire-format snapshots; run with `-update` to refresh. |
+| Property | `internal/graph/property_test.go` | Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
+| Integration | `tests/smoke/run.sh` | Live HTTP against Kind harness with multi-cluster fixtures. |
+
+## OpenSpec workflow
+
+Spec-driven changes live under `openspec/changes/<name>/` with four artifacts
+in dependency order: **proposal → design + specs → tasks**. The
+`/opsx:*` commands and the `openspec` CLI manage the lifecycle.
+
+Common openspec commands:
+
+```bash
+openspec list                                       # all active changes
+openspec status --change "<name>"                   # artifact progress + tasks
+openspec validate "<name>"                          # checks structure
+openspec instructions <artifact> --change "<name>" --json   # what to write
+openspec verify "<name>"                            # before archive
+openspec archive "<name>"                           # promote to openspec/specs/
+```
+
+The active change for the v1 implementation is **`add-k8s-pod-graph-api`**.
+When making non-trivial behaviour changes, update the relevant artifact
+(usually `specs/<capability>/spec.md` or `design.md`) before touching code.
+
+## Repository conventions
+
+- All HTTP routes live under `/v1/`. Adding a route means committing to keeping
+  it for v1's lifetime. Schema changes that aren't additive are v2 — see D14.
+- Self-metric names are stable contracts: `kube_state_graph_*`. Adding a label
+  to an existing metric is a contract change; coordinate with `docs/operations.md`.
+- Errors returned to HTTP carry a typed `build.Reason` mapped to a fixed
+  status + `reason` string in `internal/api/errors.go`. Adding new failure
+  modes means adding both a `Reason` constant and an entry in `mapBuildError`.
+- Don't import `k8s.io/client-go` or any Kubernetes API into the API server.
+  All cluster facts come from VictoriaMetrics. Informers were considered and
+  rejected — see D1 / D16. Tests and harness tooling are exempt.
+- Don't add dependencies casually. Current direct deps: Gin, Prometheus
+  client_golang, Ristretto v2, google/uuid, cespare/xxhash v2, golang.org/x/sync,
+  yaml.v3 (vm-fixtures only). Adding more requires a design-doc note.

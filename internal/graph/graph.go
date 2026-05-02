@@ -1,0 +1,89 @@
+package graph
+
+import (
+	"sort"
+	"time"
+)
+
+// Graph is the immutable, in-memory multi-cluster graph for one time window.
+// Once constructed, all callers MUST treat it as read-only — projection
+// returns views over it without mutation.
+type Graph struct {
+	BuiltAt time.Time
+
+	NodesByID map[string]GraphNode
+	Edges     []*Edge
+
+	// Forward[id] = edges where Source == id.
+	// Reverse[id] = edges where Target == id.
+	Forward map[string][]*Edge
+	Reverse map[string][]*Edge
+}
+
+// NewGraph builds a Graph from the supplied nodes + edges and pre-computes
+// forward / reverse adjacency maps.
+func NewGraph(nodes []GraphNode, edges []*Edge, builtAt time.Time) *Graph {
+	g := &Graph{
+		BuiltAt:   builtAt,
+		NodesByID: make(map[string]GraphNode, len(nodes)),
+		Edges:     edges,
+		Forward:   make(map[string][]*Edge, len(nodes)),
+		Reverse:   make(map[string][]*Edge, len(nodes)),
+	}
+	for _, n := range nodes {
+		g.NodesByID[n.ID()] = n
+	}
+	for _, e := range edges {
+		g.Forward[e.Source] = append(g.Forward[e.Source], e)
+		g.Reverse[e.Target] = append(g.Reverse[e.Target], e)
+	}
+	return g
+}
+
+// ClusterNames returns the sorted unique set of cluster values present on any
+// pod / node / PVC node. External nodes are excluded.
+func (g *Graph) ClusterNames() []string {
+	seen := map[string]struct{}{}
+	for _, n := range g.NodesByID {
+		if n.Type() == NodeTypeExternal {
+			continue
+		}
+		if c := n.Labels()["cluster"]; c != "" {
+			seen[c] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for c := range seen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NodeCountByKind returns counts grouped by `cluster` (empty for externals)
+// and node `kind` for self-metric exposition.
+func (g *Graph) NodeCountByKind() map[[2]string]int {
+	out := map[[2]string]int{}
+	for _, n := range g.NodesByID {
+		cluster := n.Labels()["cluster"]
+		out[[2]string{cluster, string(n.Type())}]++
+	}
+	return out
+}
+
+// EdgeCountByType returns counts grouped by edge type and a "true"|"false"
+// cross-cluster bucket. Cross-cluster status is derived for `pod-calls-pod`
+// edges by comparing labels.client_cluster and labels.server_cluster.
+func (g *Graph) EdgeCountByType() map[[2]string]int {
+	out := map[[2]string]int{}
+	for _, e := range g.Edges {
+		cross := "false"
+		if e.Type == EdgeTypePodCallsPod {
+			if e.Labels["client_cluster"] != e.Labels["server_cluster"] {
+				cross = "true"
+			}
+		}
+		out[[2]string{string(e.Type), cross}]++
+	}
+	return out
+}

@@ -1,0 +1,61 @@
+{
+  "apiVersion": "v1",
+  "nodes_fields": [
+    {
+      "name": "id",
+      "type": "string"
+    },
+    {
+      "name": "title",
+      "type": "string"
+    },
+    {
+      "name": "subTitle",
+      "type": "string"
+    },
+    {
+      "name": "mainStat",
+      "type": "string"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "cluster-alpha/p1",
+      "mainStat": "pod",
+      "subTitle": "cluster-alpha · shop",
+      "title": "checkout"
+    },
+    {
+      "id": "cluster-beta/p2",
+      "mainStat": "pod",
+      "subTitle": "cluster-beta · billing",
+      "title": "payments"
+    }
+  ],
+  "edges_fields": [
+    {
+      "name": "id",
+      "type": "string"
+    },
+    {
+      "name": "source",
+      "type": "string"
+    },
+    {
+      "name": "target",
+      "type": "string"
+    },
+    {
+      "name": "mainStat",
+      "type": "string"
+    }
+  ],
+  "edges": [
+    {
+      "id": "9db88ec6-f174-5bfc-9fba-7f29b361f7dd",
+      "mainStat": "pod-calls-pod",
+      "source": "cluster-alpha/p1",
+      "target": "cluster-beta/p2"
+    }
+  ]
+}

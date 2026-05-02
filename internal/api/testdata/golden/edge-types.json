@@ -1,0 +1,83 @@
+{
+  "apiVersion": "v1",
+  "edge_types": [
+    {
+      "type": "pod-runs-on-node",
+      "description": "Pod scheduled on a node, derived from kube_pod_info{node=...}. Always intra-cluster.",
+      "source_type": [
+        "pod"
+      ],
+      "target_type": [
+        "node"
+      ],
+      "directed": true,
+      "may_cross_cluster": false,
+      "labels": [
+        {
+          "name": "scheduled_at",
+          "value_type": "string",
+          "description": "RFC3339 timestamp of pod-to-node assignment within the queried window."
+        }
+      ]
+    },
+    {
+      "type": "pod-mounts-pvc-on-node",
+      "description": "Pod mounts a PVC bound on the pod's host node. Always intra-cluster.",
+      "source_type": [
+        "pod"
+      ],
+      "target_type": [
+        "pvc"
+      ],
+      "directed": true,
+      "may_cross_cluster": false,
+      "labels": [
+        {
+          "name": "claim_name",
+          "value_type": "string"
+        },
+        {
+          "name": "storage_class",
+          "value_type": "string"
+        }
+      ]
+    },
+    {
+      "type": "pod-calls-pod",
+      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when client_cluster != server_cluster. Endpoints may be 'external' nodes when KSG_EXTERNAL_NAME_PATTERN matches the upstream client/server label.",
+      "source_type": [
+        "pod",
+        "external"
+      ],
+      "target_type": [
+        "pod",
+        "external"
+      ],
+      "directed": true,
+      "may_cross_cluster": true,
+      "labels": [
+        {
+          "name": "client_cluster",
+          "value_type": "string"
+        },
+        {
+          "name": "server_cluster",
+          "value_type": "string"
+        }
+      ]
+    },
+    {
+      "type": "pod-replaced-by",
+      "description": "Synthetic edge linking a prior pod UID to its replacement when the time window covers a pod restart. Always intra-cluster.",
+      "source_type": [
+        "pod"
+      ],
+      "target_type": [
+        "pod"
+      ],
+      "directed": true,
+      "may_cross_cluster": false,
+      "labels": null
+    }
+  ]
+}

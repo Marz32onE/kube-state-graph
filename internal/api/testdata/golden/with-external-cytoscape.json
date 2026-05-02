@@ -1,0 +1,51 @@
+{
+  "apiVersion": "v1",
+  "start": "2026-05-01T12:00:00Z",
+  "end": "2026-05-01T12:05:00Z",
+  "start_actual": "2026-05-01T12:00:00Z",
+  "end_actual": "2026-05-01T12:05:00Z",
+  "bucket_seconds": 15,
+  "built_at": "2026-05-01T12:05:00Z",
+  "clusters": [
+    "cluster-alpha"
+  ],
+  "elements": {
+    "nodes": [
+      {
+        "data": {
+          "id": "cluster-alpha/p1",
+          "name": "checkout",
+          "type": "pod",
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "shop"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "external/http://api.example.com",
+          "name": "http://api.example.com",
+          "type": "external",
+          "labels": {
+            "pattern": "://"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "data": {
+          "id": "d67d9558-792b-5607-abed-9fac618fbfe2",
+          "type": "pod-calls-pod",
+          "source": "cluster-alpha/p1",
+          "target": "external/http://api.example.com",
+          "labels": {
+            "client_cluster": "cluster-alpha",
+            "server_cluster": ""
+          }
+        }
+      }
+    ]
+  }
+}

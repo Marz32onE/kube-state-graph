@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *"   # nightly integration
+
+jobs:
+  unit:
+    name: Unit / component / golden / property
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+      - name: go test
+        run: go test ./... -race -coverprofile=coverage.out
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+  integration:
+    name: Kind integration smoke
+    needs: unit
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'schedule' ||
+      contains(toJSON(github.event.pull_request.changed_files), 'cmd/') ||
+      contains(toJSON(github.event.pull_request.changed_files), 'internal/build/') ||
+      contains(toJSON(github.event.pull_request.changed_files), 'internal/cache/') ||
+      contains(toJSON(github.event.pull_request.changed_files), 'deploy/kind/') ||
+      contains(toJSON(github.event.pull_request.changed_files), 'tests/harness/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Install kind
+        run: |
+          curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+      - name: Build images
+        run: |
+          docker build -t kube-state-graph/server:dev    -f deploy/docker/server.Dockerfile      .
+          docker build -t kube-state-graph/vm-fixtures:dev -f deploy/docker/vm-fixtures.Dockerfile .
+      - name: Bootstrap
+        run: ./deploy/kind/bootstrap.sh
+      - name: Smoke
+        run: ./tests/smoke/run.sh
+
+  image:
+    name: Publish container image
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/server.Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest

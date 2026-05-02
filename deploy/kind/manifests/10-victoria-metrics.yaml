@@ -1,0 +1,69 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victoria-metrics
+  namespace: kube-state-graph
+  labels:
+    app: victoria-metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: victoria-metrics
+  template:
+    metadata:
+      labels:
+        app: victoria-metrics
+    spec:
+      containers:
+        - name: vmsingle
+          image: victoriametrics/victoria-metrics:v1.107.0
+          args:
+            - "-storageDataPath=/var/lib/victoria-metrics-data"
+            - "-retentionPeriod=30d"
+            - "-promscrape.config=/etc/vmagent/scrape.yaml"
+          ports:
+            - containerPort: 8428
+              name: http
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/victoria-metrics-data
+            - name: scrape-config
+              mountPath: /etc/vmagent
+      volumes:
+        - name: storage
+          emptyDir: {}
+        - name: scrape-config
+          configMap:
+            name: vm-scrape-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victoria-metrics
+  namespace: kube-state-graph
+spec:
+  selector:
+    app: victoria-metrics
+  ports:
+    - name: http
+      port: 8428
+      targetPort: 8428
+      nodePort: 30428
+  type: NodePort
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-scrape-config
+  namespace: kube-state-graph
+data:
+  scrape.yaml: |
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+      - job_name: vm-fixtures
+        static_configs:
+          - targets:
+              - vm-fixtures.kube-state-graph.svc:8080

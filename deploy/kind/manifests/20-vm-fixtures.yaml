@@ -1,0 +1,48 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-fixtures
+  namespace: kube-state-graph
+  labels:
+    app: vm-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vm-fixtures
+  template:
+    metadata:
+      labels:
+        app: vm-fixtures
+    spec:
+      containers:
+        - name: vm-fixtures
+          image: kube-state-graph/vm-fixtures:dev
+          imagePullPolicy: Never
+          args:
+            - "--listen-addr=:8080"
+            - "--fixtures-file=/etc/vm-fixtures/fixtures.yaml"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: fixtures
+              mountPath: /etc/vm-fixtures
+      volumes:
+        - name: fixtures
+          configMap:
+            name: vm-fixtures-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-fixtures
+  namespace: kube-state-graph
+spec:
+  selector:
+    app: vm-fixtures
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

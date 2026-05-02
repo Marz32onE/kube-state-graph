@@ -1,0 +1,49 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-graph
+  namespace: kube-state-graph
+  labels:
+    app: kube-state-graph
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kube-state-graph
+  template:
+    metadata:
+      labels:
+        app: kube-state-graph
+    spec:
+      containers:
+        - name: server
+          image: kube-state-graph/server:dev
+          imagePullPolicy: Never
+          env:
+            - name: KSG_PROM_URL
+              value: "http://victoria-metrics.kube-state-graph.svc:8428"
+            - name: KSG_LISTEN_ADDR
+              value: ":8080"
+            - name: KSG_EXTERNAL_NAME_PATTERN
+              value: "://"
+            - name: KSG_LOG_LEVEL
+              value: "info"
+          ports:
+            - containerPort: 8080
+              name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-graph
+  namespace: kube-state-graph
+spec:
+  selector:
+    app: kube-state-graph
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+  type: NodePort

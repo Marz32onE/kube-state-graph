@@ -1,0 +1,25 @@
+{
+  "title": "kube-state-graph — multi-cluster pod graph",
+  "schemaVersion": 39,
+  "uid": "kube-state-graph-nodegraph",
+  "tags": ["kube-state-graph", "node-graph"],
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "nodeGraph",
+      "title": "Pod graph (multi-cluster)",
+      "description": "Renders /v1/graph/nodegraph from kube-state-graph. Configure the JSON / Infinity datasource to point at the kube-state-graph service and use the URL: /v1/graph/nodegraph?start=${__from:date:seconds}&end=${__to:date:seconds}",
+      "datasource": {"type": "yesoreyeram-infinity-datasource"},
+      "targets": [
+        {
+          "type": "json",
+          "url": "/v1/graph/nodegraph?start=${__from:date:seconds}&end=${__to:date:seconds}",
+          "format": "nodegraph",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 20}
+    }
+  ]
+}
