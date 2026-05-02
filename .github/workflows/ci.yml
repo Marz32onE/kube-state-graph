@@ -62,16 +62,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install swag v2
-        run: go install github.com/swaggo/swag/v2/cmd/swag@latest
-
-      - name: Regenerate OpenAPI spec
-        run: swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=false
-
-      - name: Verify no drift
-        run: |
-          if ! git diff --quiet -- docs/; then
-            echo "::error::docs/ is out of sync with handler annotations. Run 'make docs' locally and commit."
-            git --no-pager diff -- docs/
-            exit 1
-          fi
+      # Single source of truth: `make check-docs` regenerates the OpenAPI spec
+      # via the `swag` tool pinned in go.mod (`tool` directive) and diffs both
+      # docs/ and the embedded internal/api/static/openapi/ payload.
+      - name: Verify docs in sync
+        run: make check-docs

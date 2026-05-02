@@ -284,17 +284,18 @@ func (s *Server) handleAdminCacheFlush(c *gin.Context) {
 // handleDebugLastQueries returns the raw upstream query strings of the most
 // recent build (only available with --enable-debug).
 //
+// Currently unimplemented: returns 501 so clients can distinguish "feature not
+// built" from "no recent queries". A future iteration will wire a ring buffer
+// in promql.Client and return the captured set here.
+//
 //	@Summary	Debug: last upstream queries
 //	@Tags		debug
 //	@Produce	json
-//	@Success	200	{object}	debugLastQueriesBody
+//	@Success	501	{object}	errorBody	"Not implemented in v1"
 //	@Router		/debug/last-queries [get]
 func (s *Server) handleDebugLastQueries(c *gin.Context) {
-	c.JSON(http.StatusOK, map[string]any{
-		"apiVersion": APIVersion,
-		"queries":    []string{},
-		"note":       "v1 debug endpoint stub; populated by build pipeline in a later iteration",
-	})
+	writeError(c, http.StatusNotImplemented, "not_implemented",
+		"/debug/last-queries is registered but not yet implemented; tracked for a future iteration")
 }
 
 // ----- request parsing ------------------------------------------------------

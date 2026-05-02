@@ -1,215 +1,217 @@
-basePath: /
-definitions:
-  github_com_marz32one_kube-state-graph_internal_graph.EdgeType:
-    enum:
-    - pod-runs-on-node
-    - pod-mounts-pvc-on-node
-    - pod-calls-pod
-    - pod-replaced-by
-    type: string
-    x-enum-varnames:
-    - EdgeTypePodRunsOnNode
-    - EdgeTypePodMountsPVCOnNode
-    - EdgeTypePodCallsPod
-    - EdgeTypePodReplacedBy
-  github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition:
-    properties:
-      description:
-        type: string
-      directed:
-        type: boolean
-      labels:
-        items:
-          $ref: '#/definitions/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel'
-        type: array
-      may_cross_cluster:
-        type: boolean
-      source_type:
-        items:
-          $ref: '#/definitions/github_com_marz32one_kube-state-graph_internal_graph.NodeType'
-        type: array
-      target_type:
-        items:
-          $ref: '#/definitions/github_com_marz32one_kube-state-graph_internal_graph.NodeType'
-        type: array
-      type:
-        $ref: '#/definitions/github_com_marz32one_kube-state-graph_internal_graph.EdgeType'
-    type: object
-  github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel:
-    properties:
-      description:
-        type: string
-      name:
-        type: string
-      value_type:
-        type: string
-    type: object
-  github_com_marz32one_kube-state-graph_internal_graph.NodeType:
-    enum:
-    - pod
-    - node
-    - pvc
-    - external
-    type: string
-    x-enum-varnames:
-    - NodeTypePod
-    - NodeTypeK8sNode
-    - NodeTypePVC
-    - NodeTypeExternal
-  internal_api.ClusterInfo:
-    properties:
-      name:
-        type: string
-    type: object
-  internal_api.clustersBody:
-    properties:
-      apiVersion:
-        type: string
-      clusters:
-        items:
-          $ref: '#/definitions/internal_api.ClusterInfo'
-        type: array
-    type: object
-  internal_api.cytoscapeBody:
-    properties:
-      apiVersion:
-        type: string
-      bucket_seconds:
-        type: integer
-      built_at:
-        type: string
-      clusters:
-        items:
+components:
+  schemas:
+    github_com_marz32one_kube-state-graph_internal_graph.EdgeType:
+      enum:
+      - pod-runs-on-node
+      - pod-mounts-pvc-on-node
+      - pod-calls-pod
+      - pod-replaced-by
+      type: string
+      x-enum-varnames:
+      - EdgeTypePodRunsOnNode
+      - EdgeTypePodMountsPVCOnNode
+      - EdgeTypePodCallsPod
+      - EdgeTypePodReplacedBy
+    github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition:
+      properties:
+        description:
           type: string
-        type: array
-      elements:
-        $ref: '#/definitions/internal_api.cytoscapeElems'
-      end:
-        type: string
-      end_actual:
-        type: string
-      start:
-        type: string
-      start_actual:
-        type: string
-    type: object
-  internal_api.cytoscapeEdge:
-    properties:
-      data:
-        $ref: '#/definitions/internal_api.cytoscapeEdgeData'
-    type: object
-  internal_api.cytoscapeEdgeData:
-    properties:
-      id:
-        type: string
-      labels:
-        additionalProperties:
+        directed:
+          type: boolean
+        labels:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel'
+          type: array
+          uniqueItems: false
+        may_cross_cluster:
+          type: boolean
+        source_type:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.NodeType'
+          type: array
+          uniqueItems: false
+        target_type:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.NodeType'
+          type: array
+          uniqueItems: false
+        type:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeType'
+      type: object
+    github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel:
+      properties:
+        description:
           type: string
-        type: object
-      source:
-        type: string
-      target:
-        type: string
-      type:
-        type: string
-    type: object
-  internal_api.cytoscapeElems:
-    properties:
-      edges:
-        items:
-          $ref: '#/definitions/internal_api.cytoscapeEdge'
-        type: array
-      nodes:
-        items:
-          $ref: '#/definitions/internal_api.cytoscapeNode'
-        type: array
-    type: object
-  internal_api.cytoscapeNode:
-    properties:
-      data:
-        $ref: '#/definitions/internal_api.cytoscapeNodeData'
-    type: object
-  internal_api.cytoscapeNodeData:
-    properties:
-      id:
-        type: string
-      labels:
-        additionalProperties:
+        name:
           type: string
-        type: object
-      name:
-        type: string
-      type:
-        type: string
-    type: object
-  internal_api.debugLastQueriesBody:
-    properties:
-      apiVersion:
-        type: string
-      note:
-        type: string
-      queries:
-        items:
+        value_type:
           type: string
-        type: array
-    type: object
-  internal_api.edgeTypesBody:
-    properties:
-      apiVersion:
-        type: string
-      edge_types:
-        items:
-          $ref: '#/definitions/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition'
-        type: array
-    type: object
-  internal_api.errorBody:
-    properties:
-      apiVersion:
-        type: string
-      error:
-        $ref: '#/definitions/internal_api.errorField'
-    type: object
-  internal_api.errorField:
-    properties:
-      message:
-        type: string
-      reason:
-        type: string
-    type: object
-  internal_api.grafanaBody:
-    properties:
-      apiVersion:
-        type: string
-      edges:
-        items:
-          $ref: '#/definitions/internal_api.grafanaRow'
-        type: array
-      edges_fields:
-        items:
-          $ref: '#/definitions/internal_api.grafanaField'
-        type: array
-      nodes:
-        items:
-          $ref: '#/definitions/internal_api.grafanaRow'
-        type: array
-      nodes_fields:
-        items:
-          $ref: '#/definitions/internal_api.grafanaField'
-        type: array
-    type: object
-  internal_api.grafanaField:
-    properties:
-      name:
-        type: string
-      type:
-        type: string
-    type: object
-  internal_api.grafanaRow:
-    additionalProperties: {}
-    type: object
-host: localhost:8080
+      type: object
+    github_com_marz32one_kube-state-graph_internal_graph.NodeType:
+      enum:
+      - pod
+      - node
+      - pvc
+      - external
+      type: string
+      x-enum-varnames:
+      - NodeTypePod
+      - NodeTypeK8sNode
+      - NodeTypePVC
+      - NodeTypeExternal
+    internal_api.ClusterInfo:
+      properties:
+        name:
+          type: string
+      type: object
+    internal_api.clustersBody:
+      properties:
+        apiVersion:
+          type: string
+        clusters:
+          items:
+            $ref: '#/components/schemas/internal_api.ClusterInfo'
+          type: array
+          uniqueItems: false
+      type: object
+    internal_api.cytoscapeBody:
+      properties:
+        apiVersion:
+          type: string
+        bucket_seconds:
+          type: integer
+        built_at:
+          type: string
+        clusters:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        elements:
+          $ref: '#/components/schemas/internal_api.cytoscapeElems'
+        end:
+          type: string
+        end_actual:
+          type: string
+        start:
+          type: string
+        start_actual:
+          type: string
+      type: object
+    internal_api.cytoscapeEdge:
+      properties:
+        data:
+          $ref: '#/components/schemas/internal_api.cytoscapeEdgeData'
+      type: object
+    internal_api.cytoscapeEdgeData:
+      properties:
+        id:
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+        source:
+          type: string
+        target:
+          type: string
+        type:
+          type: string
+      type: object
+    internal_api.cytoscapeElems:
+      properties:
+        edges:
+          items:
+            $ref: '#/components/schemas/internal_api.cytoscapeEdge'
+          type: array
+          uniqueItems: false
+        nodes:
+          items:
+            $ref: '#/components/schemas/internal_api.cytoscapeNode'
+          type: array
+          uniqueItems: false
+      type: object
+    internal_api.cytoscapeNode:
+      properties:
+        data:
+          $ref: '#/components/schemas/internal_api.cytoscapeNodeData'
+      type: object
+    internal_api.cytoscapeNodeData:
+      properties:
+        id:
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+        name:
+          type: string
+        type:
+          type: string
+      type: object
+    internal_api.edgeTypesBody:
+      properties:
+        apiVersion:
+          type: string
+        edge_types:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition'
+          type: array
+          uniqueItems: false
+      type: object
+    internal_api.errorBody:
+      properties:
+        apiVersion:
+          type: string
+        error:
+          $ref: '#/components/schemas/internal_api.errorField'
+      type: object
+    internal_api.errorField:
+      properties:
+        message:
+          type: string
+        reason:
+          type: string
+      type: object
+    internal_api.grafanaBody:
+      properties:
+        apiVersion:
+          type: string
+        edges:
+          items:
+            $ref: '#/components/schemas/internal_api.grafanaRow'
+          type: array
+          uniqueItems: false
+        edges_fields:
+          items:
+            $ref: '#/components/schemas/internal_api.grafanaField'
+          type: array
+          uniqueItems: false
+        nodes:
+          items:
+            $ref: '#/components/schemas/internal_api.grafanaRow'
+          type: array
+          uniqueItems: false
+        nodes_fields:
+          items:
+            $ref: '#/components/schemas/internal_api.grafanaField'
+          type: array
+          uniqueItems: false
+      type: object
+    internal_api.grafanaField:
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+      type: object
+    internal_api.grafanaRow:
+      additionalProperties: {}
+      type: object
+externalDocs:
+  description: ""
+  url: ""
 info:
-  contact: {}
   description: Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics
     and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics
     and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana
@@ -219,6 +221,7 @@ info:
     url: https://www.apache.org/licenses/LICENSE-2.0.html
   title: kube-state-graph API
   version: v1
+openapi: 3.1.0
 paths:
   /admin/cache:
     delete:
@@ -230,25 +233,25 @@ paths:
       - admin
   /debug/last-queries:
     get:
-      produces:
-      - application/json
       responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/internal_api.debugLastQueriesBody'
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Not implemented in v1
       summary: 'Debug: last upstream queries'
       tags:
       - debug
   /docs:
     get:
-      produces:
-      - text/html
       responses:
         "200":
+          content:
+            text/html:
+              schema:
+                type: string
           description: HTML
-          schema:
-            type: string
       summary: API reference UI (Scalar)
       tags:
       - docs
@@ -259,52 +262,57 @@ paths:
         in: path
         name: path
         required: true
-        type: string
+        schema:
+          type: string
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                type: string
           description: static asset
-          schema:
-            type: string
         "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
           description: Not Found
-          schema:
-            $ref: '#/definitions/internal_api.errorBody'
       summary: API reference asset (vendored)
       tags:
       - docs
   /livez:
     get:
-      produces:
-      - text/plain
       responses:
         "200":
+          content:
+            text/plain:
+              schema:
+                type: string
           description: ok
-          schema:
-            type: string
       summary: Liveness
       tags:
       - health
   /openapi.json:
     get:
-      produces:
-      - application/json
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                type: string
           description: OpenAPI 3.0 JSON
-          schema:
-            type: string
       summary: OpenAPI spec (JSON)
       tags:
       - docs
   /openapi.yaml:
     get:
-      produces:
-      - application/yaml
       responses:
         "200":
+          content:
+            application/yaml:
+              schema:
+                type: string
           description: OpenAPI 3.0 YAML
-          schema:
-            type: string
       summary: OpenAPI spec (YAML)
       tags:
       - docs
@@ -312,17 +320,19 @@ paths:
     get:
       description: Returns 200 only when a 1 s `up{}` probe against the configured
         upstream succeeds.
-      produces:
-      - text/plain
       responses:
         "200":
+          content:
+            text/plain:
+              schema:
+                type: string
           description: ok
-          schema:
-            type: string
         "503":
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
           description: Service Unavailable
-          schema:
-            $ref: '#/definitions/internal_api.errorBody'
       summary: Readiness
       tags:
       - health
@@ -331,17 +341,19 @@ paths:
       description: Returns the set of clusters observed in `kube_node_info` over the
         configured discovery lookback (default 1 h). Intersected with --clusters-allowlist
         when set.
-      produces:
-      - application/json
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.clustersBody'
           description: OK
-          schema:
-            $ref: '#/definitions/internal_api.clustersBody'
         "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
           description: Bad Gateway
-          schema:
-            $ref: '#/definitions/internal_api.errorBody'
       summary: List clusters
       tags:
       - discovery
@@ -349,13 +361,13 @@ paths:
     get:
       description: Static catalogue of edge types this server can produce. No upstream
         calls. Long-lived Cache-Control + ETag.
-      produces:
-      - application/json
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.edgeTypesBody'
           description: OK
-          schema:
-            $ref: '#/definitions/internal_api.edgeTypesBody'
       summary: Edge-type catalogue
       tags:
       - discovery
@@ -369,71 +381,84 @@ paths:
         in: query
         name: start
         required: true
-        type: string
+        schema:
+          type: string
       - description: RFC 3339 or Unix-seconds timestamp
         in: query
         name: end
         required: true
-        type: string
-      - collectionFormat: multi
-        description: Restrict to listed clusters
-        in: query
-        items:
+        schema:
           type: string
+      - description: Restrict to listed clusters
+        in: query
         name: cluster
-        type: array
-      - collectionFormat: multi
-        description: Restrict to listed namespaces
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed namespaces
         in: query
-        items:
-          type: string
         name: namespace
-        type: array
-      - collectionFormat: multi
-        description: Restrict to listed K8s node names
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed K8s node names
         in: query
-        items:
-          type: string
         name: node
-        type: array
-      - collectionFormat: multi
-        description: Restrict to listed edge types
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed edge types
         in: query
-        items:
-          type: string
         name: edge_type
-        type: array
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
       - description: Cluster-scoped node ID anchoring a traversal
         in: query
         name: root
-        type: string
+        schema:
+          type: string
       - description: Traversal depth (0..6, default 2 when root is set)
         in: query
         name: depth
-        type: integer
+        schema:
+          type: integer
       - description: Traversal direction
-        enum:
-        - in
-        - out
-        - both
         in: query
         name: direction
-        type: string
-      produces:
-      - application/json
+        schema:
+          enum:
+          - in
+          - out
+          - both
+          type: string
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.cytoscapeBody'
           description: OK
-          schema:
-            $ref: '#/definitions/internal_api.cytoscapeBody'
         "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
           description: Bad Request
-          schema:
-            $ref: '#/definitions/internal_api.errorBody'
         "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
           description: Service Unavailable
-          schema:
-            $ref: '#/definitions/internal_api.errorBody'
       summary: Get multi-cluster graph (Cytoscape.js)
       tags:
       - graph
@@ -446,56 +471,67 @@ paths:
         in: query
         name: start
         required: true
-        type: string
+        schema:
+          type: string
       - description: RFC 3339 or Unix-seconds timestamp
         in: query
         name: end
         required: true
-        type: string
-      - collectionFormat: multi
-        description: Restrict to listed clusters
-        in: query
-        items:
+        schema:
           type: string
+      - description: Restrict to listed clusters
+        in: query
         name: cluster
-        type: array
-      - collectionFormat: multi
-        description: Restrict to listed namespaces
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed namespaces
         in: query
-        items:
-          type: string
         name: namespace
-        type: array
-      - collectionFormat: multi
-        description: Restrict to listed K8s node names
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed K8s node names
         in: query
-        items:
-          type: string
         name: node
-        type: array
-      - collectionFormat: multi
-        description: Restrict to listed edge types
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed edge types
         in: query
-        items:
-          type: string
         name: edge_type
-        type: array
-      produces:
-      - application/json
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
       responses:
         "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.grafanaBody'
           description: OK
-          schema:
-            $ref: '#/definitions/internal_api.grafanaBody'
         "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
           description: Bad Request
-          schema:
-            $ref: '#/definitions/internal_api.errorBody'
         "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
           description: Service Unavailable
-          schema:
-            $ref: '#/definitions/internal_api.errorBody'
       summary: Get multi-cluster graph (Grafana Node Graph datasource)
       tags:
       - graph
-swagger: "2.0"
+servers:
+- url: /

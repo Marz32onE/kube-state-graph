@@ -38,8 +38,53 @@ func TestProject_NoFilter(t *testing.T) {
 
 func TestProject_ClusterFilter(t *testing.T) {
 	v := Project(sampleGraph(), Scope{Clusters: map[string]struct{}{"cluster-alpha": {}}})
+
+	ids := map[string]bool{}
 	for _, n := range v.Nodes {
-		assert.Equal(t, "cluster-alpha", n.Labels()["cluster"])
+		ids[n.ID()] = true
+	}
+	// All cluster-alpha nodes present.
+	for _, want := range []string{"cluster-alpha/p1", "cluster-alpha/p2", "cluster-alpha/worker-0"} {
+		assert.Truef(t, ids[want], "expected %s in result", want)
+	}
+	// Cross-cluster partner cluster-beta/p3 preserved (graph-api spec
+	// §"Cross-cluster edge representation"); the K8s node cluster-beta/worker-0
+	// is not on a cross-cluster edge so MUST stay out.
+	assert.True(t, ids["cluster-beta/p3"], "cross-cluster pod partner must be preserved")
+	assert.False(t, ids["cluster-beta/worker-0"], "intra-cluster cluster-beta node must be filtered out")
+}
+
+func TestProject_ClusterFilter_PreservesCrossClusterEdge(t *testing.T) {
+	v := Project(sampleGraph(), Scope{Clusters: map[string]struct{}{"cluster-alpha": {}}})
+
+	var crossEdges int
+	for _, e := range v.Edges {
+		if e.Type == EdgeTypePodCallsPod && e.Labels["client_cluster"] != e.Labels["server_cluster"] {
+			crossEdges++
+			assert.Equal(t, "cluster-alpha/p1", e.Source)
+			assert.Equal(t, "cluster-beta/p3", e.Target)
+		}
+	}
+	assert.Equal(t, 1, crossEdges, "cross-cluster edge must survive cluster filter")
+}
+
+func TestProject_ClusterFilter_NamespaceStillStrict(t *testing.T) {
+	// Namespace filter is AND-combined: cross-cluster partner whose namespace
+	// does not match the filter MUST be dropped (and so must the edge).
+	v := Project(sampleGraph(), Scope{
+		Clusters:   map[string]struct{}{"cluster-alpha": {}},
+		Namespaces: map[string]struct{}{"shop": {}},
+	})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.False(t, ids["cluster-beta/p3"], "partner with namespace=billing must not be re-added when namespace filter excludes it")
+	for _, e := range v.Edges {
+		if e.Type == EdgeTypePodCallsPod {
+			assert.Equal(t, e.Labels["client_cluster"], e.Labels["server_cluster"], "no cross-cluster edge should survive namespace mismatch")
+		}
 	}
 }
 

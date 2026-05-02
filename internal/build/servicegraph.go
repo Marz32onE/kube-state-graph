@@ -55,7 +55,22 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 
 	externals := map[string]*graph.ExternalNode{}
 	synthPods := map[string]*graph.PodNode{}
-	edges := make([]*graph.Edge, 0, len(vec))
+
+	// Dedup by (srcID, tgtID). Multiple upstream series can resolve to the
+	// same edge identity — most commonly when `connection_type` differs
+	// (`virtual_node` vs `messaging_system`) — and edge IDs are deterministic
+	// only by (type, source, target). Collapsing here prevents duplicate edge
+	// IDs in Cytoscape / Grafana output. Cluster labels of the surviving edge
+	// are taken from the first observation per pair.
+	type aggEdge struct {
+		srcCluster string
+		tgtCluster string
+	}
+	type pairKey struct {
+		src string
+		tgt string
+	}
+	pairs := make(map[pairKey]aggEdge, len(vec))
 
 	for _, s := range vec {
 		// Drop zero-rate series.
@@ -85,13 +100,22 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 			continue
 		}
 
+		key := pairKey{src: srcID, tgt: tgtID}
+		if _, dup := pairs[key]; dup {
+			continue
+		}
+		pairs[key] = aggEdge{srcCluster: srcCluster, tgtCluster: tgtCluster}
+	}
+
+	edges := make([]*graph.Edge, 0, len(pairs))
+	for k, agg := range pairs {
 		edges = append(edges, graph.NewEdge(
 			graph.EdgeTypePodCallsPod,
-			srcID,
-			tgtID,
+			k.src,
+			k.tgt,
 			map[string]string{
-				"client_cluster": srcCluster,
-				"server_cluster": tgtCluster,
+				"client_cluster": agg.srcCluster,
+				"server_cluster": agg.tgtCluster,
 			},
 		))
 	}

@@ -20,12 +20,15 @@ fi
 
 echo "==> Building images"
 (cd "$REPO_ROOT" && make build fixtures)
-"$DOCKER" build -t kube-state-graph/server:dev    -f "$REPO_ROOT/deploy/docker/server.Dockerfile"      "$REPO_ROOT"
-"$DOCKER" build -t kube-state-graph/vm-fixtures:dev -f "$REPO_ROOT/deploy/docker/vm-fixtures.Dockerfile" "$REPO_ROOT"
+# Tag with explicit localhost/ prefix so docker and podman both produce a
+# canonical reference. Manifests pin this same string with imagePullPolicy=Never
+# (see local/grafana/manifests/{20-vm-fixtures,30-api-server}.yaml).
+"$DOCKER" build -t localhost/kube-state-graph/server:dev      -f "$REPO_ROOT/deploy/docker/server.Dockerfile"      "$REPO_ROOT"
+"$DOCKER" build -t localhost/kube-state-graph/vm-fixtures:dev -f "$REPO_ROOT/deploy/docker/vm-fixtures.Dockerfile" "$REPO_ROOT"
 
 echo "==> Loading images into Kind"
-kind load docker-image kube-state-graph/server:dev    --name "$CLUSTER_NAME"
-kind load docker-image kube-state-graph/vm-fixtures:dev --name "$CLUSTER_NAME"
+kind load docker-image localhost/kube-state-graph/server:dev      --name "$CLUSTER_NAME"
+kind load docker-image localhost/kube-state-graph/vm-fixtures:dev --name "$CLUSTER_NAME"
 
 echo "==> Applying manifests"
 kubectl apply -f "$SCRIPT_DIR/manifests/"

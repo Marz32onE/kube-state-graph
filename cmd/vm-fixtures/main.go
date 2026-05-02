@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -66,6 +67,11 @@ type server struct {
 	reloadTotal  atomic.Int64
 	fixturesPath string
 	logger       *slog.Logger
+	// startedAt anchors the monotonic counter we synthesise for
+	// traces_service_graph_request_total. PromQL rate() needs counter movement
+	// across the scrape window; emitting `rate * elapsed_seconds` lets a real
+	// rate(... [w]) query recover the configured per-second rate.
+	startedAt time.Time
 }
 
 func main() {
@@ -76,7 +82,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
 	slog.SetDefault(logger)
 
-	s := &server{fixturesPath: *fixtures, logger: logger}
+	s := &server{fixturesPath: *fixtures, logger: logger, startedAt: time.Now()}
 	if err := s.reload(); err != nil {
 		logger.Error("initial fixture load failed", "err", err)
 		os.Exit(1)
@@ -167,15 +173,17 @@ func (s *server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 			`kube_pod_spec_volumes_persistentvolumeclaims_info{cluster=%q,namespace=%q,pod=%q,volume=%q,persistentvolumeclaim=%q} 1`+"\n",
 			pv.Cluster, pv.Namespace, pv.Pod, pv.Volume, pv.Claim)
 	}
+	elapsed := time.Since(s.startedAt).Seconds()
 	for _, c := range set.Calls {
 		ct := c.ConnectionType
 		if ct == "" {
 			ct = "virtual_node"
 		}
+		counter := c.Rate * elapsed
 		fmt.Fprintf(w,
 			`traces_service_graph_request_total{client=%q,server=%q,client_cluster=%q,server_cluster=%q,client_k8s_pod_uid=%q,server_k8s_pod_uid=%q,client_k8s_namespace_name=%q,server_k8s_namespace_name=%q,connection_type=%q} %g`+"\n",
 			c.Client, c.Server, c.ClientCluster, c.ServerCluster, c.ClientPodUID, c.ServerPodUID,
-			c.ClientNamespace, c.ServerNamespace, ct, c.Rate)
+			c.ClientNamespace, c.ServerNamespace, ct, counter)
 	}
 }
 

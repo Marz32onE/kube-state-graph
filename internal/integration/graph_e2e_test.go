@@ -33,9 +33,25 @@ func TestGraphSuite(t *testing.T) {
 
 // SetupTest seeds the standard multi-cluster fixture set before each test
 // using the per-test name as a discriminator label.
+//
+// Service-graph series are ingested as TWO monotonic counter samples (t0 and
+// t1 = t0 + 60s) so that `rate(traces_service_graph_request_total[w])` over
+// the test window can recover a non-zero per-second rate. Without two samples
+// the rate() result is empty and every pod-call edge silently disappears.
 func (s *GraphSuite) SetupTest() {
 	disc := s.T().Name()
-	now := fixedNow.Unix() * 1000 // ms timestamps for /api/v1/import/prometheus
+	t1 := fixedNow.Unix() * 1000          // ms timestamps for /api/v1/import/prometheus
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	const counterStep = 60.0 // seconds between t0 and t1 (matches rate denominator)
+
+	// Per-series rates (req/s).
+	const (
+		rateCheckoutCart      = 5.0
+		rateCheckoutPayments  = 2.0
+		rateExternalToCheckout = 1.0
+	)
+	v := func(rate float64) float64 { return rate * counterStep }
+
 	exposition := fmt.Sprintf(`# HELP kube_pod_info dummy
 kube_pod_info{cluster="cluster-alpha",namespace="shop",pod="checkout",uid="alpha-1",node="worker-0",test=%q} 1 %d
 kube_pod_info{cluster="cluster-alpha",namespace="shop",pod="cart",uid="alpha-2",node="worker-0",test=%q} 1 %d
@@ -43,17 +59,25 @@ kube_pod_info{cluster="cluster-beta",namespace="billing",pod="payments",uid="bet
 kube_node_info{cluster="cluster-alpha",node="worker-0",test=%q} 1 %d
 kube_node_info{cluster="cluster-beta",node="worker-0",test=%q} 1 %d
 kube_node_status_addresses{cluster="cluster-alpha",node="worker-0",type="ExternalIP",address="203.0.113.10",test=%q} 1 %d
-traces_service_graph_request_total{client="checkout",server="cart",client_cluster="cluster-alpha",server_cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 5 %d
-traces_service_graph_request_total{client="checkout",server="payments",client_cluster="cluster-alpha",server_cluster="cluster-beta",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} 2 %d
-traces_service_graph_request_total{client="https://payments.partner.example/api",server="checkout",client_cluster="",server_cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 1 %d
+traces_service_graph_request_total{client="checkout",server="cart",client_cluster="cluster-alpha",server_cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="cart",client_cluster="cluster-alpha",server_cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} %g %d
+traces_service_graph_request_total{client="checkout",server="payments",client_cluster="cluster-alpha",server_cluster="cluster-beta",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="payments",client_cluster="cluster-alpha",server_cluster="cluster-beta",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} %g %d
+traces_service_graph_request_total{client="https://payments.partner.example/api",server="checkout",client_cluster="",server_cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="https://payments.partner.example/api",server="checkout",client_cluster="",server_cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} %g %d
 `,
-		disc, now, disc, now, disc, now,
-		disc, now, disc, now, disc, now,
-		disc, now, disc, now, disc, now,
+		disc, t1, disc, t1, disc, t1,
+		disc, t1, disc, t1, disc, t1,
+		disc, t0, disc, v(rateCheckoutCart), t1,
+		disc, t0, disc, v(rateCheckoutPayments), t1,
+		disc, t0, disc, v(rateExternalToCheckout), t1,
 	)
 	s.IngestExpFmt(exposition)
 	require.True(s.T(), s.WaitForSeries(`kube_pod_info{test=`+strconv.Quote(disc)+`}`, 10*time.Second),
 		"VM did not observe ingested kube_pod_info")
+	require.True(s.T(),
+		s.WaitForSeries(`rate(traces_service_graph_request_total{test=`+strconv.Quote(disc)+`}[5m]) > 0`, 10*time.Second),
+		"VM did not observe non-zero service-graph rate")
 }
 
 func (s *GraphSuite) graphURL(srv string, configureQuery func(url.Values)) string {
@@ -82,6 +106,19 @@ func (s *GraphSuite) TestSingleClusterGraph() {
 	edges, _ := elements["edges"].([]any)
 	assert.NotEmpty(s.T(), nodes, "expected at least one node")
 	assert.NotEmpty(s.T(), edges, "expected at least one edge")
+
+	// Regression guard for fixture/rate() drift: at least one pod-calls-pod
+	// edge MUST survive. If service-graph fixtures lose counter movement, this
+	// drops to zero before any other assertion notices.
+	var podCalls int
+	for _, raw := range edges {
+		e, _ := raw.(map[string]any)
+		data, _ := e["data"].(map[string]any)
+		if data["type"] == "pod-calls-pod" {
+			podCalls++
+		}
+	}
+	assert.GreaterOrEqual(s.T(), podCalls, 1, "service-graph rate() returned no pod-call edges; fixture counter movement likely broken")
 }
 
 func (s *GraphSuite) TestCrossClusterEdgePresent() {

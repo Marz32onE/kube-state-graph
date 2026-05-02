@@ -32,8 +32,9 @@ func New(q *promql.Client, cfg config.Config, m *observability.Metrics) *Builder
 func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time) (*graph.Graph, error) {
 	allowlistRegex := promql.AllowlistRegex(b.cfg.ClustersAllowlist)
 
-	// Cluster-too-large probe.
-	if err := b.probeClusterSize(ctx, allowlistRegex); err != nil {
+	// Cluster-too-large probe at the requested window's end, NOT time.Now() —
+	// historical requests must be evaluated against historical cluster size.
+	if err := b.probeClusterSize(ctx, allowlistRegex, end); err != nil {
 		return nil, err
 	}
 
@@ -120,9 +121,9 @@ func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*g
 	return nodes, edges
 }
 
-func (b *Builder) probeClusterSize(ctx context.Context, allowlistRegex string) error {
+func (b *Builder) probeClusterSize(ctx context.Context, allowlistRegex string, ts time.Time) error {
 	vec, err := b.q.Instant(ctx, string(promql.QClusterSizeProbe),
-		promql.Render(promql.QClusterSizeProbe, 0, allowlistRegex), time.Now().UTC())
+		promql.Render(promql.QClusterSizeProbe, 0, allowlistRegex), ts.UTC())
 	if err != nil {
 		return NewError(ReasonUpstream, "cluster-size probe failed", err)
 	}

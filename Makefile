@@ -32,7 +32,7 @@ cover:
 	go tool cover -func=coverage.out | tail -1
 
 docs:
-	go tool swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=false
+	go tool swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=true
 	@cp docs/swagger.yaml internal/api/static/openapi/openapi.yaml
 	@cp docs/swagger.json internal/api/static/openapi/openapi.json
 

@@ -131,6 +131,51 @@ func TestParseServiceGraph_EmptyVectorIsNotAnError(t *testing.T) {
 	assert.Empty(t, res.Edges)
 }
 
+// TestParseServiceGraph_DedupSamePair guards the edge-ID collision fix:
+// multiple upstream series for the same (client, server) pair — typically
+// `connection_type=virtual_node` and `connection_type=messaging_system` —
+// MUST collapse into a single edge. Edge IDs are derived only from
+// (type, source, target), so emitting two would produce duplicate IDs.
+func TestParseServiceGraph_DedupSamePair(t *testing.T) {
+	vec := sampleVec(
+		model.Sample{
+			Metric: model.Metric{
+				"client":             "checkout",
+				"server":             "payments",
+				"client_cluster":     "cluster-alpha",
+				"server_cluster":     "cluster-beta",
+				"client_k8s_pod_uid": "abc",
+				"server_k8s_pod_uid": "def",
+				"connection_type":    "virtual_node",
+			},
+			Value: 5,
+		},
+		model.Sample{
+			Metric: model.Metric{
+				"client":             "checkout",
+				"server":             "payments",
+				"client_cluster":     "cluster-alpha",
+				"server_cluster":     "cluster-beta",
+				"client_k8s_pod_uid": "abc",
+				"server_k8s_pod_uid": "def",
+				"connection_type":    "messaging_system",
+			},
+			Value: 3,
+		},
+	)
+	res := parseServiceGraph(vec, "", sampleTopology())
+	require.Len(t, res.Edges, 1, "duplicate (src,tgt) series must collapse into one edge")
+
+	// Edge IDs must be unique.
+	ids := map[string]int{}
+	for _, e := range res.Edges {
+		ids[e.ID]++
+	}
+	for id, n := range ids {
+		assert.Equal(t, 1, n, "edge id %s appeared %d times", id, n)
+	}
+}
+
 func TestParseServiceGraph_NoForbiddenNumericLabels(t *testing.T) {
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{

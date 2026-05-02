@@ -152,13 +152,79 @@ func filterEdges(g *Graph, scope Scope, nodes map[string]GraphNode) []*Edge {
 				continue
 			}
 		}
-		if _, srcOK := nodes[e.Source]; !srcOK {
+		_, srcOK := nodes[e.Source]
+		_, tgtOK := nodes[e.Target]
+		if srcOK && tgtOK {
+			out = append(out, e)
 			continue
 		}
-		if _, tgtOK := nodes[e.Target]; !tgtOK {
+		// Cross-cluster pod-calls-pod preservation. When a client narrows by
+		// cluster, a cross-cluster service-graph edge whose other endpoint sits
+		// in an out-of-scope cluster MUST still resolve (graph-api spec §
+		// "Cross-cluster edge representation"). Re-add the missing partner
+		// endpoint, but keep namespace/node filters strict on it so the AND
+		// semantics for those filters are preserved.
+		if !preserveCrossClusterEdge(e, scope, srcOK, tgtOK) {
 			continue
+		}
+		if !srcOK {
+			partner, ok := g.NodesByID[e.Source]
+			if !ok || !nodePassesNonClusterFilters(partner, scope) {
+				continue
+			}
+			nodes[e.Source] = partner
+		}
+		if !tgtOK {
+			partner, ok := g.NodesByID[e.Target]
+			if !ok || !nodePassesNonClusterFilters(partner, scope) {
+				continue
+			}
+			nodes[e.Target] = partner
 		}
 		out = append(out, e)
 	}
 	return out
+}
+
+func preserveCrossClusterEdge(e *Edge, scope Scope, srcOK, tgtOK bool) bool {
+	if e.Type != EdgeTypePodCallsPod {
+		return false
+	}
+	if len(scope.Clusters) == 0 {
+		return false
+	}
+	if !srcOK && !tgtOK {
+		return false
+	}
+	return e.Labels["client_cluster"] != e.Labels["server_cluster"]
+}
+
+func nodePassesNonClusterFilters(n GraphNode, scope Scope) bool {
+	labels := n.Labels()
+	if len(scope.Namespaces) > 0 {
+		if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
+			return false
+		}
+	}
+	if len(scope.Nodes) > 0 {
+		switch n.Type() {
+		case NodeTypeK8sNode:
+			if _, ok := scope.Nodes[n.Name()]; !ok {
+				return false
+			}
+		case NodeTypePod:
+			if _, ok := scope.Nodes[labels["node"]]; ok {
+				return true
+			}
+			if name := stripClusterPrefix(labels["node"]); name != "" {
+				if _, ok := scope.Nodes[name]; ok {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return true
 }

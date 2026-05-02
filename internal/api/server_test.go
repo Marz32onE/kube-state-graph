@@ -58,6 +58,26 @@ func newTestServer(t *testing.T, mock *httptest.Server, override func(*config.Co
 	return New(cfg, builder, c, prom, metrics, logger)
 }
 
+// TestDebugLastQueries_NotImplemented guards the contract that the route
+// returns 501 (not 200 with an empty body). Clients must distinguish "feature
+// not built" from "no recent queries".
+func TestDebugLastQueries_NotImplemented(t *testing.T) {
+	mock := promMock(t, nil)
+	s := newTestServer(t, mock, func(cfg *config.Config) { cfg.EnableDebug = true })
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/debug/last-queries")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	errField, _ := body["error"].(map[string]any)
+	assert.Equal(t, "not_implemented", errField["reason"])
+}
+
 func TestGraphEndpoint_MissingStart(t *testing.T) {
 	mock := promMock(t, nil)
 	s := newTestServer(t, mock, nil)

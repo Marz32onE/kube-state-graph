@@ -6,753 +6,827 @@ import "github.com/swaggo/swag/v2"
 
 const docTemplate = `{
     "schemes": {{ marshal .Schemes }},
-    "swagger": "2.0",
+    "components": {
+        "schemas": {
+            "github_com_marz32one_kube-state-graph_internal_graph.EdgeType": {
+                "enum": [
+                    "pod-runs-on-node",
+                    "pod-mounts-pvc-on-node",
+                    "pod-calls-pod",
+                    "pod-replaced-by"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "EdgeTypePodRunsOnNode",
+                    "EdgeTypePodMountsPVCOnNode",
+                    "EdgeTypePodCallsPod",
+                    "EdgeTypePodReplacedBy"
+                ]
+            },
+            "github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition": {
+                "properties": {
+                    "description": {
+                        "type": "string"
+                    },
+                    "directed": {
+                        "type": "boolean"
+                    },
+                    "labels": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "may_cross_cluster": {
+                        "type": "boolean"
+                    },
+                    "source_type": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.NodeType"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "target_type": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.NodeType"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeType"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel": {
+                "properties": {
+                    "description": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "value_type": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_marz32one_kube-state-graph_internal_graph.NodeType": {
+                "enum": [
+                    "pod",
+                    "node",
+                    "pvc",
+                    "external"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "NodeTypePod",
+                    "NodeTypeK8sNode",
+                    "NodeTypePVC",
+                    "NodeTypeExternal"
+                ]
+            },
+            "internal_api.ClusterInfo": {
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.clustersBody": {
+                "properties": {
+                    "apiVersion": {
+                        "type": "string"
+                    },
+                    "clusters": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_api.ClusterInfo"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.cytoscapeBody": {
+                "properties": {
+                    "apiVersion": {
+                        "type": "string"
+                    },
+                    "bucket_seconds": {
+                        "type": "integer"
+                    },
+                    "built_at": {
+                        "type": "string"
+                    },
+                    "clusters": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "elements": {
+                        "$ref": "#/components/schemas/internal_api.cytoscapeElems"
+                    },
+                    "end": {
+                        "type": "string"
+                    },
+                    "end_actual": {
+                        "type": "string"
+                    },
+                    "start": {
+                        "type": "string"
+                    },
+                    "start_actual": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.cytoscapeEdge": {
+                "properties": {
+                    "data": {
+                        "$ref": "#/components/schemas/internal_api.cytoscapeEdgeData"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.cytoscapeEdgeData": {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "labels": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "type": "object"
+                    },
+                    "source": {
+                        "type": "string"
+                    },
+                    "target": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.cytoscapeElems": {
+                "properties": {
+                    "edges": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_api.cytoscapeEdge"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "nodes": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_api.cytoscapeNode"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.cytoscapeNode": {
+                "properties": {
+                    "data": {
+                        "$ref": "#/components/schemas/internal_api.cytoscapeNodeData"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.cytoscapeNodeData": {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "labels": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "type": "object"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.edgeTypesBody": {
+                "properties": {
+                    "apiVersion": {
+                        "type": "string"
+                    },
+                    "edge_types": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.errorBody": {
+                "properties": {
+                    "apiVersion": {
+                        "type": "string"
+                    },
+                    "error": {
+                        "$ref": "#/components/schemas/internal_api.errorField"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.errorField": {
+                "properties": {
+                    "message": {
+                        "type": "string"
+                    },
+                    "reason": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.grafanaBody": {
+                "properties": {
+                    "apiVersion": {
+                        "type": "string"
+                    },
+                    "edges": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_api.grafanaRow"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "edges_fields": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_api.grafanaField"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "nodes": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_api.grafanaRow"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "nodes_fields": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_api.grafanaField"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.grafanaField": {
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_api.grafanaRow": {
+                "additionalProperties": {},
+                "type": "object"
+            }
+        }
+    },
     "info": {
         "description": "{{escape .Description}}",
-        "title": "{{.Title}}",
-        "contact": {},
         "license": {
             "name": "Apache 2.0",
             "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
         },
+        "title": "{{.Title}}",
         "version": "{{.Version}}"
     },
-    "host": "{{.Host}}",
-    "basePath": "{{.BasePath}}",
+    "externalDocs": {
+        "description": "",
+        "url": ""
+    },
     "paths": {
         "/admin/cache": {
             "delete": {
-                "tags": [
-                    "admin"
-                ],
-                "summary": "Flush in-process graph cache",
                 "responses": {
                     "204": {
                         "description": "No Content"
                     }
-                }
+                },
+                "summary": "Flush in-process graph cache",
+                "tags": [
+                    "admin"
+                ]
             }
         },
         "/debug/last-queries": {
             "get": {
-                "produces": [
-                    "application/json"
-                ],
+                "responses": {
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Not implemented in v1"
+                    }
+                },
+                "summary": "Debug: last upstream queries",
                 "tags": [
                     "debug"
-                ],
-                "summary": "Debug: last upstream queries",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.debugLastQueriesBody"
-                        }
-                    }
-                }
+                ]
             }
         },
         "/docs": {
             "get": {
-                "produces": [
-                    "text/html"
-                ],
-                "tags": [
-                    "docs"
-                ],
-                "summary": "API reference UI (Scalar)",
                 "responses": {
                     "200": {
-                        "description": "HTML",
-                        "schema": {
-                            "type": "string"
-                        }
+                        "content": {
+                            "text/html": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "HTML"
                     }
-                }
+                },
+                "summary": "API reference UI (Scalar)",
+                "tags": [
+                    "docs"
+                ]
             }
         },
         "/docs/assets/{path}": {
             "get": {
-                "tags": [
-                    "docs"
-                ],
-                "summary": "API reference asset (vendored)",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "Asset path",
-                        "name": "path",
                         "in": "path",
-                        "required": true
+                        "name": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "static asset",
-                        "schema": {
-                            "type": "string"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "static asset"
                     },
                     "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.errorBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
                     }
-                }
+                },
+                "summary": "API reference asset (vendored)",
+                "tags": [
+                    "docs"
+                ]
             }
         },
         "/livez": {
             "get": {
-                "produces": [
-                    "text/plain"
-                ],
-                "tags": [
-                    "health"
-                ],
-                "summary": "Liveness",
                 "responses": {
                     "200": {
-                        "description": "ok",
-                        "schema": {
-                            "type": "string"
-                        }
+                        "content": {
+                            "text/plain": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "ok"
                     }
-                }
+                },
+                "summary": "Liveness",
+                "tags": [
+                    "health"
+                ]
             }
         },
         "/openapi.json": {
             "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "docs"
-                ],
-                "summary": "OpenAPI spec (JSON)",
                 "responses": {
                     "200": {
-                        "description": "OpenAPI 3.0 JSON",
-                        "schema": {
-                            "type": "string"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "OpenAPI 3.0 JSON"
                     }
-                }
+                },
+                "summary": "OpenAPI spec (JSON)",
+                "tags": [
+                    "docs"
+                ]
             }
         },
         "/openapi.yaml": {
             "get": {
-                "produces": [
-                    "application/yaml"
-                ],
-                "tags": [
-                    "docs"
-                ],
-                "summary": "OpenAPI spec (YAML)",
                 "responses": {
                     "200": {
-                        "description": "OpenAPI 3.0 YAML",
-                        "schema": {
-                            "type": "string"
-                        }
+                        "content": {
+                            "application/yaml": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "OpenAPI 3.0 YAML"
                     }
-                }
+                },
+                "summary": "OpenAPI spec (YAML)",
+                "tags": [
+                    "docs"
+                ]
             }
         },
         "/readyz": {
             "get": {
                 "description": "Returns 200 only when a 1 s ` + "`" + `up{}` + "`" + ` probe against the configured upstream succeeds.",
-                "produces": [
-                    "text/plain"
-                ],
-                "tags": [
-                    "health"
-                ],
-                "summary": "Readiness",
                 "responses": {
                     "200": {
-                        "description": "ok",
-                        "schema": {
-                            "type": "string"
-                        }
+                        "content": {
+                            "text/plain": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "ok"
                     },
                     "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.errorBody"
-                        }
+                        "content": {
+                            "text/plain": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
                     }
-                }
+                },
+                "summary": "Readiness",
+                "tags": [
+                    "health"
+                ]
             }
         },
         "/v1/clusters": {
             "get": {
                 "description": "Returns the set of clusters observed in ` + "`" + `kube_node_info` + "`" + ` over the configured discovery lookback (default 1 h). Intersected with --clusters-allowlist when set.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "discovery"
-                ],
-                "summary": "List clusters",
                 "responses": {
                     "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.clustersBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.clustersBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
                     },
                     "502": {
-                        "description": "Bad Gateway",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.errorBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Bad Gateway"
                     }
-                }
+                },
+                "summary": "List clusters",
+                "tags": [
+                    "discovery"
+                ]
             }
         },
         "/v1/edge-types": {
             "get": {
                 "description": "Static catalogue of edge types this server can produce. No upstream calls. Long-lived Cache-Control + ETag.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "discovery"
-                ],
-                "summary": "Edge-type catalogue",
                 "responses": {
                     "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.edgeTypesBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.edgeTypesBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
                     }
-                }
+                },
+                "summary": "Edge-type catalogue",
+                "tags": [
+                    "discovery"
+                ]
             }
         },
         "/v1/graph": {
             "get": {
                 "description": "Returns the multi-cluster pod / node / PVC graph for the supplied [start, end] window in Cytoscape.js shape. Filter via cluster/namespace/node/edge_type; traverse via root/depth/direction.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "graph"
-                ],
-                "summary": "Get multi-cluster graph (Cytoscape.js)",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "RFC 3339 or Unix-seconds timestamp",
+                        "in": "query",
                         "name": "start",
-                        "in": "query",
-                        "required": true
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
                     },
                     {
-                        "type": "string",
                         "description": "RFC 3339 or Unix-seconds timestamp",
-                        "name": "end",
                         "in": "query",
-                        "required": true
+                        "name": "end",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
                     },
                     {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "collectionFormat": "multi",
                         "description": "Restrict to listed clusters",
+                        "in": "query",
                         "name": "cluster",
-                        "in": "query"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "style": "form"
                     },
                     {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "collectionFormat": "multi",
                         "description": "Restrict to listed namespaces",
+                        "in": "query",
                         "name": "namespace",
-                        "in": "query"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "style": "form"
                     },
                     {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "collectionFormat": "multi",
                         "description": "Restrict to listed K8s node names",
+                        "in": "query",
                         "name": "node",
-                        "in": "query"
-                    },
-                    {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
                         },
-                        "collectionFormat": "multi",
+                        "style": "form"
+                    },
+                    {
                         "description": "Restrict to listed edge types",
+                        "in": "query",
                         "name": "edge_type",
-                        "in": "query"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "style": "form"
                     },
                     {
-                        "type": "string",
                         "description": "Cluster-scoped node ID anchoring a traversal",
+                        "in": "query",
                         "name": "root",
-                        "in": "query"
+                        "schema": {
+                            "type": "string"
+                        }
                     },
                     {
-                        "type": "integer",
                         "description": "Traversal depth (0..6, default 2 when root is set)",
+                        "in": "query",
                         "name": "depth",
-                        "in": "query"
+                        "schema": {
+                            "type": "integer"
+                        }
                     },
                     {
-                        "enum": [
-                            "in",
-                            "out",
-                            "both"
-                        ],
-                        "type": "string",
                         "description": "Traversal direction",
+                        "in": "query",
                         "name": "direction",
-                        "in": "query"
+                        "schema": {
+                            "enum": [
+                                "in",
+                                "out",
+                                "both"
+                            ],
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.cytoscapeBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.cytoscapeBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
                     },
                     "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.errorBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
                     },
                     "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.errorBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
                     }
-                }
+                },
+                "summary": "Get multi-cluster graph (Cytoscape.js)",
+                "tags": [
+                    "graph"
+                ]
             }
         },
         "/v1/graph/nodegraph": {
             "get": {
                 "description": "Same data as /v1/graph but projected into the parallel-array shape Grafana's Node Graph panel expects when consumed via the JSON / Infinity datasource.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "graph"
-                ],
-                "summary": "Get multi-cluster graph (Grafana Node Graph datasource)",
                 "parameters": [
                     {
-                        "type": "string",
                         "description": "RFC 3339 or Unix-seconds timestamp",
+                        "in": "query",
                         "name": "start",
-                        "in": "query",
-                        "required": true
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
                     },
                     {
-                        "type": "string",
                         "description": "RFC 3339 or Unix-seconds timestamp",
-                        "name": "end",
                         "in": "query",
-                        "required": true
+                        "name": "end",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
                     },
                     {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "collectionFormat": "multi",
                         "description": "Restrict to listed clusters",
+                        "in": "query",
                         "name": "cluster",
-                        "in": "query"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "style": "form"
                     },
                     {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "collectionFormat": "multi",
                         "description": "Restrict to listed namespaces",
+                        "in": "query",
                         "name": "namespace",
-                        "in": "query"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "style": "form"
                     },
                     {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "collectionFormat": "multi",
                         "description": "Restrict to listed K8s node names",
+                        "in": "query",
                         "name": "node",
-                        "in": "query"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "style": "form"
                     },
                     {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "collectionFormat": "multi",
                         "description": "Restrict to listed edge types",
+                        "in": "query",
                         "name": "edge_type",
-                        "in": "query"
+                        "schema": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "style": "form"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.grafanaBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.grafanaBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
                     },
                     "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.errorBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
                     },
                     "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/internal_api.errorBody"
-                        }
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Service Unavailable"
                     }
-                }
+                },
+                "summary": "Get multi-cluster graph (Grafana Node Graph datasource)",
+                "tags": [
+                    "graph"
+                ]
             }
         }
     },
-    "definitions": {
-        "github_com_marz32one_kube-state-graph_internal_graph.EdgeType": {
-            "type": "string",
-            "enum": [
-                "pod-runs-on-node",
-                "pod-mounts-pvc-on-node",
-                "pod-calls-pod",
-                "pod-replaced-by"
-            ],
-            "x-enum-varnames": [
-                "EdgeTypePodRunsOnNode",
-                "EdgeTypePodMountsPVCOnNode",
-                "EdgeTypePodCallsPod",
-                "EdgeTypePodReplacedBy"
-            ]
-        },
-        "github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition": {
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string"
-                },
-                "directed": {
-                    "type": "boolean"
-                },
-                "labels": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel"
-                    }
-                },
-                "may_cross_cluster": {
-                    "type": "boolean"
-                },
-                "source_type": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_marz32one_kube-state-graph_internal_graph.NodeType"
-                    }
-                },
-                "target_type": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_marz32one_kube-state-graph_internal_graph.NodeType"
-                    }
-                },
-                "type": {
-                    "$ref": "#/definitions/github_com_marz32one_kube-state-graph_internal_graph.EdgeType"
-                }
-            }
-        },
-        "github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel": {
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "value_type": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_marz32one_kube-state-graph_internal_graph.NodeType": {
-            "type": "string",
-            "enum": [
-                "pod",
-                "node",
-                "pvc",
-                "external"
-            ],
-            "x-enum-varnames": [
-                "NodeTypePod",
-                "NodeTypeK8sNode",
-                "NodeTypePVC",
-                "NodeTypeExternal"
-            ]
-        },
-        "internal_api.ClusterInfo": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_api.clustersBody": {
-            "type": "object",
-            "properties": {
-                "apiVersion": {
-                    "type": "string"
-                },
-                "clusters": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_api.ClusterInfo"
-                    }
-                }
-            }
-        },
-        "internal_api.cytoscapeBody": {
-            "type": "object",
-            "properties": {
-                "apiVersion": {
-                    "type": "string"
-                },
-                "bucket_seconds": {
-                    "type": "integer"
-                },
-                "built_at": {
-                    "type": "string"
-                },
-                "clusters": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "elements": {
-                    "$ref": "#/definitions/internal_api.cytoscapeElems"
-                },
-                "end": {
-                    "type": "string"
-                },
-                "end_actual": {
-                    "type": "string"
-                },
-                "start": {
-                    "type": "string"
-                },
-                "start_actual": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_api.cytoscapeEdge": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "$ref": "#/definitions/internal_api.cytoscapeEdgeData"
-                }
-            }
-        },
-        "internal_api.cytoscapeEdgeData": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string"
-                },
-                "labels": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "string"
-                    }
-                },
-                "source": {
-                    "type": "string"
-                },
-                "target": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_api.cytoscapeElems": {
-            "type": "object",
-            "properties": {
-                "edges": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_api.cytoscapeEdge"
-                    }
-                },
-                "nodes": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_api.cytoscapeNode"
-                    }
-                }
-            }
-        },
-        "internal_api.cytoscapeNode": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "$ref": "#/definitions/internal_api.cytoscapeNodeData"
-                }
-            }
-        },
-        "internal_api.cytoscapeNodeData": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string"
-                },
-                "labels": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "string"
-                    }
-                },
-                "name": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_api.debugLastQueriesBody": {
-            "type": "object",
-            "properties": {
-                "apiVersion": {
-                    "type": "string"
-                },
-                "note": {
-                    "type": "string"
-                },
-                "queries": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                }
-            }
-        },
-        "internal_api.edgeTypesBody": {
-            "type": "object",
-            "properties": {
-                "apiVersion": {
-                    "type": "string"
-                },
-                "edge_types": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition"
-                    }
-                }
-            }
-        },
-        "internal_api.errorBody": {
-            "type": "object",
-            "properties": {
-                "apiVersion": {
-                    "type": "string"
-                },
-                "error": {
-                    "$ref": "#/definitions/internal_api.errorField"
-                }
-            }
-        },
-        "internal_api.errorField": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string"
-                },
-                "reason": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_api.grafanaBody": {
-            "type": "object",
-            "properties": {
-                "apiVersion": {
-                    "type": "string"
-                },
-                "edges": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_api.grafanaRow"
-                    }
-                },
-                "edges_fields": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_api.grafanaField"
-                    }
-                },
-                "nodes": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_api.grafanaRow"
-                    }
-                },
-                "nodes_fields": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_api.grafanaField"
-                    }
-                }
-            }
-        },
-        "internal_api.grafanaField": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_api.grafanaRow": {
-            "type": "object",
-            "additionalProperties": {}
+    "openapi": "3.1.0",
+    "servers": [
+        {
+            "url": "/"
         }
-    }
+    ]
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
 	Version:          "v1",
-	Host:             "localhost:8080",
-	BasePath:         "/",
-	Schemes:          []string{},
 	Title:            "kube-state-graph API",
 	Description:      "Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.",
 	InfoInstanceName: "swagger",
