@@ -67,3 +67,15 @@ data:
         static_configs:
           - targets:
               - vm-fixtures.kube-state-graph.svc:8080
+
+      # Real kube-state-metrics scraped from the kind cluster itself. The
+      # `cluster` label is injected here because kube-state-metrics emits no
+      # cluster identity by default; kube-state-graph requires every series
+      # to carry one (graph-api spec § "Cluster-scoped IDs").
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets:
+              - kube-state-metrics.kube-state-graph.svc:8080
+        relabel_configs:
+          - target_label: cluster
+            replacement: kind-local
