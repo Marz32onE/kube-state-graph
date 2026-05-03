@@ -8,24 +8,24 @@ import (
 type Metrics struct {
 	Registry *prometheus.Registry
 
-	BuildDuration       *prometheus.HistogramVec
-	ProjectDuration     prometheus.Histogram
-	SerialiseDuration   *prometheus.HistogramVec
-	CacheHits           *prometheus.CounterVec
-	CacheMisses         *prometheus.CounterVec
-	CacheSizeEntries    prometheus.Gauge
-	CacheCostBytes      prometheus.Gauge
-	CacheEvictions      *prometheus.CounterVec
-	CacheRejected       prometheus.Counter
-	SingleflightDedup   prometheus.Counter
-	BuildConcurrency    prometheus.Gauge
-	BuildRejected       *prometheus.CounterVec
-	GraphNodeCount      *prometheus.GaugeVec
-	GraphEdgeCount      *prometheus.GaugeVec
-	ClustersObserved    prometheus.Gauge
-	UpstreamQueryDur    *prometheus.HistogramVec
-	UpstreamQueryFail   *prometheus.CounterVec
-	HTTPRequests        *prometheus.CounterVec
+	BuildDuration     *prometheus.HistogramVec
+	ProjectDuration   prometheus.Histogram
+	SerialiseDuration *prometheus.HistogramVec
+	CacheHits         *prometheus.CounterVec
+	CacheMisses       *prometheus.CounterVec
+	CacheSizeEntries  prometheus.Gauge
+	CacheCostBytes    prometheus.Gauge
+	CacheEvictions    *prometheus.CounterVec
+	CacheRejected     prometheus.Counter
+	SingleflightDedup prometheus.Counter
+	BuildConcurrency  prometheus.Gauge
+	BuildRejected     *prometheus.CounterVec
+	GraphNodeCount    *prometheus.GaugeVec
+	GraphEdgeCount    *prometheus.GaugeVec
+	ClustersObserved  prometheus.Gauge
+	UpstreamQueryDur  *prometheus.HistogramVec
+	UpstreamQueryFail *prometheus.CounterVec
+	HTTPRequests      *prometheus.CounterVec
 }
 
 // NewMetrics registers and returns a fresh Metrics bundle.

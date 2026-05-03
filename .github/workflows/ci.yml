@@ -62,6 +62,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Pre-download modules so `swag init` does not race the module cache
+      # while parsing transitive deps; without this the CI runner hits
+      # "cannot find all dependencies" and swag exits 1.
+      - name: Pre-download modules
+        run: go mod download
+
       # Single source of truth: `make check-docs` regenerates the OpenAPI spec
       # via the `swag` tool pinned in go.mod (`tool` directive) and diffs both
       # docs/ and the embedded internal/api/static/openapi/ payload.

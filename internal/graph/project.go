@@ -143,7 +143,7 @@ func nodePassesFilters(n GraphNode, scope Scope) bool {
 }
 
 func stripClusterPrefix(id string) string {
-	for i := 0; i < len(id); i++ {
+	for i := range len(id) {
 		if id[i] == '/' {
 			return id[i+1:]
 		}

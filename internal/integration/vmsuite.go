@@ -9,11 +9,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -71,13 +71,13 @@ func (s *VMSuite) SetupSuite() {
 		ContainerRequest: req,
 		Started:          true,
 	})
-	require.NoError(s.T(), err, "start VictoriaMetrics container")
+	s.Require().NoError(err, "start VictoriaMetrics container")
 	s.container = c
 
 	host, err := c.Host(s.ctx)
-	require.NoError(s.T(), err)
+	s.Require().NoError(err)
 	port, err := c.MappedPort(s.ctx, "8428/tcp")
-	require.NoError(s.T(), err)
+	s.Require().NoError(err)
 	s.vmURL = fmt.Sprintf("http://%s:%s", host, port.Port())
 
 	s.WaitForReady(10 * time.Second)
@@ -99,51 +99,58 @@ func (s *VMSuite) VMURL() string { return s.vmURL }
 // WaitForReady polls VM's `up{}` (effectively, /-/ready) until it answers or
 // the budget is exhausted.
 func (s *VMSuite) WaitForReady(budget time.Duration) {
+	s.T().Helper()
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(s.vmURL + "/-/ready")
+		resp, err := http.Get(s.vmURL + "/-/ready") //nolint:noctx // best-effort readiness probe
 		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return
 		}
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	require.FailNow(s.T(), "vm_not_ready", "VictoriaMetrics did not become ready within %s", budget)
+	s.Require().FailNowf("vm_not_ready", "VictoriaMetrics did not become ready within %s", budget)
 }
 
 // IngestExpFmt POSTs Prometheus exposition-format text to VM's
 // /api/v1/import/prometheus endpoint. Each line is one sample.
 func (s *VMSuite) IngestExpFmt(exposition string) {
+	s.T().Helper()
 	req, err := http.NewRequestWithContext(s.ctx, http.MethodPost,
 		s.vmURL+"/api/v1/import/prometheus", strings.NewReader(exposition))
-	require.NoError(s.T(), err)
+	s.Require().NoError(err)
 	resp, err := http.DefaultClient.Do(req)
-	require.NoError(s.T(), err)
-	defer resp.Body.Close()
+	s.Require().NoError(err)
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	require.Truef(s.T(), resp.StatusCode >= 200 && resp.StatusCode < 300,
+	s.Require().Truef(resp.StatusCode >= 200 && resp.StatusCode < 300,
 		"VM ingest returned %d: %s", resp.StatusCode, body)
 }
 
 // WaitForSeries polls VM until the supplied PromQL returns a non-empty
-// vector or the budget is exhausted. Returns true on success.
-func (s *VMSuite) WaitForSeries(query string, budget time.Duration) bool {
+// vector at the given evaluation time or the budget is exhausted. evalTime
+// is forwarded as the `time=` parameter; pass time.Time{} to evaluate at
+// the server's current time.
+func (s *VMSuite) WaitForSeries(query string, evalTime time.Time, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		v := url.Values{"query": []string{query}}
-		resp, err := http.Get(s.vmURL + "/api/v1/query?" + v.Encode())
+		if !evalTime.IsZero() {
+			v.Set("time", strconv.FormatInt(evalTime.Unix(), 10))
+		}
+		resp, err := http.Get(s.vmURL + "/api/v1/query?" + v.Encode()) //nolint:noctx // poll loop
 		if err == nil && resp.StatusCode == http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			// Crude check: response contains a non-empty result array.
 			if !bytes.Contains(body, []byte(`"result":[]`)) {
 				return true
 			}
 		} else if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -154,20 +161,21 @@ func (s *VMSuite) WaitForSeries(query string, budget time.Duration) bool {
 // VictoriaMetrics container, wraps it in httptest.NewServer, and returns the
 // server's base URL. Caller-supplied configure func may tweak the Config.
 func (s *VMSuite) StartAPIServer(configure func(*config.Config)) *httptest.Server {
+	s.T().Helper()
 	cfg := config.Defaults()
 	cfg.PromURL = s.vmURL
 	cfg.LogLevel = "error"
 	if configure != nil {
 		configure(&cfg)
 	}
-	require.NoError(s.T(), cfg.Validate())
+	s.Require().NoError(cfg.Validate())
 
 	logger := observability.NewLogger(cfg.LogLevel)
 	metrics := observability.NewMetrics()
 	prom, err := promql.New(cfg.PromURL, metrics)
-	require.NoError(s.T(), err)
+	s.Require().NoError(err)
 	c, err := cache.New(cfg.CacheMaxCostBytes, metrics)
-	require.NoError(s.T(), err)
+	s.Require().NoError(err)
 	s.T().Cleanup(c.Close)
 
 	builder := build.New(prom, cfg, metrics)

@@ -11,15 +11,15 @@ import (
 type Query string
 
 const (
-	QPodInfo            Query = "kube_pod_info"
-	QNodeInfo           Query = "kube_node_info"
-	QNodeAddresses      Query = "kube_node_status_addresses"
-	QPVCBindings        Query = "kube_pod_spec_volumes_persistentvolumeclaims_info"
-	QNodeLabels         Query = "kube_node_labels"
-	QServiceGraphTotal  Query = "traces_service_graph_request_total"
-	QClusterDiscovery   Query = "cluster_discovery"
-	QClusterSizeProbe   Query = "cluster_size_probe"
-	QUpProbe            Query = "up"
+	QPodInfo           Query = "kube_pod_info"
+	QNodeInfo          Query = "kube_node_info"
+	QNodeAddresses     Query = "kube_node_status_addresses"
+	QPVCBindings       Query = "kube_pod_spec_volumes_persistentvolumeclaims_info"
+	QNodeLabels        Query = "kube_node_labels"
+	QServiceGraphTotal Query = "traces_service_graph_request_total"
+	QClusterDiscovery  Query = "cluster_discovery"
+	QClusterSizeProbe  Query = "cluster_size_probe"
+	QUpProbe           Query = "up"
 )
 
 // Render returns the PromQL string for the named query, parameterised by

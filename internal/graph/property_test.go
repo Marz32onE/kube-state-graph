@@ -14,13 +14,13 @@ import (
 // property-based testing.
 func genGraph(seed int64, clusters, podsPerCluster, extraEdges int) *Graph {
 	r := rand.New(rand.NewSource(seed))
-	all := []GraphNode{}
+	all := make([]GraphNode, 0, clusters*(1+podsPerCluster))
 	clusterNames := make([]string, clusters)
-	for i := 0; i < clusters; i++ {
+	for i := range clusters {
 		clusterNames[i] = fmt.Sprintf("cluster-%d", i)
 		nodeID := K8sNodeID(clusterNames[i], "worker-0")
 		all = append(all, &K8sNode{IDValue: nodeID, NameValue: "worker-0", LabelsValue: map[string]string{"cluster": clusterNames[i]}})
-		for j := 0; j < podsPerCluster; j++ {
+		for j := range podsPerCluster {
 			id := PodID(clusterNames[i], fmt.Sprintf("uid-%d-%d", i, j))
 			all = append(all, &PodNode{
 				IDValue:   id,
@@ -99,7 +99,7 @@ func TestProperty_TraversalDepthRespected(t *testing.T) {
 			root = id
 			break
 		}
-		for d := 0; d <= 3; d++ {
+		for d := range 4 {
 			v := Project(g, Scope{Root: root, Depth: d, Direction: DirectionBoth})
 			dist := map[string]int{root: 0}
 			frontier := []string{root}

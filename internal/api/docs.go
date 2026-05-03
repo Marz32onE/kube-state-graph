@@ -126,4 +126,3 @@ func mimeFor(name string) string {
 		return "application/octet-stream"
 	}
 }
-

@@ -14,9 +14,9 @@ import (
 
 // ServiceGraphResult is the typed output of the pod-service-graph reader.
 type ServiceGraphResult struct {
-	Edges        []*graph.Edge
+	Edges         []*graph.Edge
 	ExternalNodes []*graph.ExternalNode
-	SynthPods    []*graph.PodNode
+	SynthPods     []*graph.PodNode
 }
 
 // ReadServiceGraph fetches service-graph series for the window and joins

@@ -279,4 +279,3 @@ func TestClustersEndpoint_UpstreamError_Returns502(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
-

@@ -88,11 +88,11 @@ func serialiseCytoscape(req graphRequest, g *graph.Graph, view graph.View) cytos
 // ----- Grafana Node Graph shape ---------------------------------------------
 
 type grafanaBody struct {
-	APIVersion   string         `json:"apiVersion"`
-	NodesFields  []grafanaField `json:"nodes_fields"`
-	Nodes        []grafanaRow   `json:"nodes"`
-	EdgesFields  []grafanaField `json:"edges_fields"`
-	Edges        []grafanaRow   `json:"edges"`
+	APIVersion  string         `json:"apiVersion"`
+	NodesFields []grafanaField `json:"nodes_fields"`
+	Nodes       []grafanaRow   `json:"nodes"`
+	EdgesFields []grafanaField `json:"edges_fields"`
+	Edges       []grafanaRow   `json:"edges"`
 }
 
 type grafanaField struct {

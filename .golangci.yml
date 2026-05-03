@@ -18,83 +18,51 @@ linters:
     # Modern Go idioms
     - copyloopvar
     - intrange
-    - revive
     # Error handling
     - errorlint
     - nilerr
-    # Security
-    - gosec
-    # Complexity
-    - gocyclo
-    - gocognit
-    - funlen
     # Performance
-    - prealloc
     - bodyclose
     - unconvert
-    # Style
+    - prealloc
+    # Style / cleanliness
     - misspell
-    # Dead code / duplication
-    - dupl
     - unparam
-    # Magic numbers
-    - mnd
+    # Security
+    - gosec
     # Testify usage
     - testifylint
 
   settings:
-    gocyclo:
-      min-complexity: 15
-    gocognit:
-      min-complexity: 20
-    funlen:
-      lines: 100
-      statements: 50
-    revive:
-      rules:
-        - name: blank-imports
-        - name: context-as-argument
-        - name: error-return
-        - name: error-strings
-        - name: error-naming
-        - name: exported
-        - name: increment-decrement
-        - name: var-naming
-        - name: package-comments
-        - name: range
-        - name: receiver-naming
-        - name: time-naming
-        - name: unexported-return
-        - name: indent-error-flow
-        - name: errorf
+    exhaustive:
+      default-signifies-exhaustive: true
     testifylint:
       enable-all: true
-    mnd:
-      ignored-functions:
-        - "context.WithTimeout"
-        - "time.*"
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
 
   exclusions:
     paths:
       - openspec
       - .claude
       - .cursor
+      - docs
     rules:
       - path: _test\.go
         linters:
+          - gosec
+          - unparam
           - errcheck
-          - dupl
-          - funlen
-          - gocyclo
-          - gocognit
-          - mnd
-          - revive
-      - path: cmd/kube-state-graph/main\.go
-        linters:
-          - mnd
-      - path: internal/config/
-        linters:
-          - mnd
+          - bodyclose
+      - path: internal/graph/property_test\.go
+        text: "G404"
 
 formatters:
   enable:

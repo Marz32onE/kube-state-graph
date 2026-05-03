@@ -105,12 +105,16 @@ type clustersBody struct {
 }
 
 // edgeTypesBody is the response shape of GET /v1/edge-types.
+//
+//nolint:unused // referenced via swag @Success annotation
 type edgeTypesBody struct {
 	APIVersion string                     `json:"apiVersion"`
 	EdgeTypes  []graph.EdgeTypeDefinition `json:"edge_types"`
 }
 
 // debugLastQueriesBody is the response shape of GET /debug/last-queries.
+//
+//nolint:unused // referenced via swag @Success annotation
 type debugLastQueriesBody struct {
 	APIVersion string   `json:"apiVersion"`
 	Queries    []string `json:"queries"`

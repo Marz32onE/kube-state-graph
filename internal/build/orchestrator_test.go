@@ -62,10 +62,10 @@ func (f *fakeBuilder) Build(ctx context.Context, _ time.Duration, _ time.Time) (
 
 // mapCache is a trivial in-memory cache implementation for tests.
 type mapCache struct {
-	mu      sync.Mutex
-	data    map[uint64]*graph.Graph
-	gets    atomic.Int32
-	sets    atomic.Int32
+	mu   sync.Mutex
+	data map[uint64]*graph.Graph
+	gets atomic.Int32
+	sets atomic.Int32
 }
 
 func newMapCache() *mapCache { return &mapCache{data: map[uint64]*graph.Graph{}} }

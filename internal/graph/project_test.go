@@ -165,6 +165,7 @@ func TestProject_NamespaceFilter_KeepsK8sNode(t *testing.T) {
 			k8sCount++
 		case NodeTypePod:
 			podCount++
+		default:
 		}
 	}
 	for _, e := range v.Edges {

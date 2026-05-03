@@ -22,9 +22,9 @@ var update = flag.Bool("update", false, "update golden files")
 // responses for several canned scenarios so contract drift is caught on PR.
 func TestGolden_GraphResponses(t *testing.T) {
 	scenarios := map[string]graph.View{
-		"single-cluster":     buildSingleCluster(),
-		"two-cluster-cross":  buildTwoClusterCross(),
-		"with-external":      buildWithExternal(),
+		"single-cluster":    buildSingleCluster(),
+		"two-cluster-cross": buildTwoClusterCross(),
+		"with-external":     buildWithExternal(),
 	}
 
 	for name, view := range scenarios {

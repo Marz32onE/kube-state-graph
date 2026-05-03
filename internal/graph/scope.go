@@ -19,9 +19,9 @@ const MaxTraversalDepth = 6
 
 // Scope describes the projection filter applied at response time.
 type Scope struct {
-	Clusters   map[string]struct{} // empty ⇒ no cluster filter
-	Namespaces map[string]struct{} // empty ⇒ no namespace filter
-	Nodes      map[string]struct{} // empty ⇒ no node filter
+	Clusters   map[string]struct{}   // empty ⇒ no cluster filter
+	Namespaces map[string]struct{}   // empty ⇒ no namespace filter
+	Nodes      map[string]struct{}   // empty ⇒ no node filter
 	EdgeTypes  map[EdgeType]struct{} // empty ⇒ all edge types
 
 	Root      string    // empty ⇒ no traversal
