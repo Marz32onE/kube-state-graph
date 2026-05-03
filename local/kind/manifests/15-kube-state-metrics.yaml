@@ -16,7 +16,7 @@ metadata:
   name: kube-state-metrics
 rules:
   - apiGroups: [""]
-    resources: ["pods", "nodes"]
+    resources: ["pods", "nodes", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -54,8 +54,8 @@ spec:
         - name: kube-state-metrics
           image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
           args:
-            - "--resources=pods,nodes"
-            - "--metric-allowlist=kube_pod_info,kube_node_info,kube_node_labels"
+            - "--resources=pods,nodes,persistentvolumeclaims"
+            - "--metric-allowlist=kube_pod_info,kube_node_info,kube_node_labels,kube_pod_spec_volumes_persistentvolumeclaims_info"
             # Surface every node label as a metric label so the topology reader
             # sees them. Without this the kube_node_labels series only carries
             # whatever is on the node-info join.

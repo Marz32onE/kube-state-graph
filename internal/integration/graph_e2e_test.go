@@ -189,7 +189,7 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 	require.NoError(s.T(), err)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	for _, et := range []string{"pod-runs-on-node", "pod-mounts-pvc-on-node", "pod-calls-pod"} {
+	for _, et := range []string{"pod-runs-on-node", "pod-mounts-pvc", "pod-calls-pod"} {
 		assert.Contains(s.T(), string(body), et)
 	}
 }

@@ -111,7 +111,7 @@ Edge endpoint 引用上述複合 ID。
 Edge 分類為 typed category：
 
 - `pod-runs-on-node`（僅 intra-cluster）：由時間區間內評估的 `kube_pod_info{node=..., cluster=...}` 衍生。
-- `pod-mounts-pvc-on-node`（僅 intra-cluster）：由 join `kube_pod_spec_volumes_persistentvolumeclaims_info` 與 pod 所在 node，且限單一 cluster。
+- `pod-mounts-pvc`（僅 intra-cluster）：由 join `kube_pod_spec_volumes_persistentvolumeclaims_info` 與 pod 所在 node，且限單一 cluster。
 - `pod-calls-pod`（intra-cluster **或 cross-cluster**）：由 `rate(traces_service_graph_request_total[<window>]) @ <end>` 非零 rate，join 回 `(client_cluster, client_k8s_pod_uid)` 與 `(server_cluster, server_k8s_pod_uid)`。Edge 一律帶 `labels.client_cluster` 與 `labels.server_cluster`；是否 cross-cluster 由消費端比對兩字串（依 D9 嚴格字串規則，`labels` 內不放 boolean flag）。
 
 每條 edge 帶 `type`、`source`、`target`，以及型別專屬 `attrs`（序列化 JSON 形狀見 D9）。
@@ -247,9 +247,9 @@ traces_service_graph_request_server_seconds_bucket{ ...same labels..., le="..." 
 | Node | `type` | string | `"pod"`、`"node"`、`"pvc"`、`"external"` 之一。 |
 | Node | `labels` | `map[string]string` | 僅字串 key/value。Pod/node/PVC 必含 `cluster`、pods/PVC 含 `namespace`、pods 含 `node`（cluster-scoped node ID）、node 在已知時含 `external_ip`。K8s pod/node label 原文攤平。**External** 僅最少 labels（設定之 `pattern` 值在 `pattern` key）；**不**帶 `cluster`。新 key 僅 additive。 |
 | Edge | `id` | string | 自固定 namespace UUID 與 canonical tuple `(type, source, target)` 導出之 UUIDv5。同 edge 重建 ID 穩定；符合 RFC 4122。 |
-| Edge | `type` | string | `/v1/edge-types` 註冊型別之一（如 `"pod-runs-on-node"`、`"pod-mounts-pvc-on-node"`、`"pod-calls-pod"`）。 |
+| Edge | `type` | string | `/v1/edge-types` 註冊型別之一（如 `"pod-runs-on-node"`、`"pod-mounts-pvc"`、`"pod-calls-pod"`）。 |
 | Edge | `source` / `target` | string | 同回應內存在之 node `id`。 |
-| Edge | `labels` | `map[string]string` | `pod-calls-pod`：`client_cluster`、`server_cluster`。`pod-mounts-pvc-on-node`：`claim_name`、`storage_class`。`pod-runs-on-node`：`scheduled_at`。新 key additive。 |
+| Edge | `labels` | `map[string]string` | `pod-calls-pod`：`client_cluster`、`server_cluster`。`pod-mounts-pvc`：`claim_name`、`storage_class`。`pod-runs-on-node`：`scheduled_at`。新 key additive。 |
 
 **嚴格字串型別。** Node 與 edge 的 `labels` 皆為 `map[string]string`。非字串資料（數值 edge metrics 如 `rate`、`p99_ms`、`error_rate`；boolean 如 `cross_cluster`、`ghost`）**延後**到未來 typed struct field。v1 不在 `labels` 內用 `"true"`/`"false"` 字串編 boolean；跨 cluster 由消費端比對 `pod-calls-pod` 上 `labels.client_cluster` 與 `labels.server_cluster`。
 

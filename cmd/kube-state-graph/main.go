@@ -70,6 +70,8 @@ func run() error {
 		Addr:              cfg.ListenAddr,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      cfg.BuildTimeout + 5*time.Second,
 	}
 
 	errCh := make(chan error, 1)

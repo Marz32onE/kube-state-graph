@@ -40,7 +40,7 @@ var EdgeTypes = []EdgeTypeDefinition{
 		},
 	},
 	{
-		Type:            EdgeTypePodMountsPVCOnNode,
+		Type:            EdgeTypePodMountsPVC,
 		Description:     "Pod mounts a PVC bound on the pod's host node. Always intra-cluster.",
 		SourceType:      []NodeType{NodeTypePod},
 		TargetType:      []NodeType{NodeTypePVC},

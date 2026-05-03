@@ -14,20 +14,32 @@ import (
 	"github.com/marz32one/kube-state-graph/internal/observability"
 )
 
+// graphBuilder is the small interface the Orchestrator depends on. *Builder
+// satisfies it; tests can substitute a fake.
+type graphBuilder interface {
+	Build(ctx context.Context, window time.Duration, end time.Time) (*graph.Graph, error)
+}
+
 // Orchestrator coordinates singleflight, cache, semaphore, and timeout for
 // every incoming graph request.
 type Orchestrator struct {
-	builder *Builder
-	cache   cache.Cache
-	sf      singleflight.Group
-	sem     *semaphore.Weighted
-	timeout time.Duration
+	builder  graphBuilder
+	cache    cache.Cache
+	sf       singleflight.Group
+	sem      *semaphore.Weighted
+	timeout  time.Duration
 	inflight atomic.Int64
-	metrics *observability.Metrics
+	metrics  *observability.Metrics
 }
 
 // NewOrchestrator wires up the cache, singleflight, and semaphore.
 func NewOrchestrator(b *Builder, c cache.Cache, concurrency int, timeout time.Duration, m *observability.Metrics) *Orchestrator {
+	return newOrchestrator(b, c, concurrency, timeout, m)
+}
+
+// newOrchestrator constructs an Orchestrator from any graphBuilder. Used by
+// production via NewOrchestrator and by tests via a fake builder.
+func newOrchestrator(b graphBuilder, c cache.Cache, concurrency int, timeout time.Duration, m *observability.Metrics) *Orchestrator {
 	return &Orchestrator{
 		builder: b,
 		cache:   c,

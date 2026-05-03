@@ -3,13 +3,13 @@ components:
     github_com_marz32one_kube-state-graph_internal_graph.EdgeType:
       enum:
       - pod-runs-on-node
-      - pod-mounts-pvc-on-node
+      - pod-mounts-pvc
       - pod-calls-pod
       - pod-replaced-by
       type: string
       x-enum-varnames:
       - EdgeTypePodRunsOnNode
-      - EdgeTypePodMountsPVCOnNode
+      - EdgeTypePodMountsPVC
       - EdgeTypePodCallsPod
       - EdgeTypePodReplacedBy
     github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition:

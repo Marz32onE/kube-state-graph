@@ -22,7 +22,7 @@
 - [x] 3.4 Implement `graph.Graph` struct holding `Nodes`, `Edges`, plus pre-built forward + reverse adjacency maps (`map[NodeID][]*Edge`).
 - [x] 3.5 Implement `graph.Scope` (filter spec: clusters, namespaces, nodes, edge types, traversal root/depth/direction).
 - [x] 3.6 Implement pure `graph.Project(g *Graph, scope Scope) GraphView` returning slices of pointers (no allocations).
-- [x] 3.7 Implement edge-type registry as a single `var` consumed by both the builder and the `/v1/edge-types` handler; cover `pod-runs-on-node`, `pod-mounts-pvc-on-node`, `pod-calls-pod`.
+- [x] 3.7 Implement edge-type registry as a single `var` consumed by both the builder and the `/v1/edge-types` handler; cover `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`.
 
 ## 4. Upstream Prometheus query layer
 
@@ -42,7 +42,7 @@
 - [x] 5.6 Implement pod-restart handling: when multiple UIDs exist for the same `(cluster, namespace, pod)`, keep the latest as canonical, retain the prior, emit a `pod-replaced-by` synthetic edge.
 - [x] 5.7 Implement `cluster="unknown"` bucketing for series missing the `cluster` label; surface in `kube_state_graph_clusters_observed`.
 - [x] 5.8 Build `pod-runs-on-node` edges from `kube_pod_info{node=...}`.
-- [x] 5.9 Build `pod-mounts-pvc-on-node` edges by joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the pod's host node within the same cluster.
+- [x] 5.9 Build `pod-mounts-pvc` edges by joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the pod's host node within the same cluster.
 
 ## 6. Pod service-graph reader (capability: pod-service-graph)
 

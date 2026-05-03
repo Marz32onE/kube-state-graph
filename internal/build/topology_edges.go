@@ -2,7 +2,7 @@ package build
 
 import "github.com/marz32one/kube-state-graph/internal/graph"
 
-// TopologyEdges synthesises pod-runs-on-node and pod-mounts-pvc-on-node edges
+// TopologyEdges synthesises pod-runs-on-node and pod-mounts-pvc edges
 // from a parsed Topology. Edge IDs are deterministic UUIDv5 — see graph.NewEdge.
 func TopologyEdges(t Topology) []*graph.Edge {
 	edges := make([]*graph.Edge, 0, len(t.Pods)+len(t.PodPVCs))
@@ -34,7 +34,7 @@ func TopologyEdges(t Topology) []*graph.Edge {
 			labels["claim_name"] = pv.Name()
 		}
 		edges = append(edges, graph.NewEdge(
-			graph.EdgeTypePodMountsPVCOnNode,
+			graph.EdgeTypePodMountsPVC,
 			b.PodID,
 			b.PVCID,
 			labels,

@@ -100,8 +100,16 @@ func nodePassesFilters(n GraphNode, scope Scope) bool {
 		}
 	}
 	if len(scope.Namespaces) > 0 {
-		if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
-			return false
+		// K8sNode and ExternalNode are cluster-scoped; they have no namespace
+		// label. Excluding them here would drop pod-runs-on-node edges whenever
+		// a caller narrows by namespace, which defeats the purpose of the view.
+		switch n.Type() {
+		case NodeTypeK8sNode, NodeTypeExternal:
+			// pass-through
+		default:
+			if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
+				return false
+			}
 		}
 	}
 	if len(scope.Nodes) > 0 {
@@ -114,8 +122,7 @@ func nodePassesFilters(n GraphNode, scope Scope) bool {
 			// Pods carry their cluster-scoped node ID; match by either suffix
 			// (raw node name) or full ID.
 			matched := false
-			if id, ok := scope.Nodes[labels["node"]]; ok {
-				_ = id
+			if _, ok := scope.Nodes[labels["node"]]; ok {
 				matched = true
 			} else {
 				// Allow plain node-name match (strip cluster prefix).
@@ -202,8 +209,13 @@ func preserveCrossClusterEdge(e *Edge, scope Scope, srcOK, tgtOK bool) bool {
 func nodePassesNonClusterFilters(n GraphNode, scope Scope) bool {
 	labels := n.Labels()
 	if len(scope.Namespaces) > 0 {
-		if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
-			return false
+		switch n.Type() {
+		case NodeTypeK8sNode, NodeTypeExternal:
+			// pass-through; cluster-scoped entities carry no namespace.
+		default:
+			if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
+				return false
+			}
 		}
 	}
 	if len(scope.Nodes) > 0 {

@@ -127,3 +127,64 @@ func TestProject_DepthZero(t *testing.T) {
 	assert.Len(t, v.Nodes, 1)
 	assert.Equal(t, "cluster-alpha/p1", v.Nodes[0].ID())
 }
+
+// Node filter exercises both branches of nodePassesFilters: pods are matched by
+// their `node` label (cluster-scoped or plain name) while K8sNodes are matched
+// by their plain Name(). worker-0 exists in two clusters; selecting "worker-0"
+// must keep both K8sNodes and the pods running on either, but drop intra-cluster
+// nodes that don't match.
+func TestProject_NodeFilter_K8sNodeBranch(t *testing.T) {
+	g := sampleGraph()
+	scope := Scope{Nodes: map[string]struct{}{"worker-0": {}}}
+	v := Project(g, scope)
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	// Both worker-0 K8sNodes survive (K8sNode branch matches by Name()).
+	assert.True(t, ids["cluster-alpha/worker-0"], "alpha worker-0 K8sNode missing")
+	assert.True(t, ids["cluster-beta/worker-0"], "beta worker-0 K8sNode missing")
+	// Pods scheduled on those nodes also survive (Pod branch matches by labels.node suffix).
+	assert.True(t, ids["cluster-alpha/p1"], "pod on alpha worker-0 missing")
+	assert.True(t, ids["cluster-beta/p3"], "pod on beta worker-0 missing")
+}
+
+// Namespace filter must NOT drop K8sNode (cluster-scoped, no namespace label).
+// Otherwise pod-runs-on-node edges all vanish whenever a caller narrows by
+// namespace — discovered against the kind-local rig where namespace=ksg gave
+// 4 nodes and 0 edges.
+func TestProject_NamespaceFilter_KeepsK8sNode(t *testing.T) {
+	g := sampleGraph()
+	v := Project(g, Scope{Namespaces: map[string]struct{}{"shop": {}}})
+
+	var k8sCount, podCount, runEdges int
+	for _, n := range v.Nodes {
+		switch n.Type() {
+		case NodeTypeK8sNode:
+			k8sCount++
+		case NodeTypePod:
+			podCount++
+		}
+	}
+	for _, e := range v.Edges {
+		if e.Type == EdgeTypePodRunsOnNode {
+			runEdges++
+		}
+	}
+	assert.Equal(t, 2, podCount, "expected 2 pods in shop namespace")
+	assert.GreaterOrEqual(t, k8sCount, 1, "K8sNode must survive namespace filter")
+	assert.GreaterOrEqual(t, runEdges, 1, "pod-runs-on-node edges must survive when both endpoints in scope")
+}
+
+func TestProject_NodeFilter_K8sNode_NoMatch(t *testing.T) {
+	g := sampleGraph()
+	scope := Scope{Nodes: map[string]struct{}{"nonexistent-node": {}}}
+	v := Project(g, scope)
+
+	for _, n := range v.Nodes {
+		if n.Type() == NodeTypeK8sNode {
+			t.Errorf("unexpected K8sNode survived filter: %s", n.ID())
+		}
+	}
+}

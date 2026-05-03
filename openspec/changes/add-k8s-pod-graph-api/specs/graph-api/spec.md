@@ -199,12 +199,12 @@ The server SHALL expose `GET /v1/clusters` that returns the list of clusters wit
 
 ### Requirement: Edge-type discovery endpoint
 
-The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-runs-on-node`, `pod-mounts-pvc-on-node`, and `pod-calls-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header and a stable `ETag` derived from the in-code registry.
+The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header and a stable `ETag` derived from the in-code registry.
 
 #### Scenario: Static catalogue
 
 - **WHEN** a client sends `GET /v1/edge-types`
-- **THEN** the response body contains an `edge_types` array including objects whose `type` values include `pod-runs-on-node`, `pod-mounts-pvc-on-node`, and `pod-calls-pod`
+- **THEN** the response body contains an `edge_types` array including objects whose `type` values include `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`
 
 #### Scenario: pod-calls-pod marked may_cross_cluster
 

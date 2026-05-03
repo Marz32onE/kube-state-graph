@@ -113,7 +113,7 @@ Edge endpoints reference these composite IDs.
 Edges fall into typed categories:
 
 - `pod-runs-on-node` (intra-cluster only): derived from `kube_pod_info{node=..., cluster=...}` evaluated within the time range.
-- `pod-mounts-pvc-on-node` (intra-cluster only): derived from joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the node hosting the pod, within a single cluster.
+- `pod-mounts-pvc` (intra-cluster only): derived from joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the node hosting the pod, within a single cluster.
 - `pod-calls-pod` (intra-cluster **or cross-cluster**): from `rate(traces_service_graph_request_total[<window>]) @ <end>` with non-zero rate, joined back to `(client_cluster, client_k8s_pod_uid)` and `(server_cluster, server_k8s_pod_uid)`. The edge always carries `labels.client_cluster` and `labels.server_cluster`; cross-cluster status is derived by string comparison of the two on the consumer side (no boolean flag in `labels` per D9's strict-string rule).
 
 Each edge carries `type`, `source`, `target`, plus type-specific `attrs` (see D9 for serialised JSON shape).
@@ -260,10 +260,10 @@ Configuration is via a YAML fixture file checked into the repo so test scenarios
 | Node | `type` | string | One of `"pod"`, `"node"`, `"pvc"`, `"external"`. |
 | Node | `labels` | `map[string]string` | String-only key/value bag. Pod / node / PVC nodes always include `cluster`, `namespace` (pods/PVCs), `node` (pods, cluster-scoped node ID), `external_ip` (nodes when known). K8s pod / node labels are flattened in verbatim. **External nodes** carry minimal labels (the configured `pattern` value under `pattern`); they do NOT carry `cluster`, since they are not cluster-scoped. New keys are additive. |
 | Edge | `id` | string | UUIDv5 derived from a fixed namespace UUID and the canonical tuple `(type, source, target)`. Stable across builds for the same edge; format compliant with RFC 4122. |
-| Edge | `type` | string | One of the registered edge types in `/v1/edge-types` (e.g., `"pod-runs-on-node"`, `"pod-mounts-pvc-on-node"`, `"pod-calls-pod"`). |
+| Edge | `type` | string | One of the registered edge types in `/v1/edge-types` (e.g., `"pod-runs-on-node"`, `"pod-mounts-pvc"`, `"pod-calls-pod"`). |
 | Edge | `source` | string | Source node `id`. Always references a node present in the same response. |
 | Edge | `target` | string | Target node `id`. Always references a node present in the same response. |
-| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `client_cluster`, `server_cluster`. For `pod-mounts-pvc-on-node`: `claim_name`, `storage_class`. For `pod-runs-on-node`: `scheduled_at`. New keys are additive. |
+| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `client_cluster`, `server_cluster`. For `pod-mounts-pvc`: `claim_name`, `storage_class`. For `pod-runs-on-node`: `scheduled_at`. New keys are additive. |
 
 **Strictly string-typed values.** `labels` is `map[string]string` for both nodes and edges. Non-string-typed data (numeric edge metrics such as `rate`, `p99_ms`, `error_rate`; boolean flags such as `cross_cluster` or `ghost`) is **deferred to a future typed struct field** on node/edge data. v1 does not encode booleans as `"true"`/`"false"` strings inside `labels`; consumers derive cross-cluster status by comparing `labels.client_cluster` with `labels.server_cluster` on `pod-calls-pod` edges.
 
@@ -428,7 +428,7 @@ The first five layers run on every PR via `go test ./...`. The Kind manual rig i
       ]
     },
     {
-      "type": "pod-mounts-pvc-on-node",
+      "type": "pod-mounts-pvc",
       "description": "Pod mounts a PVC bound on the pod's host node. Always intra-cluster.",
       "source_type": "pod",
       "target_type": "pvc",

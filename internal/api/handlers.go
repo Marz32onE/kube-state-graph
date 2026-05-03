@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/common/model"
 
 	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/graph"
@@ -54,7 +53,9 @@ func (s *Server) handleGraph(c *gin.Context) {
 	}
 	c.Set("cache_status", res.CacheStatus)
 
+	ptStart := time.Now()
 	view := graph.Project(res.Graph, req.scope)
+	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
 	body := serialiseCytoscape(req, res.Graph, view)
 	s.writeJSONWithCaching(c, body, req.bucket, res.CacheStatus, "cytoscape")
 }
@@ -90,7 +91,9 @@ func (s *Server) handleNodeGraph(c *gin.Context) {
 	}
 	c.Set("cache_status", res.CacheStatus)
 
+	ptStart := time.Now()
 	view := graph.Project(res.Graph, req.scope)
+	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
 	body := serialiseGrafanaNodeGraph(view)
 	s.writeJSONWithCaching(c, body, req.bucket, res.CacheStatus, "nodegraph")
 }
@@ -117,10 +120,10 @@ type debugLastQueriesBody struct {
 // ----- /v1/clusters ---------------------------------------------------------
 
 type discoveryCache struct {
-	mu       sync.Mutex
-	value    []ClusterInfo
-	expires  time.Time
-	ttl      time.Duration
+	mu      sync.Mutex
+	value   []ClusterInfo
+	expires time.Time
+	ttl     time.Duration
 }
 
 // ClusterInfo is one entry in /v1/clusters.
@@ -421,7 +424,3 @@ func sha256ETag(b []byte) string {
 	sum := sha256.Sum256(b)
 	return `"` + hex.EncodeToString(sum[:]) + `"`
 }
-
-// Suppress unused import warnings on platforms where the model package is
-// referenced only transitively via promql.
-var _ model.Vector

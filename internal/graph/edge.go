@@ -11,7 +11,7 @@ type EdgeType string
 
 const (
 	EdgeTypePodRunsOnNode      EdgeType = "pod-runs-on-node"
-	EdgeTypePodMountsPVCOnNode EdgeType = "pod-mounts-pvc-on-node"
+	EdgeTypePodMountsPVC EdgeType = "pod-mounts-pvc"
 	EdgeTypePodCallsPod        EdgeType = "pod-calls-pod"
 	EdgeTypePodReplacedBy      EdgeType = "pod-replaced-by"
 )

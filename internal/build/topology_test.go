@@ -44,6 +44,85 @@ func TestParseTopology_MissingClusterBucketed(t *testing.T) {
 	assert.Contains(t, tp.ClustersObserved, "unknown")
 }
 
+func TestParseTopology_PodIPAndHostIPSurfaced(t *testing.T) {
+	vec := sampleVec(model.Sample{
+		Metric: model.Metric{
+			"cluster":   "cluster-alpha",
+			"namespace": "shop",
+			"pod":       "checkout",
+			"uid":       "uid-1",
+			"node":      "worker-0",
+			"pod_ip":    "10.244.0.42",
+			"host_ip":   "10.0.0.7",
+		},
+		Value: 1,
+	})
+	tp := parseTopology(vec, nil, nil, nil, nil)
+	require.Len(t, tp.Pods, 1)
+	labels := tp.Pods[0].Labels()
+	assert.Equal(t, "10.244.0.42", labels["pod_ip"])
+	assert.Equal(t, "10.0.0.7", labels["host_ip"])
+}
+
+// kube-state-metrics emits multiple kube_pod_info series for a single pod-UID
+// while the pod is being scheduled — early scrapes lack node/pod_ip/host_ip.
+// parseTopology must merge labels across same-UID samples so the emitted
+// PodNode reflects the most informative observation, regardless of sample
+// order or timestamp ties.
+func TestParseTopology_MergesSameUIDPartialLabels(t *testing.T) {
+	// Two samples for the same UID, identical timestamp:
+	// 1. early scrape — no node, no pod_ip, no host_ip
+	// 2. later scrape — full labels
+	vec := sampleVec(
+		model.Sample{
+			Metric: model.Metric{
+				"cluster":   "cluster-alpha",
+				"namespace": "shop",
+				"pod":       "checkout",
+				"uid":       "uid-1",
+			},
+			Value: 1, Timestamp: 100,
+		},
+		model.Sample{
+			Metric: model.Metric{
+				"cluster":   "cluster-alpha",
+				"namespace": "shop",
+				"pod":       "checkout",
+				"uid":       "uid-1",
+				"node":      "worker-0",
+				"pod_ip":    "10.244.0.42",
+				"host_ip":   "10.0.0.7",
+			},
+			Value: 1, Timestamp: 100,
+		},
+	)
+	tp := parseTopology(vec, nil, nil, nil, nil)
+	require.Len(t, tp.Pods, 1)
+	labels := tp.Pods[0].Labels()
+	assert.Equal(t, "10.244.0.42", labels["pod_ip"], "pod_ip must survive merge from richer sample")
+	assert.Equal(t, "10.0.0.7", labels["host_ip"], "host_ip must survive merge from richer sample")
+	assert.Equal(t, "cluster-alpha/worker-0", labels["node"], "node must survive merge from richer sample")
+}
+
+func TestParseTopology_PodIPAbsentWhenMetricMissing(t *testing.T) {
+	vec := sampleVec(model.Sample{
+		Metric: model.Metric{
+			"cluster":   "cluster-alpha",
+			"namespace": "shop",
+			"pod":       "checkout",
+			"uid":       "uid-1",
+			"node":      "worker-0",
+		},
+		Value: 1,
+	})
+	tp := parseTopology(vec, nil, nil, nil, nil)
+	require.Len(t, tp.Pods, 1)
+	_, hasPodIP := tp.Pods[0].Labels()["pod_ip"]
+	_, hasHostIP := tp.Pods[0].Labels()["host_ip"]
+	assert.False(t, hasPodIP, "pod_ip should be absent when metric omits it")
+	assert.False(t, hasHostIP, "host_ip should be absent when metric omits it")
+}
+
 func TestParseTopology_K8sNodeLabelsFlattened(t *testing.T) {
 	nodeVec := sampleVec(model.Sample{Metric: model.Metric{"cluster": "cluster-alpha", "node": "worker-0"}})
 	addrVec := sampleVec(model.Sample{Metric: model.Metric{"cluster": "cluster-alpha", "node": "worker-0", "type": "ExternalIP", "address": "203.0.113.10"}})
@@ -61,4 +140,36 @@ func TestParseTopology_K8sNodeLabelsFlattened(t *testing.T) {
 	assert.Equal(t, "203.0.113.10", n.Labels()["external_ip"])
 	assert.Equal(t, "us-east-1a", n.Labels()["topology.kubernetes.io/zone"])
 	assert.Equal(t, "amd64", n.Labels()["kubernetes.io/arch"])
+}
+
+// TestUnflattenLabel_HeuristicLimits documents both the supported case (DNS
+// domain prefix label_<dns>_<segment> ⇒ <dns>/<segment>) and the known
+// limitation: single-segment underscored labels collapse to dots because the
+// heuristic cannot distinguish "domain prefix" from "underscored name".
+//
+// If you change the algorithm, expect to coordinate with kube-state-metrics
+// label-flattening behaviour (k8s.io/kube-state-metrics/internal/store/utils).
+// The lossy single-segment case is accepted because the dominant in-the-wild
+// shape is the DNS-prefixed one.
+func TestUnflattenLabel_HeuristicLimits(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want string
+	}{
+		// DNS-prefixed (correct round-trip)
+		{"label_topology_kubernetes_io_zone", "topology.kubernetes.io/zone"},
+		{"label_kubernetes_io_arch", "kubernetes.io/arch"},
+		{"label_app_kubernetes_io_name", "app.kubernetes.io/name"},
+		// Single-segment (no underscore in original) — round-trips fine.
+		{"label_app", "app"},
+		{"label_simple", "simple"},
+		// KNOWN LIMITATION: underscored single-segment labels become dotted.
+		// Documented here so the behaviour is intentional, not accidental.
+		{"label_app_version", "app.version"},
+	}
+	for _, tc := range cases {
+		if got := unflattenLabel(tc.in); got != tc.want {
+			t.Errorf("unflattenLabel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
 }

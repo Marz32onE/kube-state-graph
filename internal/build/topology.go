@@ -15,10 +15,23 @@ import (
 )
 
 // PodPVCBinding records that a pod mounts a specific PVC. The reader emits
-// these so the edge builder can wire pod-mounts-pvc-on-node.
+// these so the edge builder can wire pod-mounts-pvc.
 type PodPVCBinding struct {
 	PodID string
 	PVCID string
+}
+
+// podKey groups pod samples by their cluster-scoped namespace/name. Multiple
+// UIDs under one key indicate restarts.
+type podKey struct{ cluster, namespace, pod string }
+
+// podObs is one parsed kube_pod_info sample.
+type podObs struct {
+	uid     string
+	nodeID  string
+	ts      model.Time
+	labels  map[string]string
+	nodeRaw string
 }
 
 // Topology is the typed result of reading kube-state-metrics-style series for
@@ -129,14 +142,6 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 	}
 
 	// Pods (group by (cluster, namespace, pod) for restart handling).
-	type podKey struct{ cluster, namespace, pod string }
-	type podObs struct {
-		uid     string
-		nodeID  string
-		ts      model.Time
-		labels  map[string]string
-		nodeRaw string
-	}
 	podGroups := map[podKey][]podObs{}
 	for _, s := range podVec {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
@@ -154,6 +159,12 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		if nodeName != "" {
 			labels["node"] = graph.K8sNodeID(cluster, nodeName)
 		}
+		if ip := string(s.Metric["pod_ip"]); ip != "" {
+			labels["pod_ip"] = ip
+		}
+		if ip := string(s.Metric["host_ip"]); ip != "" {
+			labels["host_ip"] = ip
+		}
 		k := podKey{cluster, ns, name}
 		podGroups[k] = append(podGroups[k], podObs{
 			uid:     uid,
@@ -170,12 +181,16 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 	for k, group := range podGroups {
 		// Newest sample first.
 		sort.SliceStable(group, func(i, j int) bool { return group[i].ts > group[j].ts })
+		// kube-state-metrics emits multiple series per pod-UID as labels evolve
+		// during scheduling (e.g. node, pod_ip arrive after the first scrape).
+		// Merge labels across same-UID samples — newer values win — so the
+		// emitted PodNode reflects the most informative observation.
+		merged := mergeSameUIDLabels(group)
 		canonical := group[0]
-		// Emit canonical pod.
 		pods = append(pods, &graph.PodNode{
 			IDValue:     graph.PodID(k.cluster, canonical.uid),
 			NameValue:   k.pod,
-			LabelsValue: canonical.labels,
+			LabelsValue: merged[canonical.uid],
 		})
 		// Emit prior pods + replacement edges.
 		seen := map[string]bool{canonical.uid: true}
@@ -187,7 +202,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 			pods = append(pods, &graph.PodNode{
 				IDValue:     graph.PodID(k.cluster, prior.uid),
 				NameValue:   k.pod,
-				LabelsValue: prior.labels,
+				LabelsValue: merged[prior.uid],
 			})
 			restartEdges = append(restartEdges, graph.NewEdge(
 				graph.EdgeTypePodReplacedBy,
@@ -290,4 +305,29 @@ func unflattenLabel(flattened string) string {
 		return withDots[:i] + "/" + withDots[i+1:]
 	}
 	return withDots
+}
+
+// mergeSameUIDLabels returns one label map per UID, formed by merging labels
+// from every sample with that UID. group is assumed sorted newest-first; older
+// samples fill in keys the newer ones omit. This handles kube-state-metrics
+// emitting multiple kube_pod_info series per UID as state evolves (node /
+// pod_ip / host_ip arrive on later scrapes).
+func mergeSameUIDLabels(group []podObs) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for _, obs := range group {
+		merged, ok := out[obs.uid]
+		if !ok {
+			merged = map[string]string{}
+			out[obs.uid] = merged
+		}
+		for k, v := range obs.labels {
+			if v == "" {
+				continue
+			}
+			if _, present := merged[k]; !present {
+				merged[k] = v
+			}
+		}
+	}
+	return out
 }

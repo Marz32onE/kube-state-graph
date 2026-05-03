@@ -19,7 +19,7 @@ func TestNewEdge_UUIDv5Format(t *testing.T) {
 	for _, e := range []*Edge{
 		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/abc", "cluster-beta/def", nil),
 		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/abc", "cluster-alpha/worker-0", nil),
-		NewEdge(EdgeTypePodMountsPVCOnNode, "cluster-alpha/abc", "cluster-alpha/ns/claim", nil),
+		NewEdge(EdgeTypePodMountsPVC, "cluster-alpha/abc", "cluster-alpha/ns/claim", nil),
 	} {
 		assert.Regexp(t, uuidV5Re, e.ID)
 	}

@@ -21,7 +21,7 @@
       ]
     },
     {
-      "type": "pod-mounts-pvc-on-node",
+      "type": "pod-mounts-pvc",
       "description": "Pod mounts a PVC bound on the pod's host node. Always intra-cluster.",
       "source_type": [
         "pod"

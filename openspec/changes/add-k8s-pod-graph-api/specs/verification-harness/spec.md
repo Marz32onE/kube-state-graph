@@ -133,7 +133,7 @@ The script SHALL verify, at minimum:
 - `GET /v1/livez` returns 200.
 - `GET /v1/readyz` returns 200 within a configurable readiness budget (default 60 s).
 - `GET /v1/clusters` returns at least the synthetic cluster names emitted by the fixtures (e.g., `cluster-alpha`, `cluster-beta`).
-- `GET /v1/edge-types` returns a body listing `pod-runs-on-node`, `pod-mounts-pvc-on-node`, and `pod-calls-pod`.
+- `GET /v1/edge-types` returns a body listing `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`.
 - `GET /v1/graph?start=<now-5m>&end=<now>` returns 200 with a non-empty `elements.nodes` and at least one `pod-runs-on-node` edge per cluster.
 - `GET /v1/graph?start=<now-5m>&end=<now>&edge_type=pod-calls-pod` returns at least one edge whose `data.labels.client_cluster` is not equal to `data.labels.server_cluster`.
 - `GET /v1/graph?start=<now-5m>&end=<now>&cluster=cluster-alpha` returns nodes whose `data.labels.cluster` is `cluster-alpha`, plus any cross-cluster edge endpoints in `cluster-beta`.
