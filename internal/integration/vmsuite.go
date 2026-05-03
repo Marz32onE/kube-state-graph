@@ -137,27 +137,43 @@ func (s *VMSuite) IngestExpFmt(exposition string) {
 // WaitForSeries polls VM until the supplied PromQL returns a non-empty
 // vector at the given evaluation time or the budget is exhausted. evalTime
 // is forwarded as the `time=` parameter; pass time.Time{} to evaluate at
-// the server's current time.
+// the server's current time. On budget exhaustion it logs the final probe
+// URL and response so failures are debuggable from the test log.
 func (s *VMSuite) WaitForSeries(query string, evalTime time.Time, budget time.Duration) bool {
 	deadline := time.Now().Add(budget)
+	var lastURL string
+	var lastStatus int
+	var lastBody []byte
+	var lastErr error
 	for time.Now().Before(deadline) {
 		v := url.Values{"query": []string{query}}
 		if !evalTime.IsZero() {
 			v.Set("time", strconv.FormatInt(evalTime.Unix(), 10))
 		}
-		resp, err := http.Get(s.vmURL + "/api/v1/query?" + v.Encode()) //nolint:noctx // poll loop
-		if err == nil && resp.StatusCode == http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			// Crude check: response contains a non-empty result array.
-			if !bytes.Contains(body, []byte(`"result":[]`)) {
-				return true
-			}
-		} else if resp != nil {
-			_ = resp.Body.Close()
+		// `nocache=1` bypasses VM's response cache. Without this, the first
+		// poll (run before the VM ingest pipeline has flushed) caches an
+		// empty result for the historical time bucket and every subsequent
+		// poll within the budget receives that cached empty.
+		v.Set("nocache", "1")
+		probeURL := s.vmURL + "/api/v1/query?" + v.Encode()
+		lastURL = probeURL
+		resp, err := http.Get(probeURL) //nolint:noctx,gosec // test-only poll loop against ephemeral container URL
+		if err != nil {
+			lastErr = err
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		lastStatus = resp.StatusCode
+		lastBody = body
+		if resp.StatusCode == http.StatusOK && !bytes.Contains(body, []byte(`"result":[]`)) {
+			return true
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	s.T().Logf("WaitForSeries timeout: url=%s status=%d err=%v body=%s",
+		lastURL, lastStatus, lastErr, lastBody)
 	return false
 }
 

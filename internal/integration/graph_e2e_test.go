@@ -71,10 +71,10 @@ traces_service_graph_request_total{client="https://payments.partner.example/api"
 		disc, t0, disc, v(rateExternalToCheckout), t1,
 	)
 	s.IngestExpFmt(exposition)
-	s.Require().True(s.WaitForSeries(`kube_pod_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 10*time.Second),
+	s.Require().True(s.WaitForSeries(`kube_pod_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
 		"VM did not observe ingested kube_pod_info")
 	s.Require().True(
-		s.WaitForSeries(`rate(traces_service_graph_request_total{test=`+strconv.Quote(disc)+`}[5m]) > 0`, fixedNow, 10*time.Second),
+		s.WaitForSeries(`rate(traces_service_graph_request_total{test=`+strconv.Quote(disc)+`}[5m]) > 0`, fixedNow, 30*time.Second),
 		"VM did not observe non-zero service-graph rate")
 }
 
@@ -176,7 +176,12 @@ func (s *GraphSuite) TestCacheMissThenHit() {
 }
 
 func (s *GraphSuite) TestClustersDiscovery() {
-	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	srv := s.StartAPIServer(func(cfg *config.Config) {
+		cfg.MaxSkew = 365 * 24 * time.Hour
+		// Discovery handler always queries at time.Now(), so the lookback
+		// must reach back far enough to cover fixedNow's static fixtures.
+		cfg.ClusterDiscoveryLookback = 365 * 24 * time.Hour
+	})
 	resp := s.httpGet(srv.URL + "/v1/clusters")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
