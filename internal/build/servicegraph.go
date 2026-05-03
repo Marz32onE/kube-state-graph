@@ -47,11 +47,17 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 		return ServiceGraphResult{}
 	}
 
-	// Build pod-UID lookup for fast resolution.
+	// Topology indices for endpoint resolution. podByID is used by the client
+	// side (we know its cluster from the metric's `cluster` label, so the
+	// composite ID is constructible). podByUID is used by the server side —
+	// the metric does not carry server-side cluster, so we look up by raw UID
+	// against the global topology pod-UID index and use the resolved pod's
+	// own cluster for the target ID.
 	podByID := map[string]*graph.PodNode{}
 	for _, p := range topology.Pods {
 		podByID[p.ID()] = p
 	}
+	podByUID := topology.PodsByUID
 
 	externals := map[string]*graph.ExternalNode{}
 	synthPods := map[string]*graph.PodNode{}
@@ -60,11 +66,13 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 	// same edge identity — most commonly when `connection_type` differs
 	// (`virtual_node` vs `messaging_system`) — and edge IDs are deterministic
 	// only by (type, source, target). Collapsing here prevents duplicate edge
-	// IDs in Cytoscape / Grafana output. Cluster labels of the surviving edge
-	// are taken from the first observation per pair.
+	// IDs in Cytoscape / Grafana output. The surviving edge's `cluster` label
+	// is the trace-source cluster of the first observation per pair, and is
+	// recorded only when the source side resolved to a pod (external sources
+	// have no cluster).
 	type aggEdge struct {
+		srcIsPod   bool
 		srcCluster string
-		tgtCluster string
 	}
 	type pairKey struct {
 		src string
@@ -80,20 +88,23 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 
 		clientLabel := string(s.Metric["client"])
 		serverLabel := string(s.Metric["server"])
-		clientCluster := bucketCluster(string(s.Metric["client_cluster"]))
-		serverCluster := bucketCluster(string(s.Metric["server_cluster"]))
+		// Single `cluster` label = trace source / client-side cluster.
+		traceCluster := bucketCluster(string(s.Metric["cluster"]))
 		clientUID := string(s.Metric["client_k8s_pod_uid"])
 		serverUID := string(s.Metric["server_k8s_pod_uid"])
 		clientNS := string(s.Metric["client_k8s_namespace_name"])
 		serverNS := string(s.Metric["server_k8s_namespace_name"])
 
-		srcID, srcCluster := resolveEndpoint(
-			clientLabel, clientCluster, clientUID, clientNS,
+		// Client side: cluster is known from the metric.
+		srcID, srcIsPod := resolveClientEndpoint(
+			clientLabel, traceCluster, clientUID, clientNS,
 			externalPattern, podByID, externals, synthPods,
 		)
-		tgtID, tgtCluster := resolveEndpoint(
-			serverLabel, serverCluster, serverUID, serverNS,
-			externalPattern, podByID, externals, synthPods,
+		// Server side: cluster is recovered from the topology pod-UID index
+		// (the metric does not carry it).
+		tgtID := resolveServerEndpoint(
+			serverLabel, serverUID, serverNS,
+			externalPattern, podByUID, externals, synthPods,
 		)
 
 		if srcID == "" || tgtID == "" {
@@ -104,19 +115,23 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 		if _, dup := pairs[key]; dup {
 			continue
 		}
-		pairs[key] = aggEdge{srcCluster: srcCluster, tgtCluster: tgtCluster}
+		pairs[key] = aggEdge{srcIsPod: srcIsPod, srcCluster: traceCluster}
 	}
 
 	edges := make([]*graph.Edge, 0, len(pairs))
 	for k, agg := range pairs {
+		// Edge `cluster` label is the trace-source / client-side cluster, but
+		// only when the client side is a pod. External clients have no cluster
+		// scope, so the key is omitted entirely (per design D9 / Option A).
+		labels := map[string]string{}
+		if agg.srcIsPod {
+			labels["cluster"] = agg.srcCluster
+		}
 		edges = append(edges, graph.NewEdge(
 			graph.EdgeTypePodCallsPod,
 			k.src,
 			k.tgt,
-			map[string]string{
-				"client_cluster": agg.srcCluster,
-				"server_cluster": agg.tgtCluster,
-			},
+			labels,
 		))
 	}
 
@@ -130,19 +145,18 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 	return out
 }
 
-// resolveEndpoint returns the resolved (id, clusterLabelValue) for one side
-// of a service-graph series. Side effects: may insert into externals or
-// synthPods if a new node must be synthesised.
+// resolveClientEndpoint resolves the client side of a service-graph series.
+// Returns (id, srcIsPod). srcIsPod is true when the resolved endpoint is a
+// pod (real or synthesised), false when it is an external node.
 //
-// clusterLabelValue is the value to write to labels.client_cluster /
-// labels.server_cluster on the edge — empty string for external endpoints.
-func resolveEndpoint(
+// Side effects: may insert into externals or synthPods.
+func resolveClientEndpoint(
 	humanLabel, cluster, podUID, namespace string,
 	externalPattern string,
 	pods map[string]*graph.PodNode,
 	externals map[string]*graph.ExternalNode,
 	synthPods map[string]*graph.PodNode,
-) (id, clusterLabel string) {
+) (id string, srcIsPod bool) {
 	// External substitution rule.
 	if externalPattern != "" && humanLabel != "" && strings.Contains(humanLabel, externalPattern) {
 		extID := graph.ExternalID(humanLabel)
@@ -155,16 +169,16 @@ func resolveEndpoint(
 				},
 			}
 		}
-		return extID, ""
+		return extID, false
 	}
 
-	// Pod-UID resolution.
+	// Pod-UID resolution. Client side knows its cluster from the metric.
 	if podUID == "" {
-		return "", ""
+		return "", false
 	}
 	id = graph.PodID(cluster, podUID)
 	if _, ok := pods[id]; ok {
-		return id, cluster
+		return id, true
 	}
 	// Synthesised pod (no topology entry for this UID).
 	if _, ok := synthPods[id]; !ok {
@@ -178,5 +192,60 @@ func resolveEndpoint(
 			LabelsValue: labels,
 		}
 	}
-	return id, cluster
+	return id, true
+}
+
+// resolveServerEndpoint resolves the server side of a service-graph series.
+// Unlike the client side, the metric does not carry server-side cluster, so
+// the cluster is recovered by looking up the raw UID against the global
+// topology pod-UID index. When the lookup misses, a synth pod is created
+// with cluster="" (server-side cluster is unknown).
+//
+// Side effects: may insert into externals or synthPods.
+func resolveServerEndpoint(
+	humanLabel, podUID, namespace string,
+	externalPattern string,
+	podByUID map[string]*graph.PodNode,
+	externals map[string]*graph.ExternalNode,
+	synthPods map[string]*graph.PodNode,
+) (id string) {
+	// External substitution rule.
+	if externalPattern != "" && humanLabel != "" && strings.Contains(humanLabel, externalPattern) {
+		extID := graph.ExternalID(humanLabel)
+		if _, ok := externals[extID]; !ok {
+			externals[extID] = &graph.ExternalNode{
+				IDValue:   extID,
+				NameValue: humanLabel,
+				LabelsValue: map[string]string{
+					"pattern": externalPattern,
+				},
+			}
+		}
+		return extID
+	}
+
+	// Pod-UID resolution. Server side recovers its cluster via the topology
+	// pod-UID index — the metric does not carry server_cluster.
+	if podUID == "" {
+		return ""
+	}
+	if pod, ok := podByUID[podUID]; ok {
+		return pod.ID()
+	}
+	// Synthesised pod (no topology entry for this UID across any cluster).
+	// We do not know the server's cluster, so the ID has an empty cluster
+	// component and labels.cluster is empty as well.
+	id = graph.PodID("", podUID)
+	if _, ok := synthPods[id]; !ok {
+		labels := map[string]string{"cluster": ""}
+		if namespace != "" {
+			labels["namespace"] = namespace
+		}
+		synthPods[id] = &graph.PodNode{
+			IDValue:     id,
+			NameValue:   podUID,
+			LabelsValue: labels,
+		}
+	}
+	return id
 }

@@ -24,8 +24,8 @@ func sampleGraph() *Graph {
 		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p1", "cluster-alpha/worker-0", nil),
 		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p2", "cluster-alpha/worker-0", nil),
 		NewEdge(EdgeTypePodRunsOnNode, "cluster-beta/p3", "cluster-beta/worker-0", nil),
-		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-alpha/p2", map[string]string{"client_cluster": "cluster-alpha", "server_cluster": "cluster-alpha"}),
-		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-beta/p3", map[string]string{"client_cluster": "cluster-alpha", "server_cluster": "cluster-beta"}),
+		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-alpha/p2", map[string]string{"cluster": "cluster-alpha"}),
+		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-beta/p3", map[string]string{"cluster": "cluster-alpha"}),
 	}
 	return NewGraph(all, edges, time.Now())
 }
@@ -55,14 +55,23 @@ func TestProject_ClusterFilter(t *testing.T) {
 }
 
 func TestProject_ClusterFilter_PreservesCrossClusterEdge(t *testing.T) {
-	v := Project(sampleGraph(), Scope{Clusters: map[string]struct{}{"cluster-alpha": {}}})
+	g := sampleGraph()
+	v := Project(g, Scope{Clusters: map[string]struct{}{"cluster-alpha": {}}})
 
+	// Cross-cluster status is derived from the resolved endpoint nodes'
+	// cluster labels (the edge only carries the trace-source cluster).
 	var crossEdges int
 	for _, e := range v.Edges {
-		if e.Type == EdgeTypePodCallsPod && e.Labels["client_cluster"] != e.Labels["server_cluster"] {
+		if e.Type != EdgeTypePodCallsPod {
+			continue
+		}
+		src := g.NodesByID[e.Source]
+		tgt := g.NodesByID[e.Target]
+		if src.Labels()["cluster"] != tgt.Labels()["cluster"] {
 			crossEdges++
 			assert.Equal(t, "cluster-alpha/p1", e.Source)
 			assert.Equal(t, "cluster-beta/p3", e.Target)
+			assert.Equal(t, "cluster-alpha", e.Labels["cluster"])
 		}
 	}
 	assert.Equal(t, 1, crossEdges, "cross-cluster edge must survive cluster filter")
@@ -71,7 +80,8 @@ func TestProject_ClusterFilter_PreservesCrossClusterEdge(t *testing.T) {
 func TestProject_ClusterFilter_NamespaceStillStrict(t *testing.T) {
 	// Namespace filter is AND-combined: cross-cluster partner whose namespace
 	// does not match the filter MUST be dropped (and so must the edge).
-	v := Project(sampleGraph(), Scope{
+	g := sampleGraph()
+	v := Project(g, Scope{
 		Clusters:   map[string]struct{}{"cluster-alpha": {}},
 		Namespaces: map[string]struct{}{"shop": {}},
 	})
@@ -81,10 +91,16 @@ func TestProject_ClusterFilter_NamespaceStillStrict(t *testing.T) {
 		ids[n.ID()] = true
 	}
 	assert.False(t, ids["cluster-beta/p3"], "partner with namespace=billing must not be re-added when namespace filter excludes it")
+	// Cross-cluster status derived from the resolved endpoints' cluster
+	// labels via the original graph (the projection only includes pods that
+	// passed all filters).
 	for _, e := range v.Edges {
-		if e.Type == EdgeTypePodCallsPod {
-			assert.Equal(t, e.Labels["client_cluster"], e.Labels["server_cluster"], "no cross-cluster edge should survive namespace mismatch")
+		if e.Type != EdgeTypePodCallsPod {
+			continue
 		}
+		src := g.NodesByID[e.Source]
+		tgt := g.NodesByID[e.Target]
+		assert.Equal(t, src.Labels()["cluster"], tgt.Labels()["cluster"], "no cross-cluster edge should survive namespace mismatch")
 	}
 }
 

@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -42,6 +43,16 @@ type Topology struct {
 	PVCs         []*graph.PVCNode
 	PodPVCs      []PodPVCBinding
 	RestartEdges []*graph.Edge // pod-replaced-by edges from in-window pod restarts.
+
+	// PodsByUID indexes every pod in Pods by its raw Kubernetes UID (without
+	// the cluster prefix). K8s pod UIDs are UUIDv4 and unique across clusters
+	// in practice, so this is the join key the service-graph reader uses to
+	// recover the server-side cluster for `pod-calls-pod` edges (the metric
+	// only carries the trace-source / client-side `cluster` label).
+	//
+	// On duplicate UIDs across clusters (data anomaly), the first-inserted
+	// pod wins; downstream resolution would otherwise be ambiguous.
+	PodsByUID map[string]*graph.PodNode
 
 	ClustersObserved []string // sorted unique cluster values
 }
@@ -177,6 +188,21 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 	}
 
 	pods := make([]*graph.PodNode, 0, len(podVec))
+	podsByUID := map[string]*graph.PodNode{}
+	addPodToIndex := func(uid string, pod *graph.PodNode) {
+		if uid == "" {
+			return
+		}
+		if existing, dup := podsByUID[uid]; dup {
+			slog.Warn("duplicate pod UID across clusters",
+				"uid", uid,
+				"existing_id", existing.ID(),
+				"new_id", pod.ID(),
+			)
+			return
+		}
+		podsByUID[uid] = pod
+	}
 	restartEdges := []*graph.Edge{}
 	for k, group := range podGroups {
 		// Newest sample first.
@@ -187,11 +213,13 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		// emitted PodNode reflects the most informative observation.
 		merged := mergeSameUIDLabels(group)
 		canonical := group[0]
-		pods = append(pods, &graph.PodNode{
+		canonicalPod := &graph.PodNode{
 			IDValue:     graph.PodID(k.cluster, canonical.uid),
 			NameValue:   k.pod,
 			LabelsValue: merged[canonical.uid],
-		})
+		}
+		pods = append(pods, canonicalPod)
+		addPodToIndex(canonical.uid, canonicalPod)
 		// Emit prior pods + replacement edges.
 		seen := map[string]bool{canonical.uid: true}
 		for _, prior := range group[1:] {
@@ -199,11 +227,13 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 				continue
 			}
 			seen[prior.uid] = true
-			pods = append(pods, &graph.PodNode{
+			priorPod := &graph.PodNode{
 				IDValue:     graph.PodID(k.cluster, prior.uid),
 				NameValue:   k.pod,
 				LabelsValue: merged[prior.uid],
-			})
+			}
+			pods = append(pods, priorPod)
+			addPodToIndex(prior.uid, priorPod)
 			restartEdges = append(restartEdges, graph.NewEdge(
 				graph.EdgeTypePodReplacedBy,
 				graph.PodID(k.cluster, prior.uid),
@@ -270,6 +300,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		PVCs:             pvcs,
 		PodPVCs:          bindings,
 		RestartEdges:     restartEdges,
+		PodsByUID:        podsByUID,
 		ClustersObserved: clusterList,
 	}
 }

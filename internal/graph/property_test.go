@@ -47,8 +47,7 @@ func genGraph(seed int64, clusters, podsPerCluster, extraEdges int) *Graph {
 			continue
 		}
 		edges = append(edges, NewEdge(EdgeTypePodCallsPod, a.ID(), b.ID(), map[string]string{
-			"client_cluster": a.Labels()["cluster"],
-			"server_cluster": b.Labels()["cluster"],
+			"cluster": a.Labels()["cluster"],
 		}))
 	}
 	return NewGraph(all, edges, time.Now())
@@ -137,9 +136,19 @@ func TestProperty_CrossClusterEdgesHaveDistinctClusterEndpoints(t *testing.T) {
 			if e.Type != EdgeTypePodCallsPod {
 				continue
 			}
-			if e.Labels["client_cluster"] != e.Labels["server_cluster"] {
-				assert.NotEmpty(t, e.Labels["client_cluster"])
-				assert.NotEmpty(t, e.Labels["server_cluster"])
+			// Cross-cluster status is derived from the resolved endpoint
+			// nodes' `cluster` labels (the edge itself only carries the
+			// trace-source / client-side cluster).
+			src, srcOK := g.NodesByID[e.Source]
+			tgt, tgtOK := g.NodesByID[e.Target]
+			require.True(t, srcOK)
+			require.True(t, tgtOK)
+			srcCluster := src.Labels()["cluster"]
+			tgtCluster := tgt.Labels()["cluster"]
+			if srcCluster != tgtCluster {
+				assert.NotEmpty(t, srcCluster)
+				assert.NotEmpty(t, tgtCluster)
+				assert.Equal(t, srcCluster, e.Labels["cluster"], "edge cluster label = source-side cluster")
 			}
 		}
 	}

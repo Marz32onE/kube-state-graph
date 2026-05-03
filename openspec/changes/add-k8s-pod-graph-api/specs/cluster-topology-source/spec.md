@@ -18,7 +18,7 @@ The topology reader SHALL fetch all pod, node, and PVC topology by issuing PromQ
 
 The topology reader SHALL consume at minimum the following `kube-state-metrics` series, each carrying a `cluster` external label:
 
-- `kube_pod_info{cluster, namespace, pod, uid, node, ...}`
+- `kube_pod_info{cluster, namespace, pod, uid, node, pod_ip, host_ip, ...}` (`pod_ip` and `host_ip` are surfaced when present)
 - `kube_node_info{cluster, node, ...}`
 - `kube_node_status_addresses{cluster, node, type="ExternalIP", address, ...}`
 - `kube_pod_spec_volumes_persistentvolumeclaims_info{cluster, namespace, pod, volume, claim_name, ...}`
@@ -70,7 +70,7 @@ The reader SHALL produce topology entities whose stable identifiers are cluster-
 
 Every emitted topology entity SHALL carry the four canonical fields consumed by the graph API: `id`, `name`, `type`, `labels`. The reader SHALL set these as follows:
 
-- For pods: `name` = the `pod` label of `kube_pod_info`; `type` = `"pod"`; `labels` includes `cluster`, `namespace`, `node` (cluster-scoped node ID), and any K8s pod labels available from `kube_pod_labels` for that pod (added under their original keys).
+- For pods: `name` = the `pod` label of `kube_pod_info`; `type` = `"pod"`; `labels` includes `cluster`, `namespace`, `node` (cluster-scoped node ID), `pod_ip` and `host_ip` when the upstream `kube_pod_info` series carries them, and any K8s pod labels available from `kube_pod_labels` for that pod (added under their original keys). When kube-state-metrics emits multiple `kube_pod_info` series for the same pod-UID with evolving label sets (e.g. earlier scrapes that lack `node`, `pod_ip`, or `host_ip`), the reader SHALL merge labels across same-UID samples so the emitted entity reflects the most informative observation.
 - For K8s nodes: `name` = the `node` label of `kube_node_info`; `type` = `"node"`; `labels` includes `cluster`, `external_ip` when `kube_node_status_addresses{type="ExternalIP"}` provides one, and any node labels from `kube_node_labels` for that node (the `label_*=` series translates to entries under their original key with the `label_` prefix removed).
 - For PVCs: `name` = the `claim_name` label of `kube_pod_spec_volumes_persistentvolumeclaims_info`; `type` = `"pvc"`; `labels` includes `cluster`, `namespace`, and `volume`.
 
@@ -78,6 +78,16 @@ Every emitted topology entity SHALL carry the four canonical fields consumed by 
 
 - **WHEN** `kube_pod_info{cluster="cluster-alpha", namespace="shop", pod="checkout-1", uid="abc", node="worker-0"}` is present
 - **THEN** the emitted pod entity has `id="cluster-alpha/abc"`, `name="checkout-1"`, `type="pod"`, `labels.cluster="cluster-alpha"`, `labels.namespace="shop"`, and `labels.node="cluster-alpha/worker-0"`
+
+#### Scenario: Pod IP and host IP surfaced under labels
+
+- **WHEN** `kube_pod_info{cluster="cluster-alpha", namespace="shop", pod="checkout-1", uid="abc", node="worker-0", pod_ip="10.244.0.42", host_ip="10.0.0.7"}` is present
+- **THEN** the emitted pod entity has `labels.pod_ip="10.244.0.42"` and `labels.host_ip="10.0.0.7"`
+
+#### Scenario: Pod IP labels merged across same-UID samples
+
+- **WHEN** kube-state-metrics emits two `kube_pod_info` series with the same `uid` — one without `pod_ip`/`host_ip`/`node` (early scrape during scheduling) and a later one with all three populated
+- **THEN** the emitted pod entity carries the populated `node`, `pod_ip`, and `host_ip` values regardless of the order returned by the upstream
 
 #### Scenario: K8s node external_ip surfaced under labels
 

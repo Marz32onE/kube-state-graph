@@ -57,12 +57,12 @@ kube_pod_info{cluster="cluster-beta",namespace="billing",pod="payments",uid="bet
 kube_node_info{cluster="cluster-alpha",node="worker-0",test=%q} 1 %d
 kube_node_info{cluster="cluster-beta",node="worker-0",test=%q} 1 %d
 kube_node_status_addresses{cluster="cluster-alpha",node="worker-0",type="ExternalIP",address="203.0.113.10",test=%q} 1 %d
-traces_service_graph_request_total{client="checkout",server="cart",client_cluster="cluster-alpha",server_cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
-traces_service_graph_request_total{client="checkout",server="cart",client_cluster="cluster-alpha",server_cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} %g %d
-traces_service_graph_request_total{client="checkout",server="payments",client_cluster="cluster-alpha",server_cluster="cluster-beta",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} 0 %d
-traces_service_graph_request_total{client="checkout",server="payments",client_cluster="cluster-alpha",server_cluster="cluster-beta",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} %g %d
-traces_service_graph_request_total{client="https://payments.partner.example/api",server="checkout",client_cluster="",server_cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
-traces_service_graph_request_total{client="https://payments.partner.example/api",server="checkout",client_cluster="",server_cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} %g %d
+traces_service_graph_request_total{client="checkout",server="cart",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="cart",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} %g %d
+traces_service_graph_request_total{client="checkout",server="payments",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="payments",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} %g %d
+traces_service_graph_request_total{client="https://payments.partner.example/api",server="checkout",cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="https://payments.partner.example/api",server="checkout",cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} %g %d
 `,
 		disc, t1, disc, t1, disc, t1,
 		disc, t1, disc, t1, disc, t1,
@@ -132,8 +132,17 @@ func (s *GraphSuite) TestCrossClusterEdgePresent() {
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	s.Contains(string(body), `"client_cluster":"cluster-alpha"`)
-	s.Contains(string(body), `"server_cluster":"cluster-beta"`)
+	// Cross-cluster status is recovered via the topology pod-UID index: the
+	// metric stamped `cluster=cluster-alpha`, but `server_k8s_pod_uid=beta-1`
+	// resolves to a topology pod whose own cluster is `cluster-beta`. The
+	// edge should target that resolved pod and carry `cluster=cluster-alpha`
+	// (the trace source / client side).
+	bodyStr := string(body)
+	s.Contains(bodyStr, `"target":"cluster-beta/beta-1"`, "cross-cluster target resolved via UID index")
+	s.Contains(bodyStr, `"source":"cluster-alpha/alpha-1"`)
+	s.Contains(bodyStr, `"cluster":"cluster-alpha"`)
+	s.NotContains(bodyStr, `"client_cluster"`, "v1 edges must not carry client_cluster")
+	s.NotContains(bodyStr, `"server_cluster"`, "v1 edges must not carry server_cluster")
 }
 
 func (s *GraphSuite) TestExternalNodeProducedByPattern() {

@@ -93,8 +93,10 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,
   `error_rate`) and boolean flags (`cross_cluster`, `ghost`) are **deferred to a
-  future typed struct field**. Cross-cluster status is derived by string
-  comparison of `labels.client_cluster` vs `labels.server_cluster` — D9.
+  future typed struct field**. `pod-calls-pod` edges carry a single
+  `labels.cluster` (the trace source / client-side cluster, omitted when the
+  client side is external). Cross-cluster status is derived by comparing the
+  resolved source-node and target-node `labels.cluster` — D9.
 - **Edge IDs are UUIDv5** with a fixed compiled-in namespace (`graph.edgeNamespace`)
   and the canonical input `<type>|<source>|<target>`. Stable across rebuilds —
   required for golden tests and HTTP `ETag` reproducibility. Bumping the
@@ -107,10 +109,19 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   endpoint becomes a `type="external"` node with `id="external/<value>"` and
   the verbatim label as `name`. Per-endpoint independent — both sides of a
   single edge can be evaluated separately. Edge `type` stays `pod-calls-pod`.
-  External endpoints get `client_cluster` / `server_cluster = ""`.
+  When the client side is external, the edge `labels.cluster` is omitted.
+- **Server-side pod resolution** uses `Topology.PodsByUID` — a global pod-UID
+  index built from all loaded clusters. Service-graph metrics carry only the
+  trace-source `cluster` (client side); the server side's cluster is recovered
+  by looking up `server_k8s_pod_uid` against this index, since K8s pod UIDs
+  are unique cross-cluster in practice. Missing UIDs become synth pods with
+  `cluster=""` (server-side cluster unknown).
 - **Allowlist injection** is the only filter pushed to PromQL. `--clusters-allowlist`
-  injects `{cluster=~"a|b|c"}` (and `client_cluster=~/server_cluster=~` for
-  service-graph queries). All caller-supplied filters are projection-time only.
+  injects `{cluster=~"a|b|c"}` into every query, including service-graph
+  queries (server-side cluster filtering is not pushed to PromQL because the
+  metric does not carry server-side cluster; cross-cluster edges whose target
+  pod lives in a non-allowlisted cluster drop silently when the target
+  topology is not loaded). All caller-supplied filters are projection-time only.
 - **Ristretto async-write race with singleflight**: the `singleflight.Do`
   callback returns the *built `*Graph` value*, not a "go re-read the cache"
   signal. Waiters see the same `*Graph`. We additionally call `cache.Wait()`

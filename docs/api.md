@@ -33,7 +33,7 @@ Returns the multi-cluster graph for `[start, end]` in Cytoscape.js shape.
   "clusters": ["cluster-alpha", "cluster-beta"],
   "elements": {
     "nodes": [{"data": {"id": "<cluster>/<uid>", "name": "...", "type": "pod|node|pvc|external", "labels": {"cluster": "..."}}}],
-    "edges": [{"data": {"id": "<uuidv5>", "type": "...", "source": "...", "target": "...", "labels": {"client_cluster": "...", "server_cluster": "..."}}}]
+    "edges": [{"data": {"id": "<uuidv5>", "type": "...", "source": "...", "target": "...", "labels": {"cluster": "<trace-source-cluster>"}}}]
   }
 }
 ```

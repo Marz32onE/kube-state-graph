@@ -42,49 +42,21 @@ The bootstrap script SHALL install a VictoriaMetrics single-node deployment insi
 - **WHEN** an operator inspects the manifests applied by bootstrap
 - **THEN** the manifests deploy a vmsingle-class workload and do NOT include any of `vmstorage`, `vmselect`, or `vminsert`
 
-### Requirement: Fake fixtures producer
+### Requirement: Topology source = real kube-state-metrics
 
-The harness SHALL include a Go program that exposes a `/metrics` Prometheus exposition endpoint emitting hand-crafted multi-cluster fixtures. VictoriaMetrics SHALL scrape this endpoint as its only source of `kube_*` and `traces_service_graph_*` series. Real `kube-state-metrics`, real OTLP collectors, and real OTel SDKs SHALL NOT be installed in the harness.
+The harness SHALL install a real `kube-state-metrics` Deployment inside the Kind cluster and configure VictoriaMetrics to scrape it. The harness SHALL NOT include a synthetic fixtures program; the local rig's purpose is end-to-end visual verification against real Kubernetes topology series, not fabricated ones. A relabel rule on the scrape config SHALL inject a `cluster=kind-local` external label so the API server treats the rig as a single-cluster source.
 
-#### Scenario: Fixtures program exposes /metrics
+The local rig deliberately does NOT produce `traces_service_graph_*` series — the `pod-calls-pod` code path is exercised by `internal/integration/` tests against a `testcontainers-go` VictoriaMetrics container instead (see the `container-integration` capability), which directly ingest hand-crafted multi-cluster fixtures via `POST /api/v1/import/prometheus`. This keeps the local rig focused on what it can demonstrate visually (real pods, nodes, PVCs scraped by real `kube-state-metrics`) and the multi-cluster cross-cluster scenarios in fast Go integration tests.
 
-- **WHEN** the fixtures Pod is running and a client inside the cluster issues `GET http://vm-fixtures:8080/metrics`
-- **THEN** the response is 200 in Prometheus exposition format
+#### Scenario: kube-state-metrics scraped by VictoriaMetrics
 
-#### Scenario: No real kube-state-metrics
+- **WHEN** the bootstrap has completed and a Pod inside the cluster issues `GET http://victoria-metrics:8428/api/v1/query?query=kube_pod_info`
+- **THEN** the response contains at least one series whose `cluster` label is `kind-local`
 
-- **WHEN** an operator lists Pods in the harness namespace
-- **THEN** no Pod's container image references `kube-state-metrics`
+#### Scenario: No synthetic fixtures program
 
-### Requirement: Multi-cluster fixture content
-
-The fixtures producer SHALL emit, at minimum, the following synthetic series for at least two synthetic clusters (e.g., `cluster-alpha` and `cluster-beta`):
-
-- `kube_pod_info{cluster, namespace, pod, uid, node}` — at least 2 pods per cluster.
-- `kube_node_info{cluster, node}` — at least 1 node per cluster.
-- `kube_node_status_addresses{cluster, node, type="ExternalIP", address}` — for every emitted node.
-- `kube_pod_spec_volumes_persistentvolumeclaims_info{cluster, namespace, pod, volume, claim_name}` — at least 1 binding in one cluster.
-- `kube_node_labels{cluster, node, label_*}` — at least 1 label per node.
-- `traces_service_graph_request_total{client, server, client_cluster, server_cluster, client_k8s_pod_uid, server_k8s_pod_uid, client_k8s_namespace_name, server_k8s_namespace_name, connection_type}` — including (a) at least one series with `client_cluster != server_cluster` and (b) at least one series whose `client` value contains `://` (e.g., `client="http://api.example.com"`) so the external-name-pattern rule can be exercised.
-
-#### Scenario: At least one cross-cluster edge series
-
-- **WHEN** an operator scrapes the fixtures endpoint
-- **THEN** at least one `traces_service_graph_request_total` series has different values for `client_cluster` and `server_cluster`
-
-#### Scenario: Topology references the cross-cluster edge endpoints
-
-- **WHEN** an operator inspects the fixture set
-- **THEN** every `(client_cluster, client_k8s_pod_uid)` and `(server_cluster, server_k8s_pod_uid)` referenced by a `traces_service_graph_request_total` series also appears as a `kube_pod_info{cluster=..., uid=...}` series
-
-### Requirement: Fixture configuration
-
-The fixtures program SHALL load its series definitions from a YAML file checked into the repository so test scenarios are deterministic. The fixtures program SHALL re-read the file on a SIGHUP signal and SHALL emit a metric `vm_fixtures_reloaded_total` whose value increments on each successful reload.
-
-#### Scenario: SIGHUP reload
-
-- **WHEN** an operator updates the YAML and sends SIGHUP to the fixtures container
-- **THEN** subsequent `/metrics` scrapes reflect the new fixtures and `vm_fixtures_reloaded_total` has incremented by 1
+- **WHEN** an operator inspects the harness manifests and source tree
+- **THEN** there is no `cmd/vm-fixtures` binary, no `tests/harness/vm-fixtures/` directory, and no manifest exposing a `/metrics` fixtures endpoint to VictoriaMetrics
 
 ### Requirement: API server installed in the harness
 
@@ -126,40 +98,30 @@ The operator SHALL be able to load Grafana, sign in with the bootstrap credentia
 
 ### Requirement: Manual smoke script
 
-The harness SHALL ship a smoke script (e.g., `tests/smoke/run.sh` or `local/grafana/smoke.sh`) that an operator MAY run after bootstrap to sanity-check the API surface end-to-end without opening Grafana. The script SHALL exit non-zero on any failure. CI SHALL NOT run this script.
+The harness SHALL ship a smoke script (e.g., `local/kind/smoke.sh`) that an operator MAY run after bootstrap to sanity-check the API surface end-to-end without opening Grafana. The script SHALL exit non-zero on any failure. CI SHALL NOT run this script.
+
+The local rig is single-cluster (Kind injects `cluster=kind-local` via the VictoriaMetrics scrape config) and produces no service-graph metrics, so the script asserts only what the rig can demonstrate. Multi-cluster behaviour, cross-cluster edges, external-name substitution, and `pod-calls-pod` coverage are exercised by `internal/integration/` tests against `testcontainers-go` VictoriaMetrics — not by this script.
 
 The script SHALL verify, at minimum:
 
 - `GET /v1/livez` returns 200.
 - `GET /v1/readyz` returns 200 within a configurable readiness budget (default 60 s).
-- `GET /v1/clusters` returns at least the synthetic cluster names emitted by the fixtures (e.g., `cluster-alpha`, `cluster-beta`).
+- `GET /v1/clusters` returns the rig's single cluster name (`kind-local`).
 - `GET /v1/edge-types` returns a body listing `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`.
-- `GET /v1/graph?start=<now-5m>&end=<now>` returns 200 with a non-empty `elements.nodes` and at least one `pod-runs-on-node` edge per cluster.
-- `GET /v1/graph?start=<now-5m>&end=<now>&edge_type=pod-calls-pod` returns at least one edge whose `data.labels.client_cluster` is not equal to `data.labels.server_cluster`.
-- `GET /v1/graph?start=<now-5m>&end=<now>&cluster=cluster-alpha` returns nodes whose `data.labels.cluster` is `cluster-alpha`, plus any cross-cluster edge endpoints in `cluster-beta`.
+- `GET /v1/graph?start=<now-5m>&end=<now>` returns 200 with a non-empty `elements.nodes` and at least one `pod-runs-on-node` edge.
+- `GET /v1/graph?start=<now-5m>&end=<now>&cluster=kind-local` returns nodes whose `data.labels.cluster` is `kind-local`.
 - Every node in any `/v1/graph` response carries `data.id`, `data.name`, `data.type`, and `data.labels` (a JSON object whose values are all strings). Every edge carries `data.id` (RFC 4122 UUID), `data.type`, `data.source`, `data.target`, and `data.labels` (a JSON object whose values are all strings).
-- `GET /v1/graph?start=<now-5m>&end=<now>&edge_type=pod-calls-pod` returns at least one node whose `data.type` is `"external"` and whose `data.name` contains the configured pattern substring (e.g., `://`).
-- `GET /metrics` returns 200 in Prometheus exposition format.
+- `GET /metrics` returns 200 in Prometheus exposition format and contains at least one `kube_state_graph_*` series.
 
 #### Scenario: Smoke script success path
 
 - **WHEN** the harness is bootstrapped and the operator runs the smoke script
 - **THEN** every assertion above passes and the script exits 0
 
-#### Scenario: Cross-cluster edge present
-
-- **WHEN** the operator runs the smoke script and it issues `GET /v1/graph?...&edge_type=pod-calls-pod`
-- **THEN** the response contains at least one edge whose `data.labels.client_cluster` differs from `data.labels.server_cluster`
-
 #### Scenario: Canonical schema enforced
 
 - **WHEN** the operator runs the smoke script and it inspects any `/v1/graph` response
 - **THEN** every node has `data.id`, `data.name`, `data.type`, `data.labels`, and every edge has `data.id` (UUID), `data.type`, `data.source`, `data.target`, `data.labels`; every value inside any `data.labels` map is a JSON string
-
-#### Scenario: External node produced by KSG_EXTERNAL_NAME_PATTERN
-
-- **WHEN** the operator runs the smoke script against the harness (which sets `KSG_EXTERNAL_NAME_PATTERN="://"`)
-- **THEN** the response contains at least one node whose `data.type` is `"external"` and whose `data.name` contains `"://"`
 
 ### Requirement: Reproducible teardown
 

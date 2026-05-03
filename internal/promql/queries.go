@@ -46,12 +46,10 @@ func Render(q Query, window time.Duration, allowlistRegex string) string {
 	case QNodeLabels:
 		return fmt.Sprintf(`last_over_time(kube_node_labels%s[%s])`, clusterSel, w)
 	case QServiceGraphTotal:
-		// Service-graph metrics carry client_cluster / server_cluster, not `cluster`.
-		sel := ""
-		if allowlistRegex != "" {
-			sel = fmt.Sprintf(`{client_cluster=~"%s",server_cluster=~"%s"}`, allowlistRegex, allowlistRegex)
-		}
-		return fmt.Sprintf(`rate(traces_service_graph_request_total%s[%s])`, sel, w)
+		// Service-graph metrics carry a single `cluster` label representing the
+		// trace source (client-side) cluster. Server-side cluster is recovered
+		// at build time via the topology pod-UID index, not via PromQL.
+		return fmt.Sprintf(`rate(traces_service_graph_request_total%s[%s])`, clusterSel, w)
 	case QClusterDiscovery:
 		return fmt.Sprintf(`group by (cluster) (last_over_time(kube_node_info%s[%s]))`, clusterSel, w)
 	case QClusterSizeProbe:

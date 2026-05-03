@@ -41,8 +41,7 @@
           "source": "cluster-alpha/p1",
           "target": "external/http://api.example.com",
           "labels": {
-            "client_cluster": "cluster-alpha",
-            "server_cluster": ""
+            "cluster": "cluster-alpha"
           }
         }
       }

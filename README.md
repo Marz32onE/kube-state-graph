@@ -1,5 +1,7 @@
 # kube-state-graph
 
+Traditional Chinese: [README.zh-tw.md](README.zh-tw.md).
+
 A Go REST API server that returns a unified pod / node / PVC graph for one or
 more Kubernetes clusters, including pod-UID-resolved RPC edges that may cross
 cluster boundaries.
@@ -46,6 +48,67 @@ Then:
 curl 'http://localhost:8080/v1/clusters'
 curl 'http://localhost:8080/v1/graph?start=$(date -u -d "-5 min" +%s)&end=$(date -u +%s)' | jq '.elements'
 ```
+
+## Upstream metrics consumed
+
+The graph build issues these PromQL queries against centralised VictoriaMetrics
+on every cache miss. Every series is expected to carry a `cluster` external
+label (injected by `vmagent` / Prometheus `external_labels` per source cluster).
+
+### Topology metrics — produced by [`kube-state-metrics`](https://github.com/kubernetes/kube-state-metrics)
+
+| Metric | Used for | Labels read | Required? |
+|---|---|---|---|
+| `kube_pod_info` | Pod nodes; pod-runs-on-node edges | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`, `host_ip` | **Yes** |
+| `kube_node_info` | K8sNode nodes | `cluster`, `node` | **Yes** |
+| `kube_node_status_addresses{type="ExternalIP"}` | Node `external_ip` label | `cluster`, `node`, `address` | Optional |
+| `kube_node_labels` | Node label propagation (`kubernetes.io/*` etc.) | `cluster`, `node`, `label_*` | Optional |
+| `kube_pod_spec_volumes_persistentvolumeclaims_info` | PVC nodes; pod-mounts-pvc edges | `cluster`, `namespace`, `pod`, `persistentvolumeclaim`, `volume` | Optional (no PVCs ⇒ no PVC nodes/edges) |
+
+Each is wrapped in `last_over_time(<metric>[<window>]) @ <end>` so the result
+reflects the most recent value within the requested `[start, end]` window.
+
+### Service-graph metric — produced by [Tempo](https://grafana.com/docs/tempo/latest/metrics-generator/service_graphs/) or compatible generator
+
+| Metric | Used for | Labels read | Required? |
+|---|---|---|---|
+| `traces_service_graph_request_total` | `pod-calls-pod` edges (intra- and cross-cluster) | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` | Optional (no series ⇒ no call edges) |
+
+Wrapped in `rate(traces_service_graph_request_total[<window>]) @ <end>`. Each
+series carries a single `cluster` external label representing the trace source
+(typically the cluster running Tempo's metrics-generator); this is the
+**client-side** cluster of the call. The **server-side** cluster is recovered
+at build time by joining `server_k8s_pod_uid` against the global topology
+pod-UID index — Kubernetes pod UIDs are unique across clusters in practice,
+so the lookup is unambiguous. Edges are only emitted when both endpoints
+resolve (to a known pod UID, or to an `external` node when the upstream
+`client`/`server` label matches `KSG_EXTERNAL_NAME_PATTERN`).
+
+### Probes — required for build admission, not graph data
+
+| PromQL | Purpose |
+|---|---|
+| `count(kube_pod_info{<allowlist>})` evaluated at `end` | Cluster-too-large gate (`--max-pods`); 503 if exceeded |
+| `group by (cluster) (last_over_time(kube_node_info[<lookback>]))` | Powers `GET /v1/clusters` discovery |
+| `up` | Distinguishes "no data in window" (`outside_retention`) from "upstream healthy but window empty" |
+
+### Edge → metric mapping
+
+| Edge type | Source metric(s) |
+|---|---|
+| `pod-runs-on-node` | `kube_pod_info` (pod's `node` label) |
+| `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
+| `pod-calls-pod` | `traces_service_graph_request_total` |
+| `pod-replaced-by` | `kube_pod_info` (multiple UIDs for same `(cluster, namespace, pod)` within window) |
+
+### Local rig coverage
+
+The in-tree `local/kind/` rig scrapes a real Kind cluster via kube-state-metrics
+(`kube_pod_info`, `kube_node_info`, `kube_node_labels`,
+`kube_pod_spec_volumes_persistentvolumeclaims_info`). It does **not** generate
+`traces_service_graph_request_total` — the `pod-calls-pod` code path is
+exercised by `internal/integration/` tests against a `testcontainers-go`
+VictoriaMetrics container instead.
 
 ## Configuration
 

@@ -93,8 +93,7 @@ func buildTwoClusterCross() graph.View {
 	a := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
 	b := &graph.PodNode{IDValue: "cluster-beta/p2", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-beta", "namespace": "billing"}}
 	cross := graph.NewEdge(graph.EdgeTypePodCallsPod, a.IDValue, b.IDValue, map[string]string{
-		"client_cluster": "cluster-alpha",
-		"server_cluster": "cluster-beta",
+		"cluster": "cluster-alpha",
 	})
 	return graph.View{Nodes: []graph.GraphNode{a, b}, Edges: []*graph.Edge{cross}}
 }
@@ -102,9 +101,10 @@ func buildTwoClusterCross() graph.View {
 func buildWithExternal() graph.View {
 	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
 	ext := &graph.ExternalNode{IDValue: "external/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{"pattern": "://"}}
+	// Client side is a pod, so edge keeps labels.cluster = client cluster.
+	// Server side is external (no cluster).
 	edge := graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, ext.IDValue, map[string]string{
-		"client_cluster": "cluster-alpha",
-		"server_cluster": "",
+		"cluster": "cluster-alpha",
 	})
 	return graph.View{Nodes: []graph.GraphNode{pod, ext}, Edges: []*graph.Edge{edge}}
 }

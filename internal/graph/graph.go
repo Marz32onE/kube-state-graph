@@ -72,18 +72,43 @@ func (g *Graph) NodeCountByKind() map[[2]string]int {
 }
 
 // EdgeCountByType returns counts grouped by edge type and a "true"|"false"
-// cross-cluster bucket. Cross-cluster status is derived for `pod-calls-pod`
-// edges by comparing labels.client_cluster and labels.server_cluster.
+// cross-cluster bucket. Cross-cluster status for `pod-calls-pod` edges is
+// derived by comparing the resolved source-node and target-node `cluster`
+// labels (the edge itself only carries the trace-source / client-side
+// cluster). Edges whose endpoints are missing or external are bucketed as
+// "false".
 func (g *Graph) EdgeCountByType() map[[2]string]int {
 	out := map[[2]string]int{}
 	for _, e := range g.Edges {
 		cross := "false"
 		if e.Type == EdgeTypePodCallsPod {
-			if e.Labels["client_cluster"] != e.Labels["server_cluster"] {
+			if g.isCrossCluster(e) {
 				cross = "true"
 			}
 		}
 		out[[2]string{string(e.Type), cross}]++
 	}
 	return out
+}
+
+// isCrossCluster returns true when both endpoints of the edge are non-external
+// nodes that resolve in g.NodesByID and whose `cluster` labels are non-empty
+// and differ. External endpoints, missing nodes, or empty cluster labels all
+// count as not-cross-cluster (we cannot prove the cluster boundary in those
+// cases).
+func (g *Graph) isCrossCluster(e *Edge) bool {
+	src, srcOK := g.NodesByID[e.Source]
+	tgt, tgtOK := g.NodesByID[e.Target]
+	if !srcOK || !tgtOK {
+		return false
+	}
+	if src.Type() == NodeTypeExternal || tgt.Type() == NodeTypeExternal {
+		return false
+	}
+	srcCluster := src.Labels()["cluster"]
+	tgtCluster := tgt.Labels()["cluster"]
+	if srcCluster == "" || tgtCluster == "" {
+		return false
+	}
+	return srcCluster != tgtCluster
 }

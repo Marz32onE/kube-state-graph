@@ -4,35 +4,37 @@
 
 The pod-service-graph reader SHALL build edges from service-graph metrics scraped into centralised VictoriaMetrics. The reader SHALL consume at minimum the following series, joined by pod UID:
 
-- `traces_service_graph_request_total{client, server, client_cluster, server_cluster, client_k8s_pod_uid, server_k8s_pod_uid, client_k8s_namespace_name, server_k8s_namespace_name, connection_type}`
+- `traces_service_graph_request_total{client, server, cluster, client_k8s_pod_uid, server_k8s_pod_uid, client_k8s_namespace_name, server_k8s_namespace_name, connection_type}`
 - `traces_service_graph_request_failed_total{ ...same labels... }`
 - `traces_service_graph_request_server_seconds_bucket{ ...same labels..., le }`
 
-Edges SHALL be derived by computing `rate(...[<window>]) @ <end>` over each counter and joining the result back to topology by `(cluster, pod-uid)` on each end. The `client` and `server` string labels are consumed by the external-endpoint substitution rule (see "External-endpoint substitution") and are otherwise ignored for pod-resolved endpoints.
+Each series carries exactly one `cluster` external label, applied by the trace pipeline that produced it (typically Tempo's metrics-generator running in a single source cluster). The reader SHALL treat that `cluster` value as the **client-side cluster** — the cluster originating the call — and SHALL resolve the client pod via `(cluster, client_k8s_pod_uid)`. The server-side pod SHALL be resolved by looking up `server_k8s_pod_uid` against a global pod-UID index built from topology (Kubernetes pod UIDs are unique across clusters in practice). When the server UID matches a topology pod, the resolved pod's own `cluster` value provides the server-side cluster for the edge `target` ID.
+
+Edges SHALL be derived by computing `rate(...[<window>]) @ <end>` over each counter. The `client` and `server` string labels are consumed by the external-endpoint substitution rule (see "External-endpoint substitution") and are otherwise ignored for pod-resolved endpoints.
 
 #### Scenario: Edge produced from non-zero rate
 
-- **WHEN** for the requested window `rate(traces_service_graph_request_total{...})` is greater than zero for a series whose endpoints are present in topology
-- **THEN** the reader emits one `pod-calls-pod` edge whose `source` is `<client_cluster>/<client_k8s_pod_uid>` and `target` is `<server_cluster>/<server_k8s_pod_uid>`
+- **WHEN** for the requested window `rate(traces_service_graph_request_total{...})` is greater than zero for a series whose client side and server-pod-UID resolve via topology
+- **THEN** the reader emits one `pod-calls-pod` edge whose `source` is `<cluster>/<client_k8s_pod_uid>` and `target` is `<resolved-cluster>/<server_k8s_pod_uid>`, where `<resolved-cluster>` is the topology-side cluster of the matched server pod
 
 #### Scenario: Zero-rate series is dropped
 
 - **WHEN** `rate(traces_service_graph_request_total{...})` evaluates to exactly zero for a series in the window
 - **THEN** no edge is emitted for that series
 
-### Requirement: Cross-cluster edge support
+### Requirement: Edge cluster label
 
-For every emitted `pod-calls-pod` edge, the reader SHALL set `labels.client_cluster = <client_cluster>` and `labels.server_cluster = <server_cluster>` from the source series. Both labels SHALL be present on every `pod-calls-pod` edge regardless of whether the call is intra-cluster or cross-cluster, so consumers can detect cross-cluster status by simple string comparison. The reader SHALL NOT encode a `cross_cluster` boolean inside `labels` (booleans are deferred to a future typed field).
-
-#### Scenario: Cross-cluster RPC
-
-- **WHEN** the reader processes a series with `client_cluster="cluster-alpha"` and `server_cluster="cluster-beta"`
-- **THEN** the emitted edge has `labels.client_cluster: "cluster-alpha"` and `labels.server_cluster: "cluster-beta"` and contains no `cross_cluster` key under `labels`
+For every emitted `pod-calls-pod` edge whose **client side resolves to a pod**, the reader SHALL set `labels.cluster = <client-pod-cluster>` from the metric's `cluster` label. The label represents the cluster that originated the RPC. When the **client side resolves to an external node**, the reader SHALL omit the `cluster` key from the edge's `labels` (external endpoints are not cluster-scoped). The reader SHALL NOT emit `client_cluster` or `server_cluster` keys on edge `labels` (server-side cluster is derivable from `target` node's `labels.cluster`). The reader SHALL NOT encode a `cross_cluster` boolean inside `labels` (booleans are deferred to a future typed field); cross-cluster status is derived by comparing the resolved source and target nodes' `labels.cluster` values.
 
 #### Scenario: Intra-cluster RPC
 
-- **WHEN** the reader processes a series with `client_cluster="cluster-alpha"` and `server_cluster="cluster-alpha"`
-- **THEN** the emitted edge has `labels.client_cluster: "cluster-alpha"` and `labels.server_cluster: "cluster-alpha"` and contains no `cross_cluster` key under `labels`
+- **WHEN** the reader processes a series with `cluster="cluster-alpha"` whose `client_k8s_pod_uid` and `server_k8s_pod_uid` both resolve to pods in `cluster-alpha`
+- **THEN** the emitted edge has `labels.cluster: "cluster-alpha"`, the `target` node's `labels.cluster` is also `"cluster-alpha"`, and the edge contains no `client_cluster`, `server_cluster`, or `cross_cluster` key
+
+#### Scenario: Cross-cluster RPC
+
+- **WHEN** the reader processes a series with `cluster="cluster-alpha"` whose `client_k8s_pod_uid` resolves to a pod in `cluster-alpha` and whose `server_k8s_pod_uid` resolves via the global UID index to a pod in `cluster-beta`
+- **THEN** the emitted edge has `labels.cluster: "cluster-alpha"`, `source: "cluster-alpha/<client-uid>"`, `target: "cluster-beta/<server-uid>"`, and the cross-cluster status is detectable by comparing the source and target node `labels.cluster` values
 
 ### Requirement: Numeric metrics deferred from v1
 
@@ -80,51 +82,52 @@ The decision is per endpoint: a single edge MAY have a pod source and an externa
 
 #### Scenario: Client side matches pattern
 
-- **WHEN** the server is started with `KSG_EXTERNAL_NAME_PATTERN="://"` and the upstream contains a series with `client="http://api.example.com"`, `server="checkout"`, `server_cluster="cluster-alpha"`, `server_k8s_pod_uid="abc"`
-- **THEN** the resulting edge has `type: "pod-calls-pod"`, `source: "external/http://api.example.com"`, `target: "cluster-alpha/abc"`; the source node has `type: "external"`, `name: "http://api.example.com"`, `labels.pattern: "://"`, and contains no `cluster` key under `labels`
+- **WHEN** the server is started with `KSG_EXTERNAL_NAME_PATTERN="://"` and the upstream contains a series with `client="http://api.example.com"`, `server="checkout"`, `cluster="cluster-alpha"`, `server_k8s_pod_uid="abc"` (resolving to a pod in topology with `cluster: "cluster-alpha"`)
+- **THEN** the resulting edge has `type: "pod-calls-pod"`, `source: "external/http://api.example.com"`, `target: "cluster-alpha/abc"`; the source node has `type: "external"`, `name: "http://api.example.com"`, `labels.pattern: "://"`, no `cluster` key under its `labels`; and the **edge** itself contains no `cluster` key under `labels` (the client side is external)
 
 #### Scenario: Server side matches pattern
 
-- **WHEN** the server is started with `KSG_EXTERNAL_NAME_PATTERN="://"` and the upstream contains a series with `client="checkout"`, `server="https://payments.partner.example/api"`, `client_cluster="cluster-alpha"`, `client_k8s_pod_uid="abc"`
-- **THEN** the resulting edge has `target: "external/https://payments.partner.example/api"`; the target node has `type: "external"`, `name: "https://payments.partner.example/api"`
+- **WHEN** the server is started with `KSG_EXTERNAL_NAME_PATTERN="://"` and the upstream contains a series with `client="checkout"`, `server="https://payments.partner.example/api"`, `cluster="cluster-alpha"`, `client_k8s_pod_uid="abc"`
+- **THEN** the resulting edge has `target: "external/https://payments.partner.example/api"`; the target node has `type: "external"`, `name: "https://payments.partner.example/api"`; and the edge has `labels.cluster: "cluster-alpha"` (the client side is a pod in `cluster-alpha`)
 
 #### Scenario: Both sides match pattern
 
 - **WHEN** the configured pattern is `"://"` and a series has both `client` and `server` containing `://`
-- **THEN** the resulting edge has both source and target as external nodes and the edge `type` is still `"pod-calls-pod"`
+- **THEN** the resulting edge has both source and target as external nodes, the edge `type` is still `"pod-calls-pod"`, and the edge `labels` contain no `cluster` key
 
 #### Scenario: Pattern does not match, falls through to pod resolution
 
 - **WHEN** the configured pattern is `"://"` and a series has `client="checkout"` (no `://` in the value)
-- **THEN** the client endpoint resolves to a pod via `(client_cluster, client_k8s_pod_uid)` exactly as if the pattern were unset
-
-#### Scenario: External endpoint cluster label is empty
-
-- **WHEN** the reader emits an edge whose source endpoint is external
-- **THEN** the edge's `labels.client_cluster` is the empty string `""` and `labels.server_cluster` is the server endpoint's cluster
+- **THEN** the client endpoint resolves to a pod via `(cluster, client_k8s_pod_uid)` exactly as if the pattern were unset
 
 ### Requirement: Synthesised pod node fallback
 
-When a service-graph series references a `(cluster, pod-uid)` endpoint that does not appear in the topology produced for the same window, the reader SHALL synthesise a pod node with `id="<cluster>/<pod-uid>"`, `name="<pod-uid>"` (the pod UID stands in as the display name when no metadata name is available), `type="pod"`, and a `labels` map containing at least `cluster` and the `namespace` value when the metric provided one. The build SHALL NOT drop the edge. The reader SHALL NOT add a boolean `ghost` flag to `labels`; consumers detect synthesised endpoints by the absence of richer labels (e.g., missing `node` for pods).
+When a service-graph series references a pod-UID endpoint that does not appear in the topology produced for the same window, the reader SHALL synthesise a pod node and SHALL NOT drop the edge.
+
+For the **client** side, the synthesised pod uses the metric's `cluster` label as its cluster value: `id="<cluster>/<client_k8s_pod_uid>"`, `labels.cluster=<cluster>`.
+
+For the **server** side, when the global pod-UID index has no entry for `server_k8s_pod_uid`, the synthesised pod has `cluster` unknown: `id="/<server_k8s_pod_uid>"`, `labels.cluster=""`. (The metric does not carry a `server_cluster` label under Option A; the trace pipeline only knows the source cluster.)
+
+In both cases, `name="<pod-uid>"`, `type="pod"`, and `labels` SHALL contain `namespace` when the metric provided `client_k8s_namespace_name` / `server_k8s_namespace_name`. The reader SHALL NOT add a boolean `ghost` flag to `labels`; consumers detect synthesised endpoints by the absence of richer labels (e.g., missing `node` for pods, or empty `labels.cluster` for unknown-cluster server pods).
 
 #### Scenario: Server pod missing from topology
 
-- **WHEN** a service-graph series has `server_cluster="cluster-beta"` and `server_k8s_pod_uid="missing-uid"` but no `kube_pod_info{cluster="cluster-beta", uid="missing-uid"}` exists in the window
-- **THEN** the resulting graph contains a synthesised pod node with `id: "cluster-beta/missing-uid"`, `name: "missing-uid"`, `type: "pod"`, `labels.cluster: "cluster-beta"`, no `labels.ghost` key, and the edge is emitted with this node as `target`
+- **WHEN** a service-graph series has `cluster="cluster-alpha"` and `server_k8s_pod_uid="missing-uid"` but no pod with `uid="missing-uid"` exists in the topology global pod-UID index
+- **THEN** the resulting graph contains a synthesised pod node with `id: "/missing-uid"`, `name: "missing-uid"`, `type: "pod"`, `labels.cluster: ""` (server-side cluster is unknown), no `labels.ghost` key, and the edge is emitted with this node as `target`
 
 ### Requirement: Allowlist enforcement on service-graph queries
 
-When the server is configured with `--clusters-allowlist`, every service-graph query SHALL inject the allowlist regex on **both** `client_cluster=~"..."` and `server_cluster=~"..."` so that edges entirely outside the allowlist are not fetched. Cross-cluster edges where exactly one endpoint is inside the allowlist SHALL be excluded for v1 because the remote endpoint cannot be resolved against an out-of-scope cluster.
+When the server is configured with `--clusters-allowlist`, every service-graph query SHALL inject the allowlist regex on the single `cluster=~"..."` label so series whose client-side (trace-source) cluster is outside the allowlist are not fetched. Server-side cluster filtering happens at resolution time: an edge whose server pod resolves (via the global UID index) to a pod outside the allowlist's topology scope is dropped because that topology was not loaded; a cross-cluster edge originating in an in-scope cluster but targeting a non-allowlisted cluster's pod has no resolvable target and is dropped silently. Cross-cluster edges between two in-scope clusters resolve normally.
 
-#### Scenario: Both endpoints inside allowlist
+#### Scenario: Trace source cluster inside allowlist
 
-- **WHEN** the allowlist is `{cluster-alpha, cluster-beta}` and a series has `client_cluster="cluster-alpha"`, `server_cluster="cluster-beta"`
+- **WHEN** the allowlist is `{cluster-alpha, cluster-beta}` and a series has `cluster="cluster-alpha"` whose client and server pod UIDs both resolve to topology pods (regardless of which of the two clusters the server pod lives in)
 - **THEN** the edge is fetched, joined, and emitted
 
-#### Scenario: One endpoint outside allowlist
+#### Scenario: Trace source cluster outside allowlist
 
-- **WHEN** the allowlist is `{cluster-alpha}` and a series has `client_cluster="cluster-alpha"`, `server_cluster="cluster-gamma"`
-- **THEN** the issued PromQL excludes this series via the allowlist regex on `server_cluster` and no edge is emitted
+- **WHEN** the allowlist is `{cluster-alpha}` and a series has `cluster="cluster-gamma"`
+- **THEN** the issued PromQL excludes this series via the allowlist regex on `cluster` and no edge is emitted
 
 ### Requirement: Edge identity is a deterministic UUID
 

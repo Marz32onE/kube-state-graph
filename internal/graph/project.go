@@ -171,7 +171,7 @@ func filterEdges(g *Graph, scope Scope, nodes map[string]GraphNode) []*Edge {
 		// "Cross-cluster edge representation"). Re-add the missing partner
 		// endpoint, but keep namespace/node filters strict on it so the AND
 		// semantics for those filters are preserved.
-		if !preserveCrossClusterEdge(e, scope, srcOK, tgtOK) {
+		if !preserveCrossClusterEdge(g, e, scope, srcOK, tgtOK) {
 			continue
 		}
 		if !srcOK {
@@ -193,7 +193,7 @@ func filterEdges(g *Graph, scope Scope, nodes map[string]GraphNode) []*Edge {
 	return out
 }
 
-func preserveCrossClusterEdge(e *Edge, scope Scope, srcOK, tgtOK bool) bool {
+func preserveCrossClusterEdge(g *Graph, e *Edge, scope Scope, srcOK, tgtOK bool) bool {
 	if e.Type != EdgeTypePodCallsPod {
 		return false
 	}
@@ -203,7 +203,9 @@ func preserveCrossClusterEdge(e *Edge, scope Scope, srcOK, tgtOK bool) bool {
 	if !srcOK && !tgtOK {
 		return false
 	}
-	return e.Labels["client_cluster"] != e.Labels["server_cluster"]
+	// Cross-cluster status is derived from the resolved endpoints' cluster
+	// labels (the edge only carries the trace-source / client-side cluster).
+	return g.isCrossCluster(e)
 }
 
 func nodePassesNonClusterFilters(n GraphNode, scope Scope) bool {

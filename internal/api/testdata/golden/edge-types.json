@@ -44,7 +44,7 @@
     },
     {
       "type": "pod-calls-pod",
-      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when client_cluster != server_cluster. Endpoints may be 'external' nodes when KSG_EXTERNAL_NAME_PATTERN matches the upstream client/server label.",
+      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). Endpoints may be 'external' nodes when KSG_EXTERNAL_NAME_PATTERN matches the upstream client/server label.",
       "source_type": [
         "pod",
         "external"
@@ -57,11 +57,7 @@
       "may_cross_cluster": true,
       "labels": [
         {
-          "name": "client_cluster",
-          "value_type": "string"
-        },
-        {
-          "name": "server_cluster",
+          "name": "cluster",
           "value_type": "string"
         }
       ]

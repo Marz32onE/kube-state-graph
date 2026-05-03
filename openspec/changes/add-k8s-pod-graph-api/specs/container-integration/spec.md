@@ -83,7 +83,7 @@ Tests within the same package that run in parallel SHALL label injected series w
 The container-integration suite SHALL contain at least one test for each of the following behaviours:
 
 - A single-cluster graph rendering with `pod-runs-on-node` edges.
-- A multi-cluster graph with at least one `pod-calls-pod` edge whose `labels.client_cluster != labels.server_cluster` is observable.
+- A multi-cluster graph with at least one `pod-calls-pod` edge whose source-node `labels.cluster` differs from its target-node `labels.cluster` (cross-cluster edge recovered via the topology pod-UID index).
 - The `KSG_EXTERNAL_NAME_PATTERN` substitution producing an `external`-typed node.
 - ETag round-trip: an initial response yields an `ETag`; a follow-up request with `If-None-Match: <etag>` returns 304.
 - Cache observability: a fresh time-bucket request reports `X-Cache: MISS`; an immediate repeat reports `X-Cache: HIT` (or `COALESCED` under contention).

@@ -18,10 +18,16 @@ uniform `cluster` external label.
      - url: https://vm.example.com/api/v1/write
    ```
 
-3. **Service-graph metrics producer** — an OpenTelemetry Collector or Grafana
-   Alloy with the `servicegraph` connector + `k8sattributes` processor,
-   configured to emit `client_cluster` and `server_cluster` so the API server
-   can resolve cross-cluster RPC:
+3. **Service-graph metrics producer** — Tempo's metrics-generator,
+   OpenTelemetry Collector with the `servicegraph` connector, or Grafana
+   Alloy. The producer needs to emit `client_k8s_pod_uid` and
+   `server_k8s_pod_uid` dimensions; the cluster of each side does **not**
+   need to be stamped on the metric. Each producer instance simply tags
+   every emitted series with its own cluster as the `cluster` external
+   label (the trace source). The API server recovers the server-side
+   cluster at build time by joining `server_k8s_pod_uid` against the
+   topology pod-UID index — Kubernetes pod UIDs are unique cross-cluster in
+   practice, so the lookup is unambiguous:
 
    ```yaml
    processors:
@@ -35,7 +41,7 @@ uniform `cluster` external label.
      prometheusremotewrite:
        endpoint: https://vm.example.com/api/v1/write
        external_labels:
-         cluster: prod-east
+         cluster: prod-east   # the cluster running this producer = client side
    ```
 
    Apps must propagate trace context across calls (W3C Trace Context); without
@@ -49,11 +55,12 @@ sanity-check the producer side, run:
 
 ```promql
 group by (cluster) (last_over_time(kube_node_info[1h]))
-group by (client_cluster, server_cluster) (rate(traces_service_graph_request_total[5m]))
+group by (cluster) (rate(traces_service_graph_request_total[5m]))
 ```
 
-Both should return one row per cluster (and per cluster pair, for the second
-query).
+Both should return one row per cluster (the second query returns one row per
+trace-source / client-side cluster — server-side cluster does not appear as a
+metric label and is recovered at build time by the API server).
 
 ## Allowlisting
 

@@ -64,9 +64,21 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	nodes, edges := assemble(topology, sg)
 	g := graph.NewGraph(nodes, edges, time.Now().UTC())
 
+	// Cross-cluster status is derived from the resolved endpoint nodes'
+	// `cluster` labels, since edges only carry the trace-source cluster
+	// (Option A: the metric does not stamp server-side cluster; it is
+	// recovered via the topology pod-UID index at parse time).
 	crossCluster := 0
 	for _, e := range g.Edges {
-		if e.Type == graph.EdgeTypePodCallsPod && e.Labels["client_cluster"] != e.Labels["server_cluster"] {
+		if e.Type != graph.EdgeTypePodCallsPod {
+			continue
+		}
+		src, srcOK := g.NodesByID[e.Source]
+		tgt, tgtOK := g.NodesByID[e.Target]
+		if !srcOK || !tgtOK {
+			continue
+		}
+		if src.Labels()["cluster"] != tgt.Labels()["cluster"] {
 			crossCluster++
 		}
 	}

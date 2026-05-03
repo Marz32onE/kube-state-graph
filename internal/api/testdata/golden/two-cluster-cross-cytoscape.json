@@ -43,8 +43,7 @@
           "source": "cluster-alpha/p1",
           "target": "cluster-beta/p2",
           "labels": {
-            "client_cluster": "cluster-alpha",
-            "server_cluster": "cluster-beta"
+            "cluster": "cluster-alpha"
           }
         }
       }

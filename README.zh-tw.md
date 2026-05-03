@@ -1,0 +1,133 @@
+# kube-state-graph
+
+[English README](README.md)
+
+以 Go 實作的 REST API，回傳一或多個 Kubernetes 叢集上統一的 pod／node／PVC 圖，包含可依 pod UID 對應的 RPC 邊（`pod-calls-pod`），且邊可跨叢集。
+
+```
+cluster A: kube-state-metrics ──┐
+           service-graph source ┤
+                                 │  (vmagent / Prometheus
+cluster B: kube-state-metrics ──┤   帶 external_labels:
+           service-graph source ┤   { cluster: "<name>" })
+                                 │
+       ...                       ├──► centralised VictoriaMetrics ◄── kube-state-graph
+                                 │                                     （Prometheus HTTP API）
+cluster N: kube-state-metrics ──┤
+           service-graph source ─┘
+```
+
+## 功能概要
+
+- 依呼叫端指定的 `[start, end]`，從**單一**集中式 VictoriaMetrics 讀取 `kube_*` 拓樸與 `traces_service_graph_*` 執行期指標。
+- Join 成多叢集圖，節點鍵為帶叢集範圍的 pod UID 與 node 名稱。
+- 回傳 Cytoscape.js JSON（`/v1/graph`）或 Grafana Node Graph 資料源形狀（`/v1/graph/nodegraph`）。
+- 提供叢集探索（`/v1/clusters`）與靜態邊類型目錄（`/v1/edge-types`）。
+- 以 Ristretto + singleflight + ETag 做時間桶快取，讓同一儀表板時間範圍的併發請求在上游只攤平成一次建圖。
+
+## 快速開始
+
+```bash
+make build
+./bin/kube-state-graph \
+  --prom-url=http://victoria-metrics.example:8428 \
+  --listen-addr=:8080
+```
+
+查詢範例（`start`／`end` 為 Unix 秒，下列寫法在 macOS 與 Linux 皆可）：
+
+```bash
+curl 'http://localhost:8080/v1/clusters'
+end=$(date -u +%s)
+start=$((end - 300))
+curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
+```
+
+## 上游指標
+
+每次 cache miss 建圖時，會對集中式 VictoriaMetrics 發出 PromQL。各 series 預期帶有由 `vmagent`／Prometheus `external_labels` 寫入的 `cluster` 標籤。
+
+### 拓樸指標 — 由 [`kube-state-metrics`](https://github.com/kubernetes/kube-state-metrics) 產出
+
+| 指標 | 用途 | 會讀的標籤 | 必填？ |
+|---|---|---|---|
+| `kube_pod_info` | Pod 節點、`pod-runs-on-node` 邊 | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`, `host_ip` | **是** |
+| `kube_node_info` | K8s node 節點 | `cluster`, `node` | **是** |
+| `kube_node_status_addresses{type="ExternalIP"}` | Node 的 `external_ip` 標籤 | `cluster`, `node`, `address` | 選填 |
+| `kube_node_labels` | 傳遞 node 標籤（`kubernetes.io/*` 等） | `cluster`, `node`, `label_*` | 選填 |
+| `kube_pod_spec_volumes_persistentvolumeclaims_info` | PVC 節點、`pod-mounts-pvc` 邊 | `cluster`, `namespace`, `pod`, `persistentvolumeclaim`, `volume` | 選填（無 PVC 則無相關節點／邊） |
+
+各指標以 `last_over_time(<metric>[<window>]) @ <end>` 包裝，反映請求視窗 `[start, end]` 內最後觀測值。
+
+### Service graph 指標 — 由 [Tempo](https://grafana.com/docs/tempo/latest/metrics-generator/service_graphs/) 或相容產生器產出
+
+| 指標 | 用途 | 會讀的標籤 | 必填？ |
+|---|---|---|---|
+| `traces_service_graph_request_total` | `pod-calls-pod` 邊（叢集內與跨叢集） | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` 等 | 選填（無 series 則無呼叫邊） |
+
+以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析（pod UID 已知，或符合設定的 `KSG_EXTERNAL_NAME_PATTERN` 而替換成 `external` 節點）時才輸出邊。
+
+### 探針 — 用於建圖准入，不屬於圖資料
+
+| PromQL | 用途 |
+|---|---|
+| `count(kube_pod_info{<allowlist>})` 在 **`end` 時刻**求值 | 叢集過大閘道（`--max-pods`）；超過則 503 |
+| `group by (cluster) (last_over_time(kube_node_info[<lookback>]))` | 驅動 `GET /v1/clusters` |
+| `up` | 區分「視窗內無資料」（`outside_retention`）與「上游正常但視窗為空」 |
+
+### 邊類型 ↔ 指標
+
+| 邊類型 | 來源指標 |
+|---|---|
+| `pod-runs-on-node` | `kube_pod_info`（pod 的 `node` 標籤） |
+| `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
+| `pod-calls-pod` | `traces_service_graph_request_total` |
+| `pod-replaced-by` | `kube_pod_info`（同一視窗內相同 `(cluster, namespace, pod)` 出現多個 UID） |
+
+### 本機驗證環境
+
+樹內 **`local/kind/`** 腳本會對真實 Kind 叢集 scrape `kube-state-metrics`（`kube_pod_info`、`kube_node_info`、`kube_node_labels`、`kube_pod_spec_volumes_persistentvolumeclaims_info`）。該環境**不**產生 `traces_service_graph_request_total`；`pod-calls-pod` 路徑由 **`internal/integration/`** 搭配 testcontainers 起的 VictoriaMetrics 與合成資料覆蓋。
+
+## 設定
+
+| 旗標 | 環境變數 | 預設值 | 說明 |
+|---|---|---|---|
+| `--prom-url` | `KSG_PROM_URL` | `http://localhost:8428` | VictoriaMetrics Prometheus 相容 endpoint。 |
+| `--listen-addr` | `KSG_LISTEN_ADDR` | `:8080` | HTTP 監聽位址。 |
+| `--max-window` | `KSG_MAX_WINDOW` | `24h` | 允許的 `end - start` 上限。 |
+| `--max-skew` | `KSG_MAX_SKEW` | `1m` | 允許的 `end - now` 超前量。 |
+| `--max-pods` | `KSG_MAX_PODS` | `5000` | 叢集 pod 數上限（過大回 503）。 |
+| `--build-timeout` | `KSG_BUILD_TIMEOUT` | `15s` | 單次建圖 context 逾時。 |
+| `--build-concurrency` | `KSG_BUILD_CONCURRENCY` | `8` | 同時建圖上限。 |
+| `--cluster-discovery-lookback` | `KSG_CLUSTER_DISCOVERY_LOOKBACK` | `1h` | 叢集探索回溯視窗。 |
+| `--clusters-allowlist` | `KSG_CLUSTERS_ALLOWLIST` | （空） | 逗號分隔 allowlist。 |
+| `--external-name-pattern` | `KSG_EXTERNAL_NAME_PATTERN` | （空） | 子字串；`client`／`server` 符合時該端成 `external` 節點。 |
+| `--cache-max-cost-bytes` | `KSG_CACHE_MAX_COST_BYTES` | `268435456`（256 MiB） | Ristretto 成本預算。 |
+| `--enable-debug` | `KSG_ENABLE_DEBUG` | `false` | 啟用 `/debug/*`（目前 `/debug/last-queries` 為 501 未實作回應）。 |
+| `--log-level` | `KSG_LOG_LEVEL` | `info` | `debug \| info \| warn \| error`。 |
+
+## 文件
+
+- [API 參考](docs/api.md)（英文）
+- [多叢集部署](docs/multi-cluster.md)
+- [External 名稱替換](docs/external-substitution.md)
+- [營運](docs/operations.md)
+
+## 開發
+
+```bash
+make build        # 編譯主程式
+make test         # 單元 + 元件 + golden + property + integration
+make lint         # golangci-lint
+make vuln         # govulncheck
+make check-docs   # OpenAPI 與嵌入靜態檔是否與 swag 產出一致（CI 亦跑）
+make local-up     # 本機 Kind + VM + 儀表板腳本（見 local/kind/）
+make local-smoke  # 對已啟動環境跑 smoke
+make local-down   # 拆除
+```
+
+整合測試走 `internal/integration/` + testcontainers-go：直接以 Prometheus 文字曝露格式把 fixture series 推進臨時 VictoriaMetrics 容器（不需單獨的 fixture binary）。本地 Kind rig 走 `local/kind/`，由 kube-state-metrics 直接抓取真實 Kind cluster 產生 topology series。
+
+## 授權
+
+Apache-2.0

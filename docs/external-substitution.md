@@ -34,10 +34,17 @@ external→pod, or external→external. Edge `type` stays `pod-calls-pod`.
 
 ## Edge cluster labels
 
-For external endpoints, the corresponding `client_cluster` (or
-`server_cluster`) on edge `labels` is the empty string `""`. Consumers detect
-cross-cluster status by string comparison of `labels.client_cluster` and
-`labels.server_cluster`.
+`pod-calls-pod` edges carry a single `labels.cluster` whose value is the
+**trace source / client-side** cluster — the cluster that produced the
+service-graph metric. The label is only emitted when the **client** side
+resolves to a pod; when the client side is an external endpoint, the
+`cluster` key is omitted entirely (external endpoints are not cluster-scoped).
+
+The remote (server-side) cluster is **not** stamped on the edge — it is
+recovered from the resolved target node's own `labels.cluster`. Consumers
+detect cross-cluster status by comparing the edge's source-node and
+target-node `labels.cluster` (both nodes are guaranteed to be present in the
+same response).
 
 ## Examples
 

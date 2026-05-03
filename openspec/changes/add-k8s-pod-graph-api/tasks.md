@@ -28,7 +28,7 @@
 
 - [x] 4.1 Wrap `prometheus/client_golang/api/v1` in `internal/promql.Client` with `Instant(ctx, query, ts) (model.Vector, error)` plus duration / failure metrics.
 - [x] 4.2 Centralise PromQL templates in `internal/promql/queries.go` as named constants for `kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels`, `traces_service_graph_request_total`, plus the discovery and probe queries.
-- [x] 4.3 Implement `--clusters-allowlist` injection: build a `{cluster=~"a|b|c"}` fragment and splice it into every query template (and into both `client_cluster=~` and `server_cluster=~` for service-graph queries).
+- [x] 4.3 Implement `--clusters-allowlist` injection: build a `{cluster=~"a|b|c"}` fragment and splice it into every query template (service-graph queries use the same single-`cluster` selector — server-side cluster is recovered at build time via the topology pod-UID index, not via PromQL label filtering).
 - [x] 4.4 Implement `count(kube_pod_info)` cluster-size probe used to enforce `--max-pods` before a full build.
 - [x] 4.5 Implement parallel fan-out via `errgroup.WithContext`; per-call context timeout from `--build-timeout`; abort whole build on any sub-query failure.
 
@@ -50,7 +50,7 @@
 - [x] 6.2 Compute `rate(traces_service_graph_request_total[<window>]) @ <end>`; drop series whose rate is exactly zero.
 - [x] 6.3 For each surviving series, perform per-endpoint substitution: if `KSG_EXTERNAL_NAME_PATTERN` is non-empty AND the `client` (or `server`) label value contains the pattern → external node (`id="external/<value>"`, `name=<value>`, `type="external"`, `labels={"pattern":"<pattern>"}`); else pod-UID resolution via topology map.
 - [x] 6.4 When pod-UID resolution finds no topology entry, emit a synthesised pod node (`name=<pod-uid>`, `labels.cluster=<cluster>`, no `ghost` flag).
-- [x] 6.5 Set edge `labels.client_cluster` and `labels.server_cluster` (empty string for external endpoints).
+- [x] 6.5 Set edge `labels.cluster` to the trace-source / client-side pod's cluster; omit the `cluster` key when the client side is an external endpoint. Server-side cluster is recovered via the topology global pod-UID index (not stamped on the metric) and is observable through the resolved target node's `labels.cluster`.
 - [x] 6.6 Confirm numeric metrics (`rate`, `p99_ms`, `error_rate`) are NOT written into `labels` in v1; add a regression test that asserts no such keys appear.
 - [x] 6.7 Tolerate empty / sparse upstream — `nil` or empty Vector results MUST yield zero edges, never an error.
 
@@ -119,7 +119,7 @@
 - [x] 13.1 Add a generator for random multi-cluster topology + service-graph edges + filter specs.
 - [x] 13.2 Property: every edge endpoint resolves to a node in the response.
 - [x] 13.3 Property: filtered set ⊆ unfiltered set; traversal depth never exceeded.
-- [x] 13.4 Property: cross-cluster edges have `labels.client_cluster != labels.server_cluster`.
+- [x] 13.4 Property: for cross-cluster edges, the resolved source-node `labels.cluster` differs from the resolved target-node `labels.cluster` (cross-cluster status is derived from node labels, not from edge labels).
 - [x] 13.5 Property: edge IDs are unique per `(type, source, target)` and stable across re-runs.
 
 ## 14. Verification harness (capability: verification-harness)
@@ -127,8 +127,8 @@
 - [x] 14.1 Author `deploy/kind/kind-config.yaml` (single cluster, 2 worker nodes).
 - [x] 14.2 Author `deploy/kind/bootstrap.sh` that creates the Kind cluster and applies all manifests.
 - [x] 14.3 Author manifests for in-cluster VictoriaMetrics single-node (`vmsingle`); confirm no `vmstorage`/`vmselect`/`vminsert`.
-- [x] 14.4 Implement `tests/harness/vm-fixtures/` Go program: reads YAML fixture file, exposes `/metrics`, reloads on SIGHUP, exposes `vm_fixtures_reloaded_total`.
-- [x] 14.5 Author `tests/harness/vm-fixtures/fixtures.yaml` with multi-cluster `kube_*` series, at least one cross-cluster service-graph series, at least one `client="http://..."` series for external substitution.
+- [x] 14.4 ~~Implement `tests/harness/vm-fixtures/` Go program~~ — superseded: integration tests in `internal/integration/` ingest fixture series directly into a `testcontainers-go` VictoriaMetrics container via `POST /api/v1/import/prometheus` (Prometheus exposition format). No standalone binary, YAML config, or `/metrics` endpoint.
+- [x] 14.5 ~~Author `tests/harness/vm-fixtures/fixtures.yaml`~~ — superseded: each test in `internal/integration/graph_e2e_test.go` constructs its own multi-cluster `kube_*` series, at least one cross-cluster service-graph series (where `server_k8s_pod_uid` resolves to a pod in a different cluster via the topology pod-UID index), and at least one `client="http://..."` series for external substitution.
 - [x] 14.6 Author manifests for the `kube-state-graph` API server Deployment with `KSG_EXTERNAL_NAME_PATTERN="://"` set in the env section.
 - [x] 14.7 Author `tests/smoke/run.sh` covering all assertions in the `verification-harness` spec (livez, readyz, clusters, edge-types, graph, multi-cluster filter, cross-cluster edge present, external node present, canonical schema enforced, metrics exposition).
 - [x] 14.8 Author `deploy/kind/teardown.sh` for reproducible cluster deletion.
@@ -137,14 +137,14 @@
 ## 15. CI integration
 
 - [x] 15.1 Add CI workflow stage running `go vet`, `golangci-lint`, `go test ./...` (unit + component + golden + property) on every PR.
-- [x] 15.2 Add CI stage that runs the harness bootstrap + smoke script on PRs touching `cmd/`, `internal/build/`, `internal/cache/`, `deploy/kind/`, or `tests/harness/`, and on a nightly schedule.
+- [x] 15.2 Add CI stage that runs `go test ./internal/integration/` on PRs touching `cmd/`, `internal/build/`, `internal/cache/`, `internal/integration/`, or `local/kind/`, and on a nightly schedule. Integration tests use `testcontainers-go` with VictoriaMetrics; no separate fixtures harness.
 - [x] 15.3 Publish a container image for `kube-state-graph` from CI for tagged commits; basic Dockerfile checked in.
 
 ## 16. Documentation
 
 - [x] 16.1 Write `README.md`: what the server is, the data flow diagram, single-binary usage, env / flag reference.
 - [x] 16.2 Write `docs/api.md`: response shapes, query parameters, time-bucket policy, status codes and `reason` values, ETag / Cache-Control semantics.
-- [x] 16.3 Write `docs/multi-cluster.md`: producer-side scrape `external_labels: { cluster: ... }` requirement, OTel Collector `servicegraph` connector configuration with `dimensions: [k8s.pod.uid, k8s.namespace.name]`, expected `client_cluster` / `server_cluster` labels.
+- [x] 16.3 Write `docs/multi-cluster.md`: producer-side scrape `external_labels: { cluster: ... }` requirement (single source-cluster label on every series — Tempo / `servicegraph` connector configured with pod-UID dimensions only; remote/server-side cluster is recovered at build time from the topology pod-UID index).
 - [x] 16.4 Write `docs/external-substitution.md`: `KSG_EXTERNAL_NAME_PATTERN` semantics, recommended values (`://`, `@`), examples of resulting graphs.
 - [x] 16.5 Write `docs/operations.md`: self-metrics, alert recipes, `/livez` / `/readyz` semantics, capacity planning notes.
 
@@ -180,7 +180,7 @@
 
 ## 20. Manual rig polish (capability: verification-harness — modified)
 
-- [x] 20.1 Move integration-only assets out of CI-implying paths: `deploy/kind/` → `local/grafana/`; smoke script → `local/grafana/smoke.sh`. `tests/harness/vm-fixtures/` retained (Go program; bootstrap references it).
+- [x] 20.1 Move integration-only assets out of CI-implying paths: `deploy/kind/` → `local/kind/`; smoke script → `local/kind/smoke.sh`. The `tests/harness/vm-fixtures/` standalone fixtures binary was dropped — integration testing moved to `internal/integration/` with `testcontainers-go`, and the local Kind rig uses real `kube-state-metrics` scraping the Kind cluster (no synthetic fixtures program needed).
 - [x] 20.2 Add a Grafana Pod Deployment + Service to the rig manifests. Pin the Grafana image tag (`grafana/grafana:11.4.0`).
 - [x] 20.3 Add a Grafana datasource provisioning ConfigMap pointing at the in-cluster `kube-state-graph` Service via the JSON / Infinity datasource.
 - [x] 20.4 Add a Grafana dashboards provisioning ConfigMap that auto-imports `kube-state-graph-nodegraph.json` on Grafana boot.

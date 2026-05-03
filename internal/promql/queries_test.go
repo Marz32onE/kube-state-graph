@@ -12,10 +12,14 @@ func TestRender_AllowlistInjection(t *testing.T) {
 	assert.Contains(t, got, `cluster=~"alpha|beta"`)
 }
 
-func TestRender_ServiceGraphInjectsBothEndpoints(t *testing.T) {
+func TestRender_ServiceGraphInjectsClusterAllowlist(t *testing.T) {
 	got := Render(QServiceGraphTotal, time.Minute, "alpha|beta")
-	assert.Contains(t, got, `client_cluster=~"alpha|beta"`)
-	assert.Contains(t, got, `server_cluster=~"alpha|beta"`)
+	// Service-graph metrics carry only a single `cluster` label (the trace
+	// source / client side). Server-side cluster filtering is recovered at
+	// build time via the topology pod-UID index, not by PromQL.
+	assert.Contains(t, got, `cluster=~"alpha|beta"`)
+	assert.NotContains(t, got, "client_cluster")
+	assert.NotContains(t, got, "server_cluster")
 }
 
 func TestRender_NoAllowlist(t *testing.T) {

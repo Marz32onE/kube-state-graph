@@ -19,8 +19,8 @@ cluster N: kube-state-metrics ──┤
 
 - Each cluster's scrape pipeline applies a `cluster=<name>` external label uniformly to `kube-state-metrics` and service-graph metrics before remote-writing into a single shared VictoriaMetrics.
 - `kube-state-metrics` exports `kube_pod_info{cluster=...,uid=...}`, `kube_node_info{cluster=...,node=...}`, `kube_node_status_addresses{cluster=...}`, `kube_pod_spec_volumes_persistentvolumeclaims_info{cluster=...}`, `kube_node_labels{cluster=...}`, etc.
-- A separate (out-of-repo) service-graph producer emits pod-UID-labelled metrics carrying both `client_cluster` and `server_cluster` labels so cross-cluster RPC is preserved end-to-end:
-  - `traces_service_graph_request_total{client_cluster, server_cluster, client_k8s_pod_uid, server_k8s_pod_uid, client_k8s_namespace_name, server_k8s_namespace_name, connection_type}`.
+- A separate (out-of-repo) service-graph producer (typically Tempo's metrics-generator running per source cluster) emits pod-UID-labelled metrics carrying a single `cluster` external label representing the trace source cluster — the cluster originating the RPC. The remote (server-side) cluster is **not** stamped on the metric; cross-cluster status is recovered at build time by joining the server pod UID against the global topology pod-UID index:
+  - `traces_service_graph_request_total{cluster, client_k8s_pod_uid, server_k8s_pod_uid, client_k8s_namespace_name, server_k8s_namespace_name, connection_type}`.
 - The API server reads everything it needs from VictoriaMetrics through the Prometheus HTTP API, **on demand per request**, scoped to a caller-specified time range. It never talks to the Kubernetes API server in any cluster, never scrapes `kube-state-metrics` directly, and never connects to the service-graph producer.
 
 The integration-test harness in this repo (single Kind cluster, in-cluster VictoriaMetrics, fake-fixtures producer that synthesises multi-cluster series) exists only to give CI and developers a reproducible target. It deliberately does **not** spin up multiple Kind clusters or real per-cluster scrape pipelines — that work belongs to deployment, not to this repo.
@@ -40,7 +40,7 @@ Constraints on the API server:
 
 **Goals:**
 - Ship a Go (Gin) HTTP server that returns a unified nodes-and-edges JSON document for one or more Kubernetes clusters in a caller-specified time range `[start, end]`, computed from VictoriaMetrics on demand.
-- Expose **cross-cluster** RPC edges (`pod-calls-pod` where `client_cluster != server_cluster`) as first-class graph elements.
+- Expose **cross-cluster** RPC edges (`pod-calls-pod` where the source and target pods resolve to different clusters via the global pod-UID index) as first-class graph elements.
 - Build the graph by issuing PromQL queries with `@` timestamp modifiers and range-aware functions (`last_over_time`, `rate`) against centralised VictoriaMetrics, and joining the result sets in memory across all clusters in scope.
 - Serve concurrent same-time-range queries from a tiered cache stack (HTTP `ETag`, singleflight, Ristretto) so multiple users sharing a dashboard amortise to one upstream fan-out per time bucket — independent of how many cluster / namespace / edge-type filter combinations they request.
 - Use the `(cluster, pod-uid)` composite as the stable identity for pod nodes and the join key for pod-pod edges; node and PVC IDs are similarly cluster-scoped.
@@ -67,7 +67,7 @@ Constraints on the API server:
 
 The server takes one upstream URL (`--prom-url`, default `http://localhost:8428`) pointing at the centralised VictoriaMetrics' Prometheus-compatible endpoint. All inputs (kube-state-metrics series and service-graph series, from any cluster) are queried from this single backend.
 
-Multi-cluster discrimination is by **label**: every series carries `cluster=<name>` (topology) or `client_cluster=<name>` / `server_cluster=<name>` (service-graph). The API server never knows about per-cluster URLs.
+Multi-cluster discrimination is by **label**: every series carries `cluster=<name>` — for both topology (`kube_*`) and service-graph (`traces_service_graph_*`) metrics. Service-graph metrics carry only the trace-source cluster as `cluster`; the remote (server-side) cluster is recovered at build time by joining the server pod UID against the global topology pod-UID index. The API server never knows about per-cluster URLs.
 
 - Why: matches the centralised-observability deployment topology these systems already use; collapses N readers into one client; lets one PromQL query cover all clusters in a single round-trip.
 - Alternatives considered:
@@ -114,7 +114,7 @@ Edges fall into typed categories:
 
 - `pod-runs-on-node` (intra-cluster only): derived from `kube_pod_info{node=..., cluster=...}` evaluated within the time range.
 - `pod-mounts-pvc` (intra-cluster only): derived from joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the node hosting the pod, within a single cluster.
-- `pod-calls-pod` (intra-cluster **or cross-cluster**): from `rate(traces_service_graph_request_total[<window>]) @ <end>` with non-zero rate, joined back to `(client_cluster, client_k8s_pod_uid)` and `(server_cluster, server_k8s_pod_uid)`. The edge always carries `labels.client_cluster` and `labels.server_cluster`; cross-cluster status is derived by string comparison of the two on the consumer side (no boolean flag in `labels` per D9's strict-string rule).
+- `pod-calls-pod` (intra-cluster **or cross-cluster**): from `rate(traces_service_graph_request_total[<window>]) @ <end>` with non-zero rate. The client side joins on `(cluster, client_k8s_pod_uid)`. The server side joins via the **global pod-UID index** built from topology — `server_k8s_pod_uid` alone resolves to a single pod across all loaded clusters, since K8s pod UIDs are unique cross-cluster in practice. The edge carries `labels.cluster` set to the client-side cluster (omitted when the client is an external endpoint); cross-cluster status is derived by comparing the resolved source-node `labels.cluster` and target-node `labels.cluster` on the consumer side (no boolean flag in `labels` per D9's strict-string rule).
 
 Each edge carries `type`, `source`, `target`, plus type-specific `attrs` (see D9 for serialised JSON shape).
 
@@ -190,7 +190,7 @@ A small abstraction `Cache` interface (Get / Set / Delete / Stats / Close) wraps
 
 `GET /v1/graph` accepts (in addition to mandatory `start` / `end`):
 
-- `?cluster=<name>` — repeatable; restricts the response to nodes whose `cluster` is in the set. Cross-cluster edges with one end inside the set and one end outside are **kept** (the remote endpoint resolves correctly because the cached `*Graph` holds all clusters); the remote endpoint node is also kept (with its own `labels.cluster`). Cross-cluster status is conveyed by `labels.client_cluster` and `labels.server_cluster` on the edge — consumers compare the two strings. Setting `cluster` to an unknown value is not an error — it simply yields an empty result for that name.
+- `?cluster=<name>` — repeatable; restricts the response to nodes whose `cluster` is in the set. Cross-cluster edges with one end inside the set and one end outside are **kept** (the remote endpoint resolves correctly because the cached `*Graph` holds all clusters); the remote endpoint node is also kept (with its own `labels.cluster`). Cross-cluster status is conveyed by comparing the source-node and target-node `labels.cluster` — consumers derive the boolean from the two strings (the edge itself carries only `labels.cluster` = trace-source / client-side cluster). Setting `cluster` to an unknown value is not an error — it simply yields an empty result for that name.
 - `?namespace=<ns>` — repeatable; restricts pod / PVC nodes whose `namespace` is in the set. A namespace value matches across clusters; combine with `?cluster=` to scope to a single cluster's namespace.
 - `?node=<node-name>` — repeatable; restricts to those K8s node names. Combine with `?cluster=` if names are not unique across clusters.
 - `?edge_type=<type>` — repeatable; restricts to those edge types only. If a requested type has no edges in the current `Graph`, that type is silently skipped (no error, just empty).
@@ -218,10 +218,10 @@ kube_node_status_addresses{cluster, node, type="ExternalIP", address=...}
 kube_pod_spec_volumes_persistentvolumeclaims_info{cluster, namespace, pod, volume, claim_name, ...}
 kube_node_labels{cluster, node, label_*=...}
 
-# Service graph (potentially cross-cluster)
+# Service graph (single source cluster per series; cross-cluster recovered at build time via UID index)
 traces_service_graph_request_total{
   client, server,
-  client_cluster, server_cluster,
+  cluster,                        # single trace-source cluster (client side)
   client_k8s_pod_uid, server_k8s_pod_uid,
   client_k8s_namespace_name, server_k8s_namespace_name,
   connection_type="virtual_node|messaging_system|database"
@@ -230,21 +230,23 @@ traces_service_graph_request_failed_total{ ...same labels... }
 traces_service_graph_request_server_seconds_bucket{ ...same labels..., le="..." }
 ```
 
-The `cluster` external label is applied by each cluster's scrape pipeline (`vmagent` / Prometheus `external_labels`). For service-graph metrics, the producer (OTel Collector with `servicegraph` connector + `k8sattributes` processor configured with `dimensions: [k8s.pod.uid, k8s.namespace.name]`) is responsible for emitting both `client_cluster` and `server_cluster` so cross-cluster RPC is preserved end-to-end. None of this is the API server's concern at runtime.
+The `cluster` external label is applied by each cluster's scrape pipeline (`vmagent` / Prometheus `external_labels`) — for both `kube-state-metrics` series and service-graph series. Service-graph metrics are produced per source cluster by Tempo's metrics-generator (or an equivalent `servicegraph` connector); the producer only knows the cluster it runs in and stamps that as `cluster`. The remote (server-side) cluster is **not** stamped — recovery of cross-cluster targets happens in the API server by joining `server_k8s_pod_uid` against the global topology pod-UID index. The producer-side instrumentation requirement reduces to: emit `cluster` (typically already done as an external label) and pod-UID dimensions on each side.
 
-**Integration-test producer — fake fixtures program:**
+**Integration-test fixture ingestion — direct exposition format:**
 
-A Go program in `tests/harness/vm-fixtures/` that exposes `/metrics` with hand-crafted multi-cluster series matching the contract above, scraped by VictoriaMetrics. It emits:
+Integration tests in `internal/integration/` use [`testcontainers-go`](https://golang.testcontainers.org/) to start a real VictoriaMetrics container per suite, then push hand-crafted multi-cluster series via VictoriaMetrics' `POST /api/v1/import/prometheus` endpoint (Prometheus text exposition format). No separate fixture binary, no YAML, no `/metrics` endpoint, no SIGHUP reload — the test itself owns the series content and timestamps. Each test seeds:
 
-- `kube_pod_info` / `kube_node_info` / `kube_pod_spec_volumes_persistentvolumeclaims_info` / `kube_node_labels` series for several synthetic clusters (e.g., `cluster-alpha`, `cluster-beta`).
-- `traces_service_graph_request_total` series including at least one **cross-cluster** edge (`client_cluster=cluster-alpha, server_cluster=cluster-beta`) so the smoke script can assert cross-cluster handling.
+- `kube_pod_info` / `kube_node_info` / `kube_node_status_addresses` series for several synthetic clusters (e.g., `cluster-alpha`, `cluster-beta`).
+- `traces_service_graph_request_total` series including at least one **cross-cluster** edge: a series with `cluster="cluster-alpha"` whose `server_k8s_pod_uid` matches a pod whose `kube_pod_info` entry lives in `cluster-beta`, so the test asserts cross-cluster handling via UID-index resolution.
 
-Configuration is via a YAML fixture file checked into the repo so test scenarios are deterministic and reproducible. No real `kube-state-metrics`, no OTLP collector, no OTel SDK, no traces.
+Service-graph counters are ingested as two monotonic samples (`t0` and `t1 = t0 + 60s`) so `rate(...[w]) @ t1` recovers a non-zero per-second rate. Tests use a fixed-time anchor (`fixedNow = 2026-05-01T12:00:00Z`) to keep time-bucket alignment deterministic — see D20.
 
-- Why this is the only producer in repo: the API server is the unit under test. Synthesising the metric contract directly keeps the test focused on join / build / HTTP behaviour, makes multi-cluster scenarios trivial (just label fixtures with different `cluster` values), and avoids dragging in collector + tracing dependencies and multiple Kind clusters.
-- The fixtures program MUST emit the exact label set above so that swapping in real producers in production is a configuration change, not a code change.
+- Why direct ingestion: the API server is the unit under test. Synthesising the metric contract directly in Go keeps tests focused on join / build / HTTP behaviour, makes multi-cluster scenarios trivial (just emit different `cluster` values), and avoids dragging in collector + tracing dependencies, fixture programs, YAML schemas, and reload protocols.
+- Tests MUST emit the exact label set the production contract specifies, so swapping in real producers in deployment is a configuration change, not a code change.
+- The local Kind rig (`local/kind/`) is **separate** and uses a **real** `kube-state-metrics` scraping the Kind cluster — that exercises the topology code path against real series. It does not produce `traces_service_graph_*` (no Tempo); the service-graph code path is exercised only by `internal/integration/`.
 
-**Rejected: multiple Kind clusters with real `kube-state-metrics`** — doubles harness setup cost, exhausts laptop resources, and validates the same metric contract that the fixtures program already covers.
+**Rejected: standalone fixtures binary (`cmd/vm-fixtures/`) + YAML config** — earlier sketch; superseded by direct in-test exposition ingestion. The binary added build complexity, deployment surface, and a YAML schema for no test-discrimination benefit. Tests can author exact series inline in Go.
+**Rejected: multiple Kind clusters with real `kube-state-metrics`** — doubles harness setup cost, exhausts laptop resources, and validates the same metric contract that direct ingestion already covers.
 **Rejected: synthetic OTLP trace generator + collector** — full pipeline exists in production but is upstream of this server; doubles the integration-test surface for no benefit.
 **Rejected: `telemetrygen`** — emits standalone spans without parent/child propagation, so the `servicegraph` connector cannot pair them and no edge metrics result.
 **Rejected: OpenTelemetry Demo (`otel-demo`)** — boots ~15 services and a heavy chart; too much for a per-PR integration test.
@@ -263,9 +265,9 @@ Configuration is via a YAML fixture file checked into the repo so test scenarios
 | Edge | `type` | string | One of the registered edge types in `/v1/edge-types` (e.g., `"pod-runs-on-node"`, `"pod-mounts-pvc"`, `"pod-calls-pod"`). |
 | Edge | `source` | string | Source node `id`. Always references a node present in the same response. |
 | Edge | `target` | string | Target node `id`. Always references a node present in the same response. |
-| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `client_cluster`, `server_cluster`. For `pod-mounts-pvc`: `claim_name`, `storage_class`. For `pod-runs-on-node`: `scheduled_at`. New keys are additive. |
+| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `cluster` (the trace source cluster, i.e. the client-side pod's cluster — omitted when the client is an external endpoint). For `pod-mounts-pvc`: `claim_name`, `storage_class`. For `pod-runs-on-node`: `scheduled_at`. New keys are additive. |
 
-**Strictly string-typed values.** `labels` is `map[string]string` for both nodes and edges. Non-string-typed data (numeric edge metrics such as `rate`, `p99_ms`, `error_rate`; boolean flags such as `cross_cluster` or `ghost`) is **deferred to a future typed struct field** on node/edge data. v1 does not encode booleans as `"true"`/`"false"` strings inside `labels`; consumers derive cross-cluster status by comparing `labels.client_cluster` with `labels.server_cluster` on `pod-calls-pod` edges.
+**Strictly string-typed values.** `labels` is `map[string]string` for both nodes and edges. Non-string-typed data (numeric edge metrics such as `rate`, `p99_ms`, `error_rate`; boolean flags such as `cross_cluster` or `ghost`) is **deferred to a future typed struct field** on node/edge data. v1 does not encode booleans as `"true"`/`"false"` strings inside `labels`; consumers derive cross-cluster status for `pod-calls-pod` edges by comparing the edge's resolved source-node `labels.cluster` with the target-node `labels.cluster` (both nodes are guaranteed present in the same response).
 
 The primary `GET /v1/graph` response is **Cytoscape.js**-shaped JSON:
 
@@ -300,8 +302,7 @@ The primary `GET /v1/graph` response is **Cytoscape.js**-shaped JSON:
                   "type": "pod-calls-pod",
                   "source": "cluster-alpha/abc-123",
                   "target": "cluster-beta/def-456",
-                  "labels": { "client_cluster": "cluster-alpha",
-                              "server_cluster": "cluster-beta" } } }
+                  "labels": { "cluster": "cluster-alpha" } } }
     ]
   }
 }
@@ -339,7 +340,7 @@ One additional log line per build: `slog.Info("graph built", "duration_ms", ...,
 These are mandatory for the v1 implementation:
 
 - **Sealed graph node types**: Go interface `GraphNode` with concrete `PodNode`, `NodeNode`, `PVCNode`. Each implementation surfaces the canonical fields (`ID()`, `Name()`, `Type()`, `Labels()`) consumed by the serialisers in D9. The `cluster` value lives inside `Labels()["cluster"]` rather than as a separate first-class field on the wire.
-- **Pure join layer**: `Build(topology Topology, edges []ServiceGraphEdge, clustersAllowlist []string) *Graph` is a pure function over typed Go structs and produces the full, unfiltered multi-cluster graph for the time window. All HTTP- and Prometheus-free unit tests target this function. Cross-cluster edges are produced when `client_cluster != server_cluster`.
+- **Pure join layer**: `Build(topology Topology, edges []ServiceGraphEdge, clustersAllowlist []string) *Graph` is a pure function over typed Go structs and produces the full, unfiltered multi-cluster graph for the time window. All HTTP- and Prometheus-free unit tests target this function. Cross-cluster edges are produced when the resolved source-pod cluster differs from the resolved target-pod cluster (server-side cluster comes from the topology pod-UID index lookup, not from a metric label).
 - **Pure projection layer**: `Project(g *Graph, scope Scope) GraphView` applies cluster / namespace / node / edge_type filters and traversal over an immutable `*Graph` and returns a read-only view. No allocations of new node/edge structs, just slices of pointers.
 - **Query registry**: PromQL strings as named constants in one file, parameterised on `<window>`, `<end>`, and an optional `<clusters_allowlist>` fragment (`{cluster=~"a|b|c"}`). Paired with a parser that maps Prometheus `model.Vector` results into typed Go structs.
 - **One PromQL instant query per metric family**, evaluated at the bucketed `end` with `last_over_time` / `rate` over the window. Queries do **not** include filter-derived selectors; they include only the static `--clusters-allowlist` if configured. Parse Vector client-side.
@@ -441,14 +442,13 @@ The first five layers run on every PR via `go test ./...`. The Kind manual rig i
     },
     {
       "type": "pod-calls-pod",
-      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when client_cluster != server_cluster. Endpoints may be 'external' nodes when KSG_EXTERNAL_NAME_PATTERN matches the upstream client/server label (D18).",
+      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). Endpoints may be 'external' nodes when KSG_EXTERNAL_NAME_PATTERN matches the upstream client/server label (D18).",
       "source_type": ["pod", "external"],
       "target_type": ["pod", "external"],
       "directed": true,
       "may_cross_cluster": true,
       "labels": [
-        { "name": "client_cluster", "value_type": "string" },
-        { "name": "server_cluster", "value_type": "string" }
+        { "name": "cluster", "value_type": "string" }
       ]
     }
   ]
@@ -485,7 +485,7 @@ Both options were considered and rejected for v1:
 
 **Discovery.** `GET /v1/clusters` returns the list of clusters that have data in centralised VictoriaMetrics, derived live from `group by (cluster) (kube_node_info)` over a configurable lookback (`--cluster-discovery-lookback`, default `1h`). Result is cached for 60 s under a fixed key so the discovery endpoint is cheap. If `--clusters-allowlist` is set, the discovery result is intersected with the allowlist before being returned.
 
-**Cross-cluster edges.** `pod-calls-pod` edges where `client_cluster != server_cluster` are emitted as ordinary edges with both endpoint nodes present in the cached graph (since the cache holds the global multi-cluster graph). When a request scopes to a subset of clusters, cross-cluster edges that touch the selected set are kept along with both endpoint nodes — the remote node's `labels.cluster` makes the cross-cluster context obvious to renderers. `labels.client_cluster` and `labels.server_cluster` carry the canonical cluster values; consumers detect cross-cluster status by comparing the two strings (a boolean shortcut field is deferred to the future typed struct described in D9).
+**Cross-cluster edges.** `pod-calls-pod` edges where the resolved source and target pods live in different clusters are emitted as ordinary edges with both endpoint nodes present in the cached graph (since the cache holds the global multi-cluster graph). When a request scopes to a subset of clusters, cross-cluster edges that touch the selected set are kept along with both endpoint nodes — the remote node's `labels.cluster` makes the cross-cluster context obvious to renderers. The edge carries `labels.cluster` set to the trace-source cluster (i.e. the client-side pod's cluster); consumers detect cross-cluster status by comparing the source-node and target-node `labels.cluster` (a boolean shortcut field is deferred to the future typed struct described in D9).
 
 **Cluster name handling.** Cluster names pass through as opaque strings. The server does no canonicalisation, no case-folding, and no length validation beyond the total URL length the HTTP stack already enforces. An unknown cluster name in `?cluster=` simply yields no nodes for that name — not an error.
 
@@ -496,7 +496,7 @@ Service-graph metrics carry a Tempo-style pair of human-readable labels alongsid
 - `client` — the calling service's name (free-form, set by the producer).
 - `server` — the callee's name (free-form, set by the producer).
 
-By default the pod-service-graph reader resolves each endpoint via `(client_cluster, client_k8s_pod_uid)` / `(server_cluster, server_k8s_pod_uid)` against topology and uses the resulting pod's `name` for display. This loses dependencies whose remote end is not a pod (external HTTP APIs, managed databases, message queues, third-party SaaS, etc.) — pod UID is empty or arbitrary for those.
+By default the pod-service-graph reader resolves the client side via `(cluster, client_k8s_pod_uid)` and the server side via the global topology pod-UID index lookup of `server_k8s_pod_uid`, then uses the resulting pod's `name` for display. This loses dependencies whose remote end is not a pod (external HTTP APIs, managed databases, message queues, third-party SaaS, etc.) — pod UID is empty or arbitrary for those.
 
 To preserve such endpoints in the graph, the server takes a **pattern substring** from the env var `KSG_EXTERNAL_NAME_PATTERN` (also flag `--external-name-pattern`). When set, the reader performs per-endpoint substitution:
 
@@ -513,7 +513,7 @@ for each service-graph series in the window, for endpoint side ∈ {client, serv
     treat this endpoint as a pod node, resolved via (cluster, pod-uid) → kube_pod_info → pod name
 ```
 
-Substitution is independent for client and server sides — a single `pod-calls-pod` edge can have any combination (`pod→pod`, `pod→external`, `external→pod`, `external→external`). The edge's `type` remains `pod-calls-pod`; only the source / target node `type` changes. The edge `labels` retain `client_cluster` and `server_cluster` for pod endpoints; for external endpoints the corresponding `client_cluster` / `server_cluster` value SHALL be the empty string `""`.
+Substitution is independent for client and server sides — a single `pod-calls-pod` edge can have any combination (`pod→pod`, `pod→external`, `external→pod`, `external→external`). The edge's `type` remains `pod-calls-pod`; only the source / target node `type` changes. The edge carries `labels.cluster` (the trace-source / client-side cluster) only when the **client** side is a pod; when the client side is an external endpoint, the edge `labels` map omits the `cluster` key entirely (external endpoints are not cluster-scoped).
 
 Why a substring contains-check rather than a regex:
 
@@ -721,7 +721,7 @@ Greenfield repository — no migration. Rollback is `git revert` of the merge co
 - Whether to ship the optional L2 serialised-response cache (D6) in v1 or defer to v1.1 — defer until profiling shows serialise+ETag is hot.
 - Whether `/v1/edge-types` should ever support time-window filtering — defer to v1.1.
 - Whether `/v1/clusters` should also report per-cluster pod / node counts in its response, or keep it minimal (names + first-seen / last-seen) — defer to spec.
-- Fake-fixtures program shape: continuous Deployment with steady-state metrics vs YAML-driven snapshot replayer — defer to harness spec.
+- ~~Fake-fixtures program shape: continuous Deployment with steady-state metrics vs YAML-driven snapshot replayer~~ — resolved: no fixtures program. Local rig uses real `kube-state-metrics`; integration tests (`internal/integration/`) ingest series directly via `POST /api/v1/import/prometheus` to a `testcontainers-go` VictoriaMetrics container.
 - Exact Grafana Node Graph dashboard JSON to ship in `deploy/grafana/` for visual verification, including a layout that highlights cross-cluster edges — defer to harness spec.
 - Whether `?format=` query parameter on `/v1/graph` is preferable to a separate `/v1/graph/nodegraph` route — defer to spec; current preference is the separate route.
 - Whether `KSG_EXTERNAL_NAME_PATTERN` should evolve to a regex (`KSG_EXTERNAL_NAME_REGEX`) or accept multiple comma-separated patterns — defer to v1.x based on real deployment feedback.

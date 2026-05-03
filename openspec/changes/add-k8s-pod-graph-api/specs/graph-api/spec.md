@@ -70,7 +70,7 @@ Each **node** SHALL be `{ data: { id, name, type, labels } }`:
 - `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`). For external nodes, `id` SHALL be `external/<label-value>` (no cluster prefix).
 - `name` SHALL be the human-readable pod / node / PVC name (used for the Grafana panel display label). For external nodes, `name` SHALL be the verbatim `client` or `server` label value from the source service-graph series.
 - `type` SHALL be one of the strings `"pod"`, `"node"`, `"pvc"`, `"external"`.
-- `labels` SHALL be a JSON object whose values are strings only (`map[string]string`). For pod / K8s node / PVC nodes it SHALL include at minimum a `cluster` entry; for pods and PVCs it SHALL also include a `namespace` entry; for pods it SHALL include `node` (the cluster-scoped node ID); for K8s nodes it SHALL include `external_ip` when the upstream provided one. **For external nodes**, `labels` SHALL contain at least `pattern` (the configured `KSG_EXTERNAL_NAME_PATTERN` substring that matched) and SHALL NOT contain a `cluster` entry.
+- `labels` SHALL be a JSON object whose values are strings only (`map[string]string`). For pod / K8s node / PVC nodes it SHALL include at minimum a `cluster` entry; for pods and PVCs it SHALL also include a `namespace` entry; for pods it SHALL include `node` (the cluster-scoped node ID), and SHALL include `pod_ip` and `host_ip` whenever the upstream `kube_pod_info` series carried them; for K8s nodes it SHALL include `external_ip` when the upstream provided one. **For external nodes**, `labels` SHALL contain at least `pattern` (the configured `KSG_EXTERNAL_NAME_PATTERN` substring that matched) and SHALL NOT contain a `cluster` entry.
 
 Each **edge** SHALL be `{ data: { id, type, source, target, labels } }`:
 - `id` SHALL be a UUID, RFC 4122 compliant, encoded as a lowercase canonical string.
@@ -84,6 +84,11 @@ Implementations SHALL NOT encode booleans or numbers as strings inside `labels`.
 
 - **WHEN** the response contains a pod node
 - **THEN** its `data.type` equals `"pod"`, its `data.id` matches `<cluster>/<pod-uid>`, its `data.name` equals the pod's metadata name, and `data.labels.cluster` matches the cluster prefix in the ID
+
+#### Scenario: Pod node payload includes pod_ip and host_ip when upstream emits them
+
+- **WHEN** the response contains a pod node whose source `kube_pod_info` series carried `pod_ip` and `host_ip`
+- **THEN** `data.labels.pod_ip` equals the upstream `pod_ip` value and `data.labels.host_ip` equals the upstream `host_ip` value
 
 #### Scenario: K8s node payload
 
@@ -209,7 +214,7 @@ The server SHALL expose `GET /v1/edge-types` that returns the static catalogue o
 #### Scenario: pod-calls-pod marked may_cross_cluster
 
 - **WHEN** a client inspects the catalogue entry for `pod-calls-pod`
-- **THEN** its `may_cross_cluster` field is `true`, its `source_type` and `target_type` are arrays containing both `"pod"` and `"external"`, and its `labels` array enumerates entries whose `name` values include `client_cluster` and `server_cluster`, each with `value_type: "string"`
+- **THEN** its `may_cross_cluster` field is `true`, its `source_type` and `target_type` are arrays containing both `"pod"` and `"external"`, and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (representing the trace source cluster; cross-cluster status is detected by comparing the source/target nodes' `labels.cluster` rather than from edge labels)
 
 #### Scenario: Conditional GET on /v1/edge-types
 
@@ -218,17 +223,17 @@ The server SHALL expose `GET /v1/edge-types` that returns the static catalogue o
 
 ### Requirement: Cross-cluster edge representation
 
-When the cached graph contains a `pod-calls-pod` edge whose underlying `client_cluster` differs from `server_cluster`, the API SHALL emit it as a single edge carrying both `labels.client_cluster` and `labels.server_cluster` and SHALL include both endpoint nodes in the response `elements.nodes` whenever the projection scope includes either endpoint's cluster. Consumers detect cross-cluster status by string comparison of `labels.client_cluster` and `labels.server_cluster` on the edge.
+When the cached graph contains a `pod-calls-pod` edge whose source-node cluster differs from its target-node cluster, the API SHALL emit it as a single edge carrying `labels.cluster` (the trace source / client-side cluster) and SHALL include both endpoint nodes in the response `elements.nodes` whenever the projection scope includes either endpoint's cluster. Consumers detect cross-cluster status by comparing the `labels.cluster` of the edge's resolved source and target nodes — not from edge labels.
 
 #### Scenario: Cross-cluster edge with both clusters in scope
 
-- **WHEN** a client requests `?cluster=cluster-alpha&cluster=cluster-beta` for a window containing a cross-cluster edge between the two
-- **THEN** the response contains both endpoint pod nodes and one edge with `labels.client_cluster: "cluster-alpha"` and `labels.server_cluster: "cluster-beta"`
+- **WHEN** a client requests `?cluster=cluster-alpha&cluster=cluster-beta` for a window containing a cross-cluster edge whose client pod is in `cluster-alpha` and server pod is in `cluster-beta`
+- **THEN** the response contains both endpoint pod nodes and one edge with `labels.cluster: "cluster-alpha"`, where the source node's `labels.cluster` is `"cluster-alpha"` and the target node's `labels.cluster` is `"cluster-beta"`
 
 #### Scenario: Cross-cluster edge with one cluster in scope
 
-- **WHEN** a client requests `?cluster=cluster-alpha` and a cross-cluster edge exists from `cluster-alpha` to `cluster-beta`
-- **THEN** the response contains the `cluster-alpha` endpoint, the `cluster-beta` endpoint (so the edge resolves), and the edge whose `labels.client_cluster` and `labels.server_cluster` differ
+- **WHEN** a client requests `?cluster=cluster-alpha` and a cross-cluster edge exists from a pod in `cluster-alpha` to a pod in `cluster-beta`
+- **THEN** the response contains the `cluster-alpha` endpoint, the `cluster-beta` endpoint (so the edge resolves), and the edge with `labels.cluster: "cluster-alpha"`; the cross-cluster status is detected by comparing the two endpoint nodes' `labels.cluster` values
 
 ### Requirement: HTTP caching headers
 
