@@ -65,7 +65,11 @@ func (s *VMSuite) SetupSuite() {
 	req := testcontainers.ContainerRequest{
 		Image:        VMImage,
 		ExposedPorts: []string{"8428/tcp"},
-		WaitingFor:   wait.ForHTTP("/health").WithPort("8428/tcp").WithStartupTimeout(60 * time.Second),
+		// `-search.latencyOffset=0` disables VM's default 30s ingestion-latency
+		// rewind so queries at time=T can immediately see samples ingested at T.
+		// Without this, fixtures pinned to fixedNow are invisible until 30s pass.
+		Cmd:        []string{"-search.latencyOffset=0s"},
+		WaitingFor: wait.ForHTTP("/health").WithPort("8428/tcp").WithStartupTimeout(60 * time.Second),
 	}
 	c, err := testcontainers.GenericContainer(s.ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
