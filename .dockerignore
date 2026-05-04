@@ -1,0 +1,37 @@
+# VCS
+.git
+.gitignore
+.github
+
+# Editor / OS
+.vscode
+.idea
+.cursor
+.claude
+.editorconfig
+.DS_Store
+
+# Build artefacts
+bin/
+coverage.out
+*.out
+*.test
+*.prof
+
+# Local rig (not part of the image)
+local/
+deploy/grafana
+deploy/docker
+
+# Docs (not needed in the image)
+docs/
+openspec/
+README.md
+README.zh-tw.md
+LICENSE
+CLAUDE.md
+*.md
+
+# Tooling configs
+.golangci.yml
+scripts/
