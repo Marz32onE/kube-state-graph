@@ -41,9 +41,10 @@ kubectl -n "$NAMESPACE" rollout restart \
   deploy/victoria-metrics deploy/kube-state-graph deploy/grafana
 
 echo "==> Waiting for rollouts"
-for d in victoria-metrics kube-state-metrics kube-state-graph grafana; do
+for d in victoria-metrics kube-state-metrics kube-state-graph grafana alloy pvc-demo; do
   kubectl -n "$NAMESPACE" rollout status deploy/$d --timeout=180s
 done
+kubectl -n "$NAMESPACE" rollout status daemonset/beyla --timeout=180s
 
 cat <<MSG
 ==> Local kind rig ready.
@@ -51,13 +52,21 @@ cat <<MSG
     VM:      http://localhost:30428  (VictoriaMetrics, Prometheus-compatible API)
     Grafana: http://localhost:30300  (admin / admin)
 
-    Real metrics: kube-state-metrics scrapes the kind cluster itself
+    Topology metrics: kube-state-metrics scrapes the kind cluster itself
     (--resources=pods,nodes; allowlist limited to kube_pod_info,
     kube_node_info, kube_node_labels). The VM scrape job relabels the
     series with cluster=kind-local so kube-state-graph accepts them.
 
-    Service-graph metrics are NOT generated in this rig; cross-cluster /
-    pod-call edge logic is exercised by integration tests in
+    Service-graph metrics: Beyla DaemonSet auto-instruments every Go/HTTP
+    process in the kube-state-graph namespace via eBPF and ships OTLP
+    spans to Alloy. Alloy's otelcol.connector.servicegraph
+    (dimensions=[k8s.pod.uid]) produces
+    traces_service_graph_request_total{client_k8s_pod_uid,
+    server_k8s_pod_uid,...} and remote-writes to VictoriaMetrics, so
+    /v1/graph?edge_type=pod-calls-pod returns real edges between
+    in-cluster Go services (kube-state-graph → VictoriaMetrics →
+    kube-state-metrics, Grafana → kube-state-graph, etc.) — no synthetic
+    traffic generator needed. Cross-cluster scenarios remain covered by
     internal/integration/ (testcontainers-go VictoriaMetrics).
 
     Open Grafana → folder kube-state-graph → Node Graph dashboard.

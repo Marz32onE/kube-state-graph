@@ -46,7 +46,7 @@ The bootstrap script SHALL install a VictoriaMetrics single-node deployment insi
 
 The harness SHALL install a real `kube-state-metrics` Deployment inside the Kind cluster and configure VictoriaMetrics to scrape it. The harness SHALL NOT include a synthetic fixtures program; the local rig's purpose is end-to-end visual verification against real Kubernetes topology series, not fabricated ones. A relabel rule on the scrape config SHALL inject a `cluster=kind-local` external label so the API server treats the rig as a single-cluster source.
 
-The local rig deliberately does NOT produce `traces_service_graph_*` series — the `pod-calls-pod` code path is exercised by `internal/integration/` tests against a `testcontainers-go` VictoriaMetrics container instead (see the `container-integration` capability), which directly ingest hand-crafted multi-cluster fixtures via `POST /api/v1/import/prometheus`. This keeps the local rig focused on what it can demonstrate visually (real pods, nodes, PVCs scraped by real `kube-state-metrics`) and the multi-cluster cross-cluster scenarios in fast Go integration tests.
+The harness SHALL also produce real `traces_service_graph_request_total` series for in-cluster traffic via a Grafana Beyla DaemonSet (eBPF auto-instrumentation) shipping OTLP spans to a Grafana Alloy Deployment whose `otelcol.connector.servicegraph` (configured with `dimensions=["k8s.pod.uid"]`) emits the metric with `client_k8s_pod_uid` and `server_k8s_pod_uid`, then remote-writes to VictoriaMetrics. The harness SHALL NOT ship a synthetic traffic generator; the existing in-cluster Go traffic (`kube-state-graph` scraping VictoriaMetrics, VictoriaMetrics scraping `kube-state-metrics`, Grafana querying `kube-state-graph`, etc.) is sufficient to populate paired client+server spans. Cross-cluster scenarios remain out of scope for the local rig and are exercised by `internal/integration/` tests against a `testcontainers-go` VictoriaMetrics container (see the `container-integration` capability), which directly ingest hand-crafted multi-cluster fixtures via `POST /api/v1/import/prometheus`.
 
 #### Scenario: kube-state-metrics scraped by VictoriaMetrics
 
@@ -100,7 +100,7 @@ The operator SHALL be able to load Grafana, sign in with the bootstrap credentia
 
 The harness SHALL ship a smoke script (e.g., `local/kind/smoke.sh`) that an operator MAY run after bootstrap to sanity-check the API surface end-to-end without opening Grafana. The script SHALL exit non-zero on any failure. CI SHALL NOT run this script.
 
-The local rig is single-cluster (Kind injects `cluster=kind-local` via the VictoriaMetrics scrape config) and produces no service-graph metrics, so the script asserts only what the rig can demonstrate. Multi-cluster behaviour, cross-cluster edges, external-name substitution, and `pod-calls-pod` coverage are exercised by `internal/integration/` tests against `testcontainers-go` VictoriaMetrics — not by this script.
+The local rig is single-cluster (Kind injects `cluster=kind-local` via the VictoriaMetrics scrape config) and now produces in-cluster `traces_service_graph_request_total` via the Beyla→Alloy pipeline, so the script SHALL also assert the `pod-calls-pod` edge path. Multi-cluster behaviour, cross-cluster edges, and external-name substitution remain out of scope for the local rig and are exercised by `internal/integration/` tests against `testcontainers-go` VictoriaMetrics — not by this script.
 
 The script SHALL verify, at minimum:
 
@@ -110,6 +110,8 @@ The script SHALL verify, at minimum:
 - `GET /v1/edge-types` returns a body listing `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`.
 - `GET /v1/graph?start=<now-5m>&end=<now>` returns 200 with a non-empty `elements.nodes` and at least one `pod-runs-on-node` edge.
 - `GET /v1/graph?start=<now-5m>&end=<now>&cluster=kind-local` returns nodes whose `data.labels.cluster` is `kind-local`.
+- VictoriaMetrics exposes at least one `traces_service_graph_request_total{cluster="kind-local",client_k8s_pod_uid!="",server_k8s_pod_uid!=""}` sample within a configurable budget (default 180 s) after bootstrap.
+- `GET /v1/graph?cluster=kind-local&edge_type=pod-calls-pod&start=<now-5m>&end=<now>` returns at least one `pod-calls-pod` edge.
 - Every node in any `/v1/graph` response carries `data.id`, `data.name`, `data.type`, and `data.labels` (a JSON object whose values are all strings). Every edge carries `data.id` (RFC 4122 UUID), `data.type`, `data.source`, `data.target`, and `data.labels` (a JSON object whose values are all strings).
 - `GET /metrics` returns 200 in Prometheus exposition format and contains at least one `kube_state_graph_*` series.
 

@@ -1,0 +1,115 @@
+---
+# Alloy receives OTLP spans from Beyla, runs them through the OTel
+# `servicegraph` connector to produce traces_service_graph_request_total with
+# client_k8s_pod_uid + server_k8s_pod_uid (via dimensions=["k8s.pod.uid"]),
+# stamps cluster=kind-local, and remote-writes to VictoriaMetrics. This is
+# the local-rig substitute for what a real central VM ingest would look like.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: kube-state-graph
+data:
+  config.alloy: |
+    // OTLP gRPC receiver for Beyla spans.
+    otelcol.receiver.otlp "in" {
+      grpc {
+        endpoint = "0.0.0.0:4317"
+      }
+      output {
+        traces = [otelcol.connector.servicegraph.sg.input]
+      }
+    }
+
+    // The servicegraph connector pairs client+server spans from Beyla and
+    // emits traces_service_graph_request_total. dimensions=["k8s.pod.uid"]
+    // promotes the per-side resource attribute that Beyla decorates with the
+    // instrumented pod's UID — yielding labels client_k8s_pod_uid and
+    // server_k8s_pod_uid (dots in attribute names become underscores).
+    otelcol.connector.servicegraph "sg" {
+      dimensions = ["k8s.pod.uid"]
+      output {
+        metrics = [otelcol.exporter.prometheus.toprom.input]
+      }
+    }
+
+    // Bridge OTel metrics into the prometheus.* pipeline.
+    otelcol.exporter.prometheus "toprom" {
+      forward_to = [prometheus.relabel.svcgraph.receiver]
+    }
+
+    // Inject the cluster label kube-state-graph requires on every series.
+    // The local rig is a single Kind cluster, so a static value is fine.
+    prometheus.relabel "svcgraph" {
+      rule {
+        target_label = "cluster"
+        replacement  = "kind-local"
+        action       = "replace"
+      }
+      forward_to = [prometheus.remote_write.vm.receiver]
+    }
+
+    prometheus.remote_write "vm" {
+      endpoint {
+        url = "http://victoria-metrics.kube-state-graph.svc:8428/api/v1/write"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: kube-state-graph
+  labels:
+    app: alloy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+    spec:
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.16.0
+          args:
+            - run
+            - --server.http.listen-addr=0.0.0.0:12345
+            - /etc/alloy/config.alloy
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 12345
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 12345
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy
+  namespace: kube-state-graph
+spec:
+  selector:
+    app: alloy
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: http
+      port: 12345
+      targetPort: 12345

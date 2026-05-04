@@ -86,7 +86,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 ### 本機驗證環境
 
-樹內 **`local/kind/`** 腳本會對真實 Kind 叢集 scrape `kube-state-metrics`（`kube_pod_info`、`kube_node_info`、`kube_node_labels`、`kube_pod_spec_volumes_persistentvolumeclaims_info`）。該環境**不**產生 `traces_service_graph_request_total`；`pod-calls-pod` 路徑由 **`internal/integration/`** 搭配 testcontainers 起的 VictoriaMetrics 與合成資料覆蓋。
+樹內 **`local/kind/`** 腳本會對真實 Kind 叢集 scrape `kube-state-metrics`（`kube_pod_info`、`kube_node_info`、`kube_node_labels`、`kube_pod_spec_volumes_persistentvolumeclaims_info`），並由 Grafana Beyla DaemonSet 以 eBPF 自動 instrument `kube-state-graph` namespace 內的 pod，將 OTLP spans 送到 Grafana Alloy Deployment；Alloy 的 `otelcol.connector.servicegraph`（設定 `dimensions=["k8s.pod.uid"]`）會把 Beyla 帶入的 per-pod resource attribute 提升為 `client_k8s_pod_uid` 與 `server_k8s_pod_uid`，再 remote-write 到 VictoriaMetrics。`pod-calls-pod` 邊由叢集內既有的 Go 服務流量（`kube-state-graph → VictoriaMetrics → kube-state-metrics`、Grafana → kube-state-graph 等）驅動，不需要額外的合成流量產生器。單一 Kind 無法模擬的跨叢集情境，仍由 **`internal/integration/`** 搭配 testcontainers 起的 VictoriaMetrics 涵蓋。
 
 ## 設定
 

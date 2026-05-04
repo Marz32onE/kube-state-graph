@@ -111,10 +111,19 @@ resolve (to a known pod UID, or to an `external` node when the upstream
 
 The in-tree `local/kind/` rig scrapes a real Kind cluster via kube-state-metrics
 (`kube_pod_info`, `kube_node_info`, `kube_node_labels`,
-`kube_pod_spec_volumes_persistentvolumeclaims_info`). It does **not** generate
-`traces_service_graph_request_total` — the `pod-calls-pod` code path is
-exercised by `internal/integration/` tests against a `testcontainers-go`
-VictoriaMetrics container instead.
+`kube_pod_spec_volumes_persistentvolumeclaims_info`) and produces
+`traces_service_graph_request_total` locally via a Grafana Beyla DaemonSet that
+auto-instruments pods in the `kube-state-graph` namespace and ships OTLP spans
+to a Grafana Alloy Deployment. Alloy's `otelcol.connector.servicegraph`
+(configured with `dimensions=["k8s.pod.uid"]`) promotes Beyla's per-pod resource
+attribute to `client_k8s_pod_uid` + `server_k8s_pod_uid` and remote-writes to
+VictoriaMetrics, so `pod-calls-pod` edges show up in the local rig's
+`/v1/graph` response — driven by the existing in-cluster Go traffic
+(`kube-state-graph → VictoriaMetrics → kube-state-metrics`, Grafana →
+kube-state-graph, etc.) without any synthetic traffic generator. Cross-cluster
+paths (which a single Kind cluster cannot demonstrate) remain covered by
+`internal/integration/` tests against a `testcontainers-go` VictoriaMetrics
+container.
 
 ## Configuration
 

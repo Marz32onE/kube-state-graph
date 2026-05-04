@@ -11,13 +11,21 @@ and may cross cluster boundaries.
 
 The repo ships **only the API server**. `kube-state-metrics`, the service-graph
 producer, VictoriaMetrics, and Kind are external dependencies. The in-repo
-The `local/kind/` rig is local-only scaffolding, not a deliverable. It uses
+`local/kind/` rig is local-only scaffolding, not a deliverable. It uses
 **kube-state-metrics** (scraping the kind cluster, with a `cluster=kind-local`
 relabel injected by VictoriaMetrics' scrape config) to produce the kube_*
 topology series the API consumes. Service-graph metrics
-(`traces_service_graph_request_total`) are not produced in the local rig —
-that code path is exercised by integration tests in `internal/integration/`
-via the testcontainers-go VictoriaMetrics container.
+(`traces_service_graph_request_total`) are produced locally by a Beyla
+DaemonSet that auto-instruments pods in the `kube-state-graph` namespace and
+ships OTLP spans to a Grafana Alloy Deployment; Alloy's
+`otelcol.connector.servicegraph` (configured with `dimensions=["k8s.pod.uid"]`)
+emits the metric with `client_k8s_pod_uid` + `server_k8s_pod_uid` and remote-
+writes to VictoriaMetrics. The rig deliberately ships no synthetic traffic
+generator — the existing in-cluster Go traffic (kube-state-graph→VM→KSM,
+Grafana→kube-state-graph, etc.) is enough to populate paired client+server
+spans. Cross-cluster scenarios (which a single Kind cannot demonstrate) are
+still exercised by integration tests in `internal/integration/` via the
+testcontainers-go VictoriaMetrics container.
 
 ## Common commands
 
