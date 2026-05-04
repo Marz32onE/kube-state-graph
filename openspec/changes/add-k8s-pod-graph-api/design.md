@@ -27,7 +27,7 @@ The integration-test harness in this repo (single Kind cluster, in-cluster Victo
 
 Constraints on the API server:
 
-- Go 1.22+ standard library `log/slog` for logging.
+- Go 1.25+ standard library `log/slog` for logging (toolchain pinned to `go1.26.2`).
 - Gin for HTTP routing.
 - `github.com/prometheus/client_golang/api` and `.../api/v1` for outbound queries.
 - `github.com/dgraph-io/ristretto/v2` for the in-process cache layer.

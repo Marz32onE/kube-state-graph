@@ -37,8 +37,7 @@ lint:
 	golangci-lint run --timeout=5m
 
 vuln:
-	@command -v govulncheck >/dev/null 2>&1 || { echo "installing govulncheck..."; go install golang.org/x/vuln/cmd/govulncheck@latest; }
-	govulncheck ./...
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 cover:
 	go test ./... -coverprofile=coverage.out -covermode=atomic

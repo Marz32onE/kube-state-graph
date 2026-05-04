@@ -54,7 +54,7 @@ make kind-down                              # ./local/kind/teardown.sh
 ./bin/kube-state-graph --prom-url=http://localhost:8428 --listen-addr=:8080
 ```
 
-Module path: `github.com/marz32one/kube-state-graph`. Go 1.22+.
+Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`); build toolchain pinned to `go1.26.2` via the `toolchain` directive.
 
 ## Architecture (the 90 % you need to know)
 
