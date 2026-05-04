@@ -28,29 +28,50 @@ type Bucketing struct {
 	MaxAge        int // Cache-Control max-age seconds
 }
 
+// uniformBucket is the single bucket width used by every TimeClass. Aligning
+// every request to the same one-minute grid gives callers a predictable
+// `(start_actual, end_actual)` regardless of how recent the query is, while
+// keeping per-class TTLs that match upstream-data volatility.
+const uniformBucket = time.Minute
+
 // Bucket classifies (start, end) given a notion of `now`, returning a
 // time-class, the bucketed start/end timestamps, and the TTL/max-age that
 // should be applied to the response.
+//
+// Alignment rules:
+//   - StartActual is floored to `uniformBucket`.
+//   - EndActual is ceiled to `uniformBucket` so the user-requested window is
+//     fully covered (a query for `end=12:19` no longer drops 12:15-12:19).
+//   - When the ceiled `EndActual` would land in the future relative to `now`,
+//     it is clamped to `floor(now, uniformBucket)` so PromQL is never asked
+//     to evaluate at a future timestamp.
 func Bucket(start, end, now time.Time) Bucketing {
 	switch {
 	case end.After(now.Add(-time.Minute)):
-		return bucketWith(start, end, ClassLive, 15*time.Second, 30*time.Second)
+		return bucketWith(start, end, now, ClassLive, 30*time.Second)
 	case end.After(now.Add(-24 * time.Hour)):
-		return bucketWith(start, end, ClassRecent, time.Minute, 5*time.Minute)
+		return bucketWith(start, end, now, ClassRecent, 5*time.Minute)
 	case end.After(now.Add(-7 * 24 * time.Hour)):
-		return bucketWith(start, end, ClassHistorical, 5*time.Minute, time.Hour)
+		return bucketWith(start, end, now, ClassHistorical, time.Hour)
 	default:
-		return bucketWith(start, end, ClassFrozen, 5*time.Minute, 24*time.Hour)
+		return bucketWith(start, end, now, ClassFrozen, 24*time.Hour)
 	}
 }
 
-func bucketWith(start, end time.Time, class TimeClass, bucket, ttl time.Duration) Bucketing {
-	bs := int(bucket / time.Second)
+func bucketWith(start, end, now time.Time, class TimeClass, ttl time.Duration) Bucketing {
+	startActual := floor(start, uniformBucket)
+	endActual := ceil(end, uniformBucket)
+	if nowFloor := floor(now, uniformBucket); endActual.After(nowFloor) {
+		endActual = nowFloor
+	}
+	if endActual.Before(startActual) {
+		endActual = startActual
+	}
 	return Bucketing{
 		Class:         class,
-		BucketSeconds: bs,
-		StartActual:   floor(start, bucket),
-		EndActual:     floor(end, bucket),
+		BucketSeconds: int(uniformBucket / time.Second),
+		StartActual:   startActual,
+		EndActual:     endActual,
 		TTL:           ttl,
 		MaxAge:        int(ttl / time.Second),
 	}
@@ -61,6 +82,17 @@ func floor(t time.Time, d time.Duration) time.Time {
 		return t
 	}
 	return t.Truncate(d)
+}
+
+func ceil(t time.Time, d time.Duration) time.Time {
+	if d <= 0 {
+		return t
+	}
+	floored := t.Truncate(d)
+	if floored.Equal(t) {
+		return t
+	}
+	return floored.Add(d)
 }
 
 // Key returns the time-only cache key for a Bucketing.

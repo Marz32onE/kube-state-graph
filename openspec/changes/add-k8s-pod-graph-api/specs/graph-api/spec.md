@@ -50,17 +50,22 @@ The server SHALL expose `GET /v1/graph` that returns a multi-cluster pod / node 
 
 ### Requirement: Time-bucket alignment in response
 
-The server SHALL floor `start` and `end` to the bucket boundary determined by the time class of `end` (live=15s, recent=60s, historical=5m, frozen=5m) and SHALL surface the bucketed values as `start_actual` and `end_actual` in the response body, alongside the original caller-supplied `start` and `end`.
+The server SHALL align `start` and `end` to a uniform 60-second bucket grid for every time class, and SHALL surface the aligned values as `start_actual` and `end_actual` in the response body alongside the original caller-supplied `start` and `end`. Alignment SHALL widen the window outward — `start_actual = floor(start, 60s)` and `end_actual = ceil(end, 60s)` — so any user-requested instant inside `[start, end]` is also inside `[start_actual, end_actual]`. When the ceiled `end_actual` would land in the future relative to `now`, the server SHALL clamp it to `floor(now, 60s)`.
 
-#### Scenario: Live window bucketing
+#### Scenario: Sub-minute end is ceiled, not truncated
 
-- **WHEN** a client sends `GET /v1/graph?start=...&end=<now-3s>` and the time class resolves to `live`
-- **THEN** the response body has `start_actual` and `end_actual` rounded down to a 15-second boundary, and `bucket_seconds: 15`
+- **WHEN** a client sends `GET /v1/graph?start=2026-05-02T12:04:17Z&end=2026-05-02T12:19:30Z` (historical window)
+- **THEN** the response body has `start_actual: "2026-05-02T12:04:00Z"`, `end_actual: "2026-05-02T12:20:00Z"`, and `bucket_seconds: 60`, so the user's instants at 12:04:17 and 12:17:00 are both inside the resulting window
 
-#### Scenario: Frozen window bucketing
+#### Scenario: Live end is clamped to now
 
-- **WHEN** a client sends a request whose `end` is older than 7 days
-- **THEN** the response body has `start_actual` and `end_actual` rounded down to a 5-minute boundary, and `bucket_seconds: 300`
+- **WHEN** a client sends `GET /v1/graph?start=...&end=<now-15s>` (live class)
+- **THEN** `end_actual` SHALL NOT exceed `floor(now, 60s)`, and `bucket_seconds: 60`
+
+#### Scenario: TTL still varies by class
+
+- **WHEN** the request resolves to time class `frozen` (`end` older than 7 days)
+- **THEN** the response carries `Cache-Control: public, max-age=86400` regardless of the uniform bucket size
 
 ### Requirement: Cytoscape.js response shape
 

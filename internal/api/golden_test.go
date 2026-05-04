@@ -33,7 +33,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 				start: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
 				end:   time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),
 				bucket: cache.Bucketing{
-					BucketSeconds: 15,
+					BucketSeconds: 60,
 					StartActual:   time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
 					EndActual:     time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),
 				},

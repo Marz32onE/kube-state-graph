@@ -23,7 +23,7 @@ cluster N: kube-state-metrics ──┤
 - Join 成多叢集圖，節點鍵為帶叢集範圍的 pod UID 與 node 名稱。
 - 回傳 Cytoscape.js JSON（`/v1/graph`）或 Grafana Node Graph 資料源形狀（`/v1/graph/nodegraph`）。
 - 提供叢集探索（`/v1/clusters`）與靜態邊類型目錄（`/v1/edge-types`）。
-- 以 Ristretto + singleflight + ETag 做時間桶快取，讓同一儀表板時間範圍的併發請求在上游只攤平成一次建圖。
+- 以 Ristretto + singleflight + ETag 做時間桶快取，讓同一儀表板時間範圍的併發請求在上游只攤平成一次建圖。Bucket 對齊統一為 60 秒，TTL 仍依時間 class 分級（live=30 秒、recent=5 分、historical=1 小時、frozen=24 小時）。對齊規則為「往外擴」（`start = floor(start, 60s)`、`end = ceil(end, 60s)`），確保使用者指定的任何瞬間都被涵蓋；實際使用的視窗請讀回應裡的 `start_actual` / `end_actual`。
 
 ## 快速開始
 

@@ -128,16 +128,21 @@ Edge 分類為 typed category：
 - `end - start <= --max-window`（預設 `24h`）。
 - `end <= now + --max-skew`（預設 `1m`）。
 
-為提升 cache 效果，兩個時間戳在形成 cache key 前會 **bucket**。Bucket 大小依 `end` 的 time class：
+為提升 cache 效果，兩個時間戳在形成 cache key 前會 **bucket**。Bucket grid **所有 time class 統一為 60 s**，讓呼叫端拿到的 `(start_actual, end_actual)` 不會因為查詢距離 `now` 多遠而對齊到不同粒度。TTL 階梯仍依 class 區分，因為「資料變動容忍度」與「對齊粒度」是兩個獨立維度：
 
 | Time class | 對 `end` 的判斷 | Bucket size | Cache TTL |
 |-----------|----------------|-------------|-----------|
-| `live` | `end >= now - 1m` | 15 s | 30 s |
+| `live` | `end >= now - 1m` | 60 s | 30 s |
 | `recent` | `end >= now - 1d` | 60 s | 5 min |
-| `historical` | `end >= now - 7d` | 5 min | 1 h |
-| `frozen` | `end < now - 7d` | 5 min | 24 h |
+| `historical` | `end >= now - 7d` | 60 s | 1 h |
+| `frozen` | `end < now - 7d` | 60 s | 24 h |
 
-`start` 與 `end` 皆對齊到 bucket 邊界；upstream PromQL 使用 **bucket 後**的時間戳，使落在同一 bucket 的呼叫者得到 bit-stable 結果。回應帶 bucket 對齊的 `start_actual` / `end_actual`。
+對齊規則:
+
+- `start_actual = floor(start, 60s)` — 左邊只會往左擴張。
+- `end_actual = ceil(end, 60s)` — 右邊只會往右擴張，使任何使用者明確指定的時間點 (例: `end=12:19` 想包含 12:17) 必定落在最終視窗內。原本的 `floor` 會把 `floor(end)` 到 `end` 之間的資料默默截掉，已改為 `ceil`。
+- 當 `ceil(end, 60s)` 跨到 `now` 之後，`end_actual` 會被 clamp 到 `floor(now, 60s)`，避免 PromQL 拿到未來時刻。
+- upstream PromQL 使用 **對齊後**的時間戳，使落在同一 bucket 的呼叫者得到 bit-stable 結果。呼叫端取得 `start_actual` / `end_actual` 並 **必須** 用這兩個欄位 (而非原本的 `start` / `end`) 對齊圖表 X 軸。
 
 Cache key **僅含時間**，涵蓋完整 multi-cluster graph：
 

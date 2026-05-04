@@ -87,8 +87,11 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   (`cluster`, `namespace`, `node`, `edge_type`, traversal) are applied at
   response time over the cached `*Graph`. Adding filters to the key would
   fragment the cache catastrophically — D5/D7.
-- **Time-bucketing classes**: `live` (15s/30s TTL), `recent` (60s/5m), `historical`
-  (5m/1h), `frozen` (5m/24h). Both `start` and `end` are floored to the bucket;
+- **Time-bucketing classes**: bucket grid is **uniformly 60 s** for every class;
+  TTL still varies — `live` (30 s), `recent` (5 m), `historical` (1 h), `frozen`
+  (24 h). `start` is floored and `end` is **ceiled** to the 60 s grid (so a
+  request for `end=12:19` covers 12:17 in its 12:00→12:20 window). When
+  `ceil(end, 60s) > now`, `end_actual` is clamped to `floor(now, 60s)`;
   callers receive `start_actual`/`end_actual` so they know what window they got.
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,

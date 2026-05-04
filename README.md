@@ -31,7 +31,13 @@ cluster N: kube-state-metrics ──┤
 - Exposes cluster discovery (`/v1/clusters`) and a static edge-type catalogue
   (`/v1/edge-types`).
 - Caches per time bucket with Ristretto + singleflight + ETag so concurrent
-  users sharing a dashboard cost the upstream a single fan-out.
+  users sharing a dashboard cost the upstream a single fan-out. The bucket
+  grid is uniformly 60 seconds across all time classes; TTL still varies
+  (live=30 s, recent=5 min, historical=1 h, frozen=24 h). The requested
+  window is widened outward (`start = floor(start, 60s)`,
+  `end = ceil(end, 60s)`) so any timestamp in `[start, end]` is included
+  in the response — read `start_actual` / `end_actual` from the body for
+  the actual window served.
 
 ## Quick start
 

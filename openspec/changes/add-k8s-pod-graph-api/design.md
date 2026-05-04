@@ -130,16 +130,21 @@ Each edge carries `type`, `source`, `target`, plus type-specific `attrs` (see D9
 - `end - start <= --max-window` (default `24h`).
 - `end <= now + --max-skew` (default `1m`).
 
-To make caching effective, both timestamps are **bucketed** before forming the cache key. Bucket size depends on the time class of `end`:
+To make caching effective, both timestamps are **bucketed** before forming the cache key. The bucket grid is **uniformly 60 s for every time class** so callers receive a predictable `(start_actual, end_actual)` regardless of how recent the query is. The TTL ladder remains class-dependent because the *staleness tolerance* differs even when the alignment grid does not:
 
 | Time class | Test on `end` | Bucket size | Cache TTL |
 |-----------|---------------|-------------|-----------|
-| `live` | `end >= now - 1m` | 15 s | 30 s |
+| `live` | `end >= now - 1m` | 60 s | 30 s |
 | `recent` | `end >= now - 1d` | 60 s | 5 min |
-| `historical` | `end >= now - 7d` | 5 min | 1 h |
-| `frozen` | `end < now - 7d` | 5 min | 24 h |
+| `historical` | `end >= now - 7d` | 60 s | 1 h |
+| `frozen` | `end < now - 7d` | 60 s | 24 h |
 
-Both `start` and `end` are floored to the bucket boundary; the upstream PromQL queries use the **bucketed** timestamps so the result is bit-stable for callers who land in the same bucket. Callers receive bucket-aligned `start_actual` / `end_actual` fields in the response.
+Alignment rules:
+
+- `start_actual = floor(start, 60s)` — the requested left edge can only widen leftward.
+- `end_actual = ceil(end, 60s)` — the requested right edge can only widen rightward, so any user-specified instant (e.g. `end=12:19` covering 12:17) is fully inside the resulting window. `floor` was rejected because it silently dropped data between `floor(end)` and `end`.
+- When `ceil(end, 60s)` would exceed `now`, `end_actual` is clamped to `floor(now, 60s)` so PromQL is never evaluated at a future timestamp.
+- The upstream PromQL queries use the **bucketed** timestamps so the result is bit-stable for callers who land in the same bucket. Callers receive `start_actual` / `end_actual` in the response and **must** read those fields rather than echoing the original `start` / `end` when laying the response onto a chart axis.
 
 The cache key is **time-only**, covering the full multi-cluster graph:
 

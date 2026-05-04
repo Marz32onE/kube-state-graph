@@ -4,7 +4,7 @@
   "end": "2026-05-01T12:05:00Z",
   "start_actual": "2026-05-01T12:00:00Z",
   "end_actual": "2026-05-01T12:05:00Z",
-  "bucket_seconds": 15,
+  "bucket_seconds": 60,
   "built_at": "2026-05-01T12:05:00Z",
   "clusters": [
     "cluster-alpha",

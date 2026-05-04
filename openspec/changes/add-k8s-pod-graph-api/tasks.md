@@ -58,7 +58,7 @@
 
 - [x] 7.1 Implement `internal/build.Build(ctx, q, window, end, allowlist, externalPattern) (*graph.Graph, error)`: runs topology + service-graph readers in parallel, joins, returns the global multi-cluster graph plus pre-computed adjacency.
 - [x] 7.2 Implement `internal/cache.Cache` interface (`Get`, `Set`, `Delete`, `Stats`, `Close`) wrapping `ristretto.Cache[uint64, *graph.Graph]`.
-- [x] 7.3 Implement time-class bucketing: classify `end` into `live | recent | historical | frozen`; round `start` and `end` down to the bucket boundary; expose `(start_actual, end_actual, bucket_seconds, ttl)`.
+- [x] 7.3 Implement time-class bucketing: classify `end` into `live | recent | historical | frozen`; align `start` and `end` to a uniform 60-second bucket grid (`start = floor(start, 60s)`, `end = ceil(end, 60s)` clamped to `floor(now, 60s)`); expose `(start_actual, end_actual, bucket_seconds, ttl)`. TTL ladder remains class-dependent (live=30 s, recent=5 m, historical=1 h, frozen=24 h).
 - [x] 7.4 Implement cache-key hashing: xxhash of canonical-JSON `{start_bucket, end_bucket, bucket_size}`.
 - [x] 7.5 Implement singleflight wrapper keyed by the cache key; on miss, run `Build()` once; populate cache after success; release waiters with the same `*Graph`.
 - [x] 7.6 Implement build-concurrency cap via `semaphore.Weighted`; on `TryAcquire` failure return a typed error mapped to `503 capacity`.
