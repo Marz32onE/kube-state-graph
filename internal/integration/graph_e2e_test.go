@@ -145,6 +145,41 @@ func (s *GraphSuite) TestCrossClusterEdgePresent() {
 	s.NotContains(bodyStr, `"server_cluster"`, "v1 edges must not carry server_cluster")
 }
 
+func (s *GraphSuite) TestPodNameFilter() {
+	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("pod", "checkout") }))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	s.Contains(bodyStr, `"id":"cluster-alpha/alpha-1"`, "checkout pod present")
+	s.NotContains(bodyStr, `"id":"cluster-alpha/alpha-2"`, "cart pod must be excluded")
+	s.NotContains(bodyStr, `"id":"cluster-beta/beta-1"`,
+		"cross-cluster partner pod must NOT be re-added when pod filter is active")
+}
+
+func (s *GraphSuite) TestPodUIDFilter() {
+	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("pod_uid", "alpha-1") }))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	s.Contains(bodyStr, `"id":"cluster-alpha/alpha-1"`)
+	s.NotContains(bodyStr, `"id":"cluster-alpha/alpha-2"`)
+}
+
+func (s *GraphSuite) TestPodUIDFilter_UnknownReturnsEmpty() {
+	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("pod_uid", "does-not-exist") }))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	s.Contains(bodyStr, `"nodes":[]`)
+	s.Contains(bodyStr, `"edges":[]`)
+}
+
 func (s *GraphSuite) TestExternalNodeProducedByPattern() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
 		cfg.ExternalNamePattern = "://"

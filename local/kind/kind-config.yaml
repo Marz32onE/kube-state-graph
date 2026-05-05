@@ -14,4 +14,3 @@ nodes:
         hostPort: 30300
         protocol: TCP
   - role: worker
-  - role: worker

@@ -199,6 +199,8 @@ A small abstraction `Cache` interface (Get / Set / Delete / Stats / Close) wraps
 - `?namespace=<ns>` — repeatable; restricts pod / PVC nodes whose `namespace` is in the set. A namespace value matches across clusters; combine with `?cluster=` to scope to a single cluster's namespace.
 - `?node=<node-name>` — repeatable; restricts to those K8s node names. Combine with `?cluster=` if names are not unique across clusters.
 - `?edge_type=<type>` — repeatable; restricts to those edge types only. If a requested type has no edges in the current `Graph`, that type is silently skipped (no error, just empty).
+- `?pod=<name>` — repeatable; matches `PodNode.name` (the human-readable pod name from `kube_pod_info`) by exact equality. Pod names are not globally unique across clusters, so a single `pod` value MAY match multiple nodes; all matches are returned. Combine with `?cluster=` / `?namespace=` to disambiguate.
+- `?pod_uid=<uid>` — repeatable; matches the canonical pod UID (the trailing segment of `<cluster>/<uid>`) by exact equality. K8s pod UIDs are unique cross-cluster in practice, so `pod_uid` is the precise per-pod selector.
 - `?root=<id>&depth=<n>&direction=in|out|both` — partial-graph traversal: BFS from the given composite ID (`<cluster>/<pod-uid>` or `<cluster>/<node-name>`), bounded by `depth` (default 2, max 6).
 
 Filtering is applied **at response time over the cached `*Graph` value**, not by re-querying upstream. PromQL queries always fetch the full window across all clusters in scope (subject to `--clusters-allowlist`); the cached `*Graph` is the shared base from which all filtered views are projected.
@@ -206,7 +208,8 @@ Filtering is applied **at response time over the cached `*Graph` value**, not by
 - Why: keeps the cache key small and the hit rate high; filter+serialise is microseconds for typical graph sizes.
 - Empty filter ⇒ full multi-cluster graph for the time range.
 - Filters compose with AND across types and OR within a type.
-- Traversal first prunes by `root`/`depth`/`direction`, then `cluster` / `namespace` / `node` / `edge_type` filters apply over the traversal result.
+- Traversal first prunes by `root`/`depth`/`direction`, then `cluster` / `namespace` / `node` / `edge_type` / `pod` / `pod_uid` filters apply over the traversal result.
+- The cross-cluster partner-rehydration rule (re-add the out-of-scope endpoint of a `pod-calls-pod` edge when only `cluster` narrows scope) is **suppressed** when `pod` or `pod_uid` is set. The caller has named an exact pod set; partner pods that fall outside that set are not auto-re-added. Non-pod node types (`node`, `pvc`, `external`) are dropped when a pod-side filter is set unless they remain as edge endpoints of an in-scope pod (the existing `filterEdges` re-add pass).
 - Alternatives considered:
   - PromQL label-selector narrowing per request (rejected — see D5 rationale).
   - A graph database for traversal queries (rejected — operationally heavy for a workload in-memory adjacency handles in microseconds, see D16).

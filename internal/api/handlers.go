@@ -25,7 +25,7 @@ import (
 // handleGraph returns the multi-cluster pod / node / PVC graph for [start,end].
 //
 //	@Summary		Get multi-cluster graph (Cytoscape.js)
-//	@Description	Returns the multi-cluster pod / node / PVC graph for the supplied [start, end] window in Cytoscape.js shape. Filter via cluster/namespace/node/edge_type; traverse via root/depth/direction.
+//	@Description	Returns the multi-cluster pod / node / PVC graph for the supplied [start, end] window in Cytoscape.js shape. Filter via cluster/namespace/node/edge_type/pod/pod_uid; traverse via root/depth/direction.
 //	@Tags			graph
 //	@Produce		json
 //	@Param			start		query		string	true	"RFC 3339 or Unix-seconds timestamp"
@@ -34,6 +34,8 @@ import (
 //	@Param			namespace	query		[]string	false	"Restrict to listed namespaces"	collectionFormat(multi)
 //	@Param			node		query		[]string	false	"Restrict to listed K8s node names"	collectionFormat(multi)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types"	collectionFormat(multi)
+//	@Param			pod			query		[]string	false	"Restrict to pods whose name matches (exact, repeatable; multi-cluster name collisions return all matches)"	collectionFormat(multi)
+//	@Param			pod_uid		query		[]string	false	"Restrict to pods whose UID matches (exact, repeatable)"	collectionFormat(multi)
 //	@Param			root		query		string	false	"Cluster-scoped node ID anchoring a traversal"
 //	@Param			depth		query		int		false	"Traversal depth (0..6, default 2 when root is set)"
 //	@Param			direction	query		string	false	"Traversal direction"	Enums(in,out,both)
@@ -75,6 +77,8 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Param			namespace	query		[]string	false	"Restrict to listed namespaces"	collectionFormat(multi)
 //	@Param			node		query		[]string	false	"Restrict to listed K8s node names"	collectionFormat(multi)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types"	collectionFormat(multi)
+//	@Param			pod			query		[]string	false	"Restrict to pods whose name matches (exact, repeatable)"	collectionFormat(multi)
+//	@Param			pod_uid		query		[]string	false	"Restrict to pods whose UID matches (exact, repeatable)"	collectionFormat(multi)
 //	@Success		200			{object}	grafanaBody
 //	@Failure		400			{object}	errorBody
 //	@Failure		503			{object}	errorBody
@@ -373,6 +377,8 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 		q["namespace"],
 		q["node"],
 		q["edge_type"],
+		q["pod"],
+		q["pod_uid"],
 		q.Get("root"),
 		depth,
 		q.Get("direction"),

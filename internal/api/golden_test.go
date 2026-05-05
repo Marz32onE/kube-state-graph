@@ -25,6 +25,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 		"single-cluster":    buildSingleCluster(),
 		"two-cluster-cross": buildTwoClusterCross(),
 		"with-external":     buildWithExternal(),
+		"pod-uid-filter":    buildPodUIDFilter(),
 	}
 
 	for name, view := range scenarios {
@@ -107,4 +108,23 @@ func buildWithExternal() graph.View {
 		"cluster": "cluster-alpha",
 	})
 	return graph.View{Nodes: []graph.GraphNode{pod, ext}, Edges: []*graph.Edge{edge}}
+}
+
+// buildPodUIDFilter snapshots the projection of a two-cluster graph through
+// `?pod_uid=p1`. The matching pod (cluster-alpha/p1) and its host K8s node
+// (re-added via the pod-runs-on-node edge endpoint) survive; the cross-cluster
+// pod-calls-pod partner cluster-beta/p2 is dropped (no partner re-hydration
+// when a pod-side filter is set).
+func buildPodUIDFilter() graph.View {
+	a := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}}
+	b := &graph.PodNode{IDValue: "cluster-beta/p2", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-beta", "namespace": "billing", "node": "cluster-beta/worker-0"}}
+	nodeA := &graph.K8sNode{IDValue: "cluster-alpha/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha"}}
+	nodeB := &graph.K8sNode{IDValue: "cluster-beta/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-beta"}}
+	edges := []*graph.Edge{
+		graph.NewEdge(graph.EdgeTypePodRunsOnNode, a.IDValue, nodeA.IDValue, map[string]string{}),
+		graph.NewEdge(graph.EdgeTypePodRunsOnNode, b.IDValue, nodeB.IDValue, map[string]string{}),
+		graph.NewEdge(graph.EdgeTypePodCallsPod, a.IDValue, b.IDValue, map[string]string{"cluster": "cluster-alpha"}),
+	}
+	g := graph.NewGraph([]graph.GraphNode{a, b, nodeA, nodeB}, edges, time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC))
+	return graph.Project(g, graph.Scope{PodUIDs: map[string]struct{}{"p1": {}}})
 }

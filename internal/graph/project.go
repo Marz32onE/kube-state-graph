@@ -139,6 +139,34 @@ func nodePassesFilters(n GraphNode, scope Scope) bool {
 			return false
 		}
 	}
+	if scope.PodFilterActive() {
+		if n.Type() != NodeTypePod {
+			// Non-pod node types survive only as edge endpoints of in-scope pods,
+			// re-added during filterEdges. Drop here in the primary pass.
+			return false
+		}
+		if !podMatches(n, scope) {
+			return false
+		}
+	}
+	return true
+}
+
+func podMatches(n GraphNode, scope Scope) bool {
+	if len(scope.Pods) > 0 {
+		if _, ok := scope.Pods[n.Name()]; !ok {
+			return false
+		}
+	}
+	if len(scope.PodUIDs) > 0 {
+		uid := stripClusterPrefix(n.ID())
+		if uid == "" {
+			return false
+		}
+		if _, ok := scope.PodUIDs[uid]; !ok {
+			return false
+		}
+	}
 	return true
 }
 
@@ -166,31 +194,60 @@ func filterEdges(g *Graph, scope Scope, nodes map[string]GraphNode) []*Edge {
 			continue
 		}
 		// Cross-cluster pod-calls-pod preservation. When a client narrows by
-		// cluster, a cross-cluster service-graph edge whose other endpoint sits
-		// in an out-of-scope cluster MUST still resolve (graph-api spec §
-		// "Cross-cluster edge representation"). Re-add the missing partner
-		// endpoint, but keep namespace/node filters strict on it so the AND
-		// semantics for those filters are preserved.
-		if !preserveCrossClusterEdge(g, e, scope, srcOK, tgtOK) {
+		// cluster (and not by pod / pod_uid), a cross-cluster service-graph
+		// edge whose other endpoint sits in an out-of-scope cluster MUST still
+		// resolve (graph-api spec § "Cross-cluster edge representation"). When
+		// a pod-side filter IS set the caller has named the exact pod set, so
+		// partner re-hydration is suppressed.
+		if preserveCrossClusterEdge(g, e, scope, srcOK, tgtOK) {
+			if !readdEdgePartners(g, e, nodes, srcOK, tgtOK, scope, nodePassesNonClusterFilters) {
+				continue
+			}
+			out = append(out, e)
 			continue
 		}
-		if !srcOK {
-			partner, ok := g.NodesByID[e.Source]
-			if !ok || !nodePassesNonClusterFilters(partner, scope) {
+		// Pod-filter partner re-add: non-pod endpoints (K8sNode / PVC /
+		// External) get re-added when the other end is an in-scope pod, so
+		// pod-runs-on-node, pod-mounts-pvc, and external pod-calls-* edges
+		// remain visible. Pod-pod edges where one pod is out of scope are
+		// dropped (caller named the pod set explicitly).
+		if scope.PodFilterActive() && preservePodFilterPartner(g, e, nodes, srcOK, tgtOK) {
+			if !readdEdgePartners(g, e, nodes, srcOK, tgtOK, scope, nodePassesNonClusterFilters) {
 				continue
 			}
-			nodes[e.Source] = partner
+			out = append(out, e)
+			continue
 		}
-		if !tgtOK {
-			partner, ok := g.NodesByID[e.Target]
-			if !ok || !nodePassesNonClusterFilters(partner, scope) {
-				continue
-			}
-			nodes[e.Target] = partner
-		}
-		out = append(out, e)
 	}
 	return out
+}
+
+// readdEdgePartners brings in the missing endpoint(s) of e via g.NodesByID,
+// gated by pred (must accept the partner under scope). Returns false if any
+// missing endpoint cannot be re-added.
+func readdEdgePartners(
+	g *Graph,
+	e *Edge,
+	nodes map[string]GraphNode,
+	srcOK, tgtOK bool,
+	scope Scope,
+	pred func(GraphNode, Scope) bool,
+) bool {
+	if !srcOK {
+		partner, ok := g.NodesByID[e.Source]
+		if !ok || !pred(partner, scope) {
+			return false
+		}
+		nodes[e.Source] = partner
+	}
+	if !tgtOK {
+		partner, ok := g.NodesByID[e.Target]
+		if !ok || !pred(partner, scope) {
+			return false
+		}
+		nodes[e.Target] = partner
+	}
+	return true
 }
 
 func preserveCrossClusterEdge(g *Graph, e *Edge, scope Scope, srcOK, tgtOK bool) bool {
@@ -200,12 +257,47 @@ func preserveCrossClusterEdge(g *Graph, e *Edge, scope Scope, srcOK, tgtOK bool)
 	if len(scope.Clusters) == 0 {
 		return false
 	}
+	if scope.PodFilterActive() {
+		// Caller named the exact pod set; do not re-hydrate the partner pod.
+		return false
+	}
 	if !srcOK && !tgtOK {
 		return false
 	}
 	// Cross-cluster status is derived from the resolved endpoints' cluster
 	// labels (the edge only carries the trace-source / client-side cluster).
 	return g.isCrossCluster(e)
+}
+
+// preservePodFilterPartner reports whether the missing endpoint of e is a
+// non-pod (K8sNode / PVC / External) that should be re-added because the
+// other endpoint is an in-scope pod. Pod-pod edges with one pod out of scope
+// are dropped — caller's pod set is exact.
+func preservePodFilterPartner(g *Graph, e *Edge, nodes map[string]GraphNode, srcOK, tgtOK bool) bool {
+	if srcOK == tgtOK {
+		// Both missing or both present; latter handled earlier.
+		return false
+	}
+	missingID := e.Target
+	presentID := e.Source
+	if !srcOK {
+		missingID = e.Source
+		presentID = e.Target
+	}
+	present, ok := nodes[presentID]
+	if !ok || present.Type() != NodeTypePod {
+		return false
+	}
+	missing, ok := g.NodesByID[missingID]
+	if !ok {
+		return false
+	}
+	switch missing.Type() {
+	case NodeTypeK8sNode, NodeTypePVC, NodeTypeExternal:
+		return true
+	default:
+		return false
+	}
 }
 
 func nodePassesNonClusterFilters(n GraphNode, scope Scope) bool {

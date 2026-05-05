@@ -374,7 +374,7 @@ paths:
   /v1/graph:
     get:
       description: Returns the multi-cluster pod / node / PVC graph for the supplied
-        [start, end] window in Cytoscape.js shape. Filter via cluster/namespace/node/edge_type;
+        [start, end] window in Cytoscape.js shape. Filter via cluster/namespace/node/edge_type/pod/pod_uid;
         traverse via root/depth/direction.
       parameters:
       - description: RFC 3339 or Unix-seconds timestamp
@@ -416,6 +416,23 @@ paths:
       - description: Restrict to listed edge types
         in: query
         name: edge_type
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to pods whose name matches (exact, repeatable; multi-cluster
+          name collisions return all matches)
+        in: query
+        name: pod
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to pods whose UID matches (exact, repeatable)
+        in: query
+        name: pod_uid
         schema:
           items:
             type: string
@@ -506,6 +523,22 @@ paths:
       - description: Restrict to listed edge types
         in: query
         name: edge_type
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to pods whose name matches (exact, repeatable)
+        in: query
+        name: pod
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to pods whose UID matches (exact, repeatable)
+        in: query
+        name: pod_uid
         schema:
           items:
             type: string

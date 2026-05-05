@@ -205,3 +205,114 @@ func TestProject_NodeFilter_K8sNode_NoMatch(t *testing.T) {
 		}
 	}
 }
+
+// multiClusterPodSampleGraph extends sampleGraph with a `payments` pod in
+// cluster-alpha so the `pod=payments` filter can match across clusters
+// (cluster-alpha and cluster-beta) and we can assert AND/OR semantics with
+// the cluster filter.
+func multiClusterPodSampleGraph() *Graph {
+	pods := []GraphNode{
+		&PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}},
+		&PodNode{IDValue: "cluster-alpha/p2", NameValue: "cart", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}},
+		&PodNode{IDValue: "cluster-alpha/p4", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "billing", "node": "cluster-alpha/worker-0"}},
+		&PodNode{IDValue: "cluster-beta/p3", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-beta", "namespace": "billing", "node": "cluster-beta/worker-0"}},
+	}
+	nodes := []GraphNode{
+		&K8sNode{IDValue: "cluster-alpha/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha"}},
+		&K8sNode{IDValue: "cluster-beta/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-beta"}},
+	}
+	all := append([]GraphNode{}, pods...)
+	all = append(all, nodes...)
+
+	edges := []*Edge{
+		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p1", "cluster-alpha/worker-0", nil),
+		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p2", "cluster-alpha/worker-0", nil),
+		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p4", "cluster-alpha/worker-0", nil),
+		NewEdge(EdgeTypePodRunsOnNode, "cluster-beta/p3", "cluster-beta/worker-0", nil),
+		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-alpha/p2", map[string]string{"cluster": "cluster-alpha"}),
+		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-beta/p3", map[string]string{"cluster": "cluster-alpha"}),
+	}
+	return NewGraph(all, edges, time.Now())
+}
+
+func TestProject_PodNameFilter_NarrowsToMatchingPods(t *testing.T) {
+	g := sampleGraph()
+	v := Project(g, Scope{Pods: map[string]struct{}{"checkout": {}}})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["cluster-alpha/p1"], "checkout pod must be present")
+	assert.False(t, ids["cluster-alpha/p2"], "cart must be excluded")
+	assert.False(t, ids["cluster-beta/p3"], "payments must be excluded")
+	// K8s node re-added because checkout's pod-runs-on-node edge has it as endpoint.
+	assert.True(t, ids["cluster-alpha/worker-0"], "host node re-added via edge endpoint")
+	assert.False(t, ids["cluster-beta/worker-0"], "unrelated K8s node dropped")
+}
+
+func TestProject_PodUIDFilter_ExactMatch(t *testing.T) {
+	g := sampleGraph()
+	v := Project(g, Scope{PodUIDs: map[string]struct{}{"p1": {}}})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["cluster-alpha/p1"])
+	assert.False(t, ids["cluster-alpha/p2"])
+	assert.False(t, ids["cluster-beta/p3"])
+}
+
+func TestProject_PodNameFilter_DuplicatesAcrossClusters(t *testing.T) {
+	g := multiClusterPodSampleGraph()
+	v := Project(g, Scope{Pods: map[string]struct{}{"payments": {}}})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["cluster-alpha/p4"], "alpha payments must match")
+	assert.True(t, ids["cluster-beta/p3"], "beta payments must match")
+	assert.False(t, ids["cluster-alpha/p1"], "non-matching pod must drop")
+}
+
+func TestProject_PodNameFilter_AndedWithCluster(t *testing.T) {
+	g := multiClusterPodSampleGraph()
+	v := Project(g, Scope{
+		Pods:     map[string]struct{}{"payments": {}},
+		Clusters: map[string]struct{}{"cluster-alpha": {}},
+	})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["cluster-alpha/p4"], "alpha payments matches")
+	assert.False(t, ids["cluster-beta/p3"], "beta payments excluded by cluster filter")
+}
+
+func TestProject_PodFilter_SuppressesCrossClusterPartner(t *testing.T) {
+	g := sampleGraph()
+	// Pick the cluster-alpha/p1 caller; its outgoing pod-calls-pod to
+	// cluster-beta/p3 must NOT re-add p3 because pod filter is set.
+	v := Project(g, Scope{PodUIDs: map[string]struct{}{"p1": {}}})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["cluster-alpha/p1"])
+	assert.False(t, ids["cluster-beta/p3"], "cross-cluster partner pod must NOT be re-added")
+	for _, e := range v.Edges {
+		assert.NotEqualf(t, "cluster-beta/p3", e.Target,
+			"cross-cluster pod-calls-pod edge to out-of-scope partner must drop")
+	}
+}
+
+func TestProject_PodUIDFilter_UnknownReturnsEmpty(t *testing.T) {
+	g := sampleGraph()
+	v := Project(g, Scope{PodUIDs: map[string]struct{}{"does-not-exist": {}}})
+	assert.Empty(t, v.Nodes)
+	assert.Empty(t, v.Edges)
+}

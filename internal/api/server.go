@@ -90,6 +90,15 @@ func (s *Server) requestIDMiddleware() gin.HandlerFunc {
 	}
 }
 
+// quietLogPaths are silent on success: kubelet probes and Prometheus scrape
+// fire every few seconds and would otherwise dominate the access log. Any
+// status >=400 is still emitted so genuine failures remain visible.
+var quietLogPaths = map[string]struct{}{
+	"/livez":   {},
+	"/readyz":  {},
+	"/metrics": {},
+}
+
 // loggingMiddleware emits one slog line per request.
 func (s *Server) loggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -100,6 +109,10 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 		path := c.FullPath()
 		if path == "" {
 			path = c.Request.URL.Path
+		}
+		if _, quiet := quietLogPaths[path]; quiet && status < 400 {
+			s.metrics.HTTPRequests.WithLabelValues(path, statusClass(status)).Inc()
+			return
 		}
 		clusters := c.Request.URL.Query()["cluster"]
 		cacheStatus, _ := c.Get("cache_status")

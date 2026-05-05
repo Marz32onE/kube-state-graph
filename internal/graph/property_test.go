@@ -154,6 +154,45 @@ func TestProperty_CrossClusterEdgesHaveDistinctClusterEndpoints(t *testing.T) {
 	}
 }
 
+func TestProperty_PodFilterResultsAllMatchAndNoOutOfScopePartner(t *testing.T) {
+	for seed := int64(1); seed <= 25; seed++ {
+		g := genGraph(seed, 3, 5, 12)
+		// Pick the first pod's UID as the in-scope set. Random but deterministic.
+		var uid string
+		for _, n := range g.NodesByID {
+			if n.Type() == NodeTypePod {
+				uid = stripClusterPrefix(n.ID())
+				break
+			}
+		}
+		require.NotEmpty(t, uid)
+		v := Project(g, Scope{PodUIDs: map[string]struct{}{uid: {}}})
+
+		inScope := map[string]bool{}
+		for _, n := range v.Nodes {
+			if n.Type() == NodeTypePod {
+				assert.Equalf(t, uid, stripClusterPrefix(n.ID()),
+					"seed=%d: pod %s in result but UID does not match filter", seed, n.ID())
+				inScope[n.ID()] = true
+			}
+		}
+		// No cross-cluster pod-calls-pod edge re-adds an out-of-filter partner.
+		for _, e := range v.Edges {
+			if e.Type != EdgeTypePodCallsPod {
+				continue
+			}
+			src, srcOK := g.NodesByID[e.Source]
+			tgt, tgtOK := g.NodesByID[e.Target]
+			require.True(t, srcOK)
+			require.True(t, tgtOK)
+			if src.Labels()["cluster"] != tgt.Labels()["cluster"] {
+				assert.Truef(t, inScope[e.Source] && inScope[e.Target],
+					"seed=%d: cross-cluster edge survived with partner outside pod filter", seed)
+			}
+		}
+	}
+}
+
 func TestProperty_EdgeIDsUniquePerTuple(t *testing.T) {
 	for seed := int64(1); seed <= 25; seed++ {
 		g := genGraph(seed, 3, 5, 12)
