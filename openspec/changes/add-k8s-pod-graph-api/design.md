@@ -197,10 +197,8 @@ A small abstraction `Cache` interface (Get / Set / Delete / Stats / Close) wraps
 
 - `?cluster=<name>` — repeatable; restricts the response to nodes whose `cluster` is in the set. Cross-cluster edges with one end inside the set and one end outside are **kept** (the remote endpoint resolves correctly because the cached `*Graph` holds all clusters); the remote endpoint node is also kept (with its own `labels.cluster`). Cross-cluster status is conveyed by comparing the source-node and target-node `labels.cluster` — consumers derive the boolean from the two strings (the edge itself carries only `labels.cluster` = trace-source / client-side cluster). Setting `cluster` to an unknown value is not an error — it simply yields an empty result for that name.
 - `?namespace=<ns>` — repeatable; restricts pod / PVC nodes whose `namespace` is in the set. A namespace value matches across clusters; combine with `?cluster=` to scope to a single cluster's namespace.
-- `?node=<node-name>` — repeatable; restricts to those K8s node names. Combine with `?cluster=` if names are not unique across clusters.
 - `?edge_type=<type>` — repeatable; restricts to those edge types only. If a requested type has no edges in the current `Graph`, that type is silently skipped (no error, just empty).
 - `?pod=<name>` — repeatable; matches `PodNode.name` (the human-readable pod name from `kube_pod_info`) by exact equality. Pod names are not globally unique across clusters, so a single `pod` value MAY match multiple nodes; all matches are returned. Combine with `?cluster=` / `?namespace=` to disambiguate.
-- `?pod_uid=<uid>` — repeatable; matches the canonical pod UID (the trailing segment of `<cluster>/<uid>`) by exact equality. K8s pod UIDs are unique cross-cluster in practice, so `pod_uid` is the precise per-pod selector.
 - `?root=<id>&depth=<n>&direction=in|out|both` — partial-graph traversal: BFS from the given composite ID (`<cluster>/<pod-uid>` or `<cluster>/<node-name>`), bounded by `depth` (default 2, max 6).
 
 Filtering is applied **at response time over the cached `*Graph` value**, not by re-querying upstream. PromQL queries always fetch the full window across all clusters in scope (subject to `--clusters-allowlist`); the cached `*Graph` is the shared base from which all filtered views are projected.
@@ -208,8 +206,9 @@ Filtering is applied **at response time over the cached `*Graph` value**, not by
 - Why: keeps the cache key small and the hit rate high; filter+serialise is microseconds for typical graph sizes.
 - Empty filter ⇒ full multi-cluster graph for the time range.
 - Filters compose with AND across types and OR within a type.
-- Traversal first prunes by `root`/`depth`/`direction`, then `cluster` / `namespace` / `node` / `edge_type` / `pod` / `pod_uid` filters apply over the traversal result.
-- The cross-cluster partner-rehydration rule (re-add the out-of-scope endpoint of a `pod-calls-pod` edge when only `cluster` narrows scope) is **suppressed** when `pod` or `pod_uid` is set. The caller has named an exact pod set; partner pods that fall outside that set are not auto-re-added. Non-pod node types (`node`, `pvc`, `external`) are dropped when a pod-side filter is set unless they remain as edge endpoints of an in-scope pod (the existing `filterEdges` re-add pass).
+- Traversal first prunes by `root`/`depth`/`direction`, then `cluster` / `namespace` / `edge_type` / `pod` filters apply over the traversal result.
+- The cross-cluster partner-rehydration rule (re-add the out-of-scope endpoint of a `pod-calls-pod` edge when only `cluster` narrows scope) is **suppressed** when `pod` is set. The caller has named an exact pod set; partner pods that fall outside that set are not auto-re-added. Non-pod node types (`node`, `pvc`, `external`) are dropped when the pod filter is set unless they remain as edge endpoints of an in-scope pod (the existing `filterEdges` re-add pass).
+- The `node` (K8s node hostname) and `pod_uid` filter parameters were considered and rejected: K8s node names are not user-facing for graph callers, and pod UIDs are opaque internal identifiers that the caller cannot obtain without first making a `/v1/graph` call. Callers can scope by `cluster` + `pod` (name) instead.
 - Alternatives considered:
   - PromQL label-selector narrowing per request (rejected — see D5 rationale).
   - A graph database for traversal queries (rejected — operationally heavy for a workload in-memory adjacency handles in microseconds, see D16).
@@ -704,7 +703,7 @@ The vendored bundle version is pinned (e.g., `@scalar/api-reference@1.x.y`) and 
 ## Risks / Trade-offs
 
 - [Cold cache miss latency] → Document that first-time-bucket queries pay the full multi-cluster PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope); subsequent same-bucket queries are cache hits. Surface `kube_state_graph_build_duration_seconds` per `cache_status`.
-- [Pod UID churn on restart pollutes long lookback windows] → For windows where `last_over_time(kube_pod_info)` returns multiple UIDs for the same `(cluster, namespace, name)` tuple within the window, keep the latest UID and emit a `pod-replaced-by` synthetic edge linking the prior UID to the current one. Document in the spec.
+- [Pod UID churn on restart pollutes long lookback windows] → For windows where `last_over_time(kube_pod_info)` returns multiple UIDs for the same `(cluster, namespace, name)` tuple within the window, keep ONLY the latest UID and discard the prior. There is no reliable way to link a deleted pod's UID to its replacement once kubelet stops reporting the deleted UID (the `kube-state-metrics` series simply stops; the controller assigns a fresh UUID for the new pod with no back-reference). The earlier idea of emitting a `pod-replaced-by` synthetic edge was rejected for this reason — it would have implied an identity mapping that the source data does not support. Document in the spec.
 - [Service-graph metrics absent or sparse] → Topology-only graph is still valid; missing service-graph series produce zero `pod-calls-pod` edges instead of a build failure.
 - [PromQL fan-out large with many clusters] → `--clusters-allowlist` bounds the upstream cost; `--max-pods` triggers `503` with reason `cluster_too_large` when exceeded. The cache absorbs cost across callers.
 - [Cache memory growth on diverse query patterns] → Bound by `MaxCost` (default 256 MiB); evictions exposed via `kube_state_graph_cache_evictions_total`.
@@ -723,7 +722,7 @@ Greenfield repository — no migration. Rollback is `git revert` of the merge co
 
 ## Open Questions
 
-- Final list of edge types beyond the three in D4 (e.g., `pod-replaced-by`, `pod-shares-node`, `pod-shares-namespace`) — resolve during spec drafting; whichever ship in v1 must appear in both `Build()` and the static `/v1/edge-types` registry.
+- Final list of edge types beyond the three in D4 (e.g., `pod-shares-node`, `pod-shares-namespace`) — resolve during spec drafting; whichever ship in v1 must appear in both `Build()` and the static `/v1/edge-types` registry. v1 ships exactly the three: `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`.
 - Default value of `--max-window` (current proposal `24h`) and whether different time classes should have different ceilings.
 - Bucket-boundary policy across DST or leap seconds — likely "always UTC, no DST adjustment", confirm during spec.
 - Whether to ship the optional L2 serialised-response cache (D6) in v1 or defer to v1.1 — defer until profiling shows serialise+ETag is hot.

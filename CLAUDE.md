@@ -92,7 +92,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 (D1–D19) before changing any of them.
 
 - **Cache key is time-only** (`start_bucket, end_bucket, bucket_size`). Filters
-  (`cluster`, `namespace`, `node`, `edge_type`, traversal) are applied at
+  (`cluster`, `namespace`, `edge_type`, `pod`, traversal) are applied at
   response time over the cached `*Graph`. Adding filters to the key would
   fragment the cache catastrophically — D5/D7.
 - **Time-bucketing classes**: bucket grid is **uniformly 60 s** for every class;

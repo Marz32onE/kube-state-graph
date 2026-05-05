@@ -12,15 +12,13 @@ const docTemplate = `{
                 "enum": [
                     "pod-runs-on-node",
                     "pod-mounts-pvc",
-                    "pod-calls-pod",
-                    "pod-replaced-by"
+                    "pod-calls-pod"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
                     "EdgeTypePodRunsOnNode",
                     "EdgeTypePodMountsPVC",
-                    "EdgeTypePodCallsPod",
-                    "EdgeTypePodReplacedBy"
+                    "EdgeTypePodCallsPod"
                 ]
             },
             "github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition": {
@@ -518,7 +516,7 @@ const docTemplate = `{
         },
         "/v1/clusters": {
             "get": {
-                "description": "Returns the set of clusters observed in ` + "`" + `kube_node_info` + "`" + ` over the configured discovery lookback (default 1 h). Intersected with --clusters-allowlist when set.",
+                "description": "Returns the set of clusters observed in ` + "`" + `kube_node_info` + "`" + ` over the configured discovery lookback (default 1 h). Intersected with ` + "`" + `--clusters-allowlist` + "`" + ` when set. Result cached server-side for the discovery TTL; served with ` + "`" + `Cache-Control: public, max-age=60` + "`" + ` and a stable ` + "`" + `ETag` + "`" + `.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\n{ \"name\": \"prod-eu\" },\n{ \"name\": \"prod-us\" },\n{ \"name\": \"stage-eu\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "responses": {
                     "200": {
                         "content": {
@@ -538,7 +536,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Gateway"
+                        "description": "Upstream VictoriaMetrics unavailable"
                     }
                 },
                 "summary": "List clusters",
@@ -549,7 +547,7 @@ const docTemplate = `{
         },
         "/v1/edge-types": {
             "get": {
-                "description": "Static catalogue of edge types this server can produce. No upstream calls. Long-lived Cache-Control + ETag.",
+                "description": "Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with ` + "`" + `Cache-Control: public, max-age=3600` + "`" + ` and a stable ` + "`" + `ETag` + "`" + `. Use this to validate the ` + "`" + `edge_type` + "`" + ` filter on ` + "`" + `/v1/graph` + "`" + ` and to drive UI legends.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eEdge type matrix\u003c/b\u003e\u003c/summary\u003e\n\n| type | source → target | directed | cross-cluster |\n|---|---|---|---|\n| ` + "`" + `pod-runs-on-node` + "`" + ` | pod → node | yes | no |\n| ` + "`" + `pod-mounts-pvc` + "`" + ` | pod → pvc | yes | no |\n| ` + "`" + `pod-calls-pod` + "`" + ` | pod → pod \\| external | yes | yes |\n\n\u003c/details\u003e",
                 "responses": {
                     "200": {
                         "content": {
@@ -570,10 +568,11 @@ const docTemplate = `{
         },
         "/v1/graph": {
             "get": {
-                "description": "Returns the multi-cluster pod / node / PVC graph for the supplied [start, end] window in Cytoscape.js shape. Filter via cluster/namespace/node/edge_type/pod/pod_uid; traverse via root/depth/direction.",
+                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. Window is bucketed onto a 60 s grid (` + "`" + `start` + "`" + ` floored, ` + "`" + `end` + "`" + ` ceiled). The cache key is time-only — all filter / traversal params are applied at response time over the cached graph and never fragment the cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `pod` + "`" + `.\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Caching**: response carries ` + "`" + `ETag` + "`" + ` + ` + "`" + `Cache-Control` + "`" + ` whose ` + "`" + `max-age` + "`" + ` follows the time class — live 30 s, recent 5 m, historical 1 h, frozen 24 h.\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"start\": \"2026-05-05T11:00:00Z\",\n\"end\":   \"2026-05-05T12:00:00Z\",\n\"start_actual\": \"2026-05-05T11:00:00Z\",\n\"end_actual\":   \"2026-05-05T12:00:00Z\",\n\"bucket_seconds\": 60,\n\"built_at\": \"2026-05-05T12:00:01Z\",\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
-                        "description": "RFC 3339 or Unix-seconds timestamp",
+                        "description": "Window start. RFC 3339 (` + "`" + `2026-05-05T11:00:00Z` + "`" + `) or Unix seconds (` + "`" + `1746442800` + "`" + `). Floored to the 60 s bucket grid.",
+                        "example": "2026-05-05T11:00:00Z",
                         "in": "query",
                         "name": "start",
                         "required": true,
@@ -582,7 +581,8 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "RFC 3339 or Unix-seconds timestamp",
+                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to ` + "`" + `floor(now, 60s)` + "`" + ` if it would exceed now. Must be \u003e start and within --max-window.",
+                        "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",
                         "required": true,
@@ -591,7 +591,8 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Restrict to listed clusters",
+                        "description": "Restrict to listed clusters (repeatable, OR-combined). Names match the upstream ` + "`" + `cluster` + "`" + ` label.",
+                        "example": "prod-eu",
                         "in": "query",
                         "name": "cluster",
                         "schema": {
@@ -603,7 +604,8 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to listed namespaces",
+                        "description": "Restrict to listed Kubernetes namespaces (repeatable, OR-combined).",
+                        "example": "payments",
                         "in": "query",
                         "name": "namespace",
                         "schema": {
@@ -615,23 +617,17 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to listed K8s node names",
-                        "in": "query",
-                        "name": "node",
-                        "schema": {
-                            "items": {
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
-                    },
-                    {
-                        "description": "Restrict to listed edge types",
+                        "description": "Restrict to listed edge types. Repeatable, OR-combined.",
+                        "example": "pod-calls-pod",
                         "in": "query",
                         "name": "edge_type",
                         "schema": {
                             "items": {
+                                "enum": [
+                                    "pod-runs-on-node",
+                                    "pod-mounts-pvc",
+                                    "pod-calls-pod"
+                                ],
                                 "type": "string"
                             },
                             "type": "array"
@@ -639,7 +635,8 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to pods whose name matches (exact, repeatable; multi-cluster name collisions return all matches)",
+                        "description": "Restrict to pods whose name matches exactly. Repeatable; multi-cluster name collisions return all matches.",
+                        "example": "checkout-7d9f6c8b8-abcde",
                         "in": "query",
                         "name": "pod",
                         "schema": {
@@ -651,19 +648,8 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to pods whose UID matches (exact, repeatable)",
-                        "in": "query",
-                        "name": "pod_uid",
-                        "schema": {
-                            "items": {
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
-                    },
-                    {
-                        "description": "Cluster-scoped node ID anchoring a traversal",
+                        "description": "Cluster-scoped node ID anchoring a traversal. Format depends on type — pods ` + "`" + `\u003ccluster\u003e/\u003cuid\u003e` + "`" + `, nodes ` + "`" + `\u003ccluster\u003e/\u003cnode\u003e` + "`" + `, PVCs ` + "`" + `\u003ccluster\u003e/\u003cns\u003e/\u003cclaim\u003e` + "`" + `, externals ` + "`" + `external/\u003cvalue\u003e` + "`" + `.",
+                        "example": "prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab",
                         "in": "query",
                         "name": "root",
                         "schema": {
@@ -671,18 +657,24 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Traversal depth (0..6, default 2 when root is set)",
+                        "description": "BFS traversal depth in hops. Range ` + "`" + `0..6` + "`" + `. Defaults to ` + "`" + `2` + "`" + ` when ` + "`" + `root` + "`" + ` is set, ignored otherwise.",
+                        "example": 2,
                         "in": "query",
                         "name": "depth",
                         "schema": {
+                            "default": 2,
+                            "maximum": 6,
+                            "minimum": 0,
                             "type": "integer"
                         }
                     },
                     {
-                        "description": "Traversal direction",
+                        "description": "Traversal direction relative to ` + "`" + `root` + "`" + `. ` + "`" + `out` + "`" + ` = downstream edges, ` + "`" + `in` + "`" + ` = upstream edges, ` + "`" + `both` + "`" + ` = undirected. Defaults to ` + "`" + `both` + "`" + `.",
+                        "example": "both",
                         "in": "query",
                         "name": "direction",
                         "schema": {
+                            "default": "both",
                             "enum": [
                                 "in",
                                 "out",
@@ -711,7 +703,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Request"
+                        "description": "Invalid parameters (missing/invalid start|end, window_too_large, end_in_future, depth_too_large, invalid_scope)"
                     },
                     "503": {
                         "content": {
@@ -721,7 +713,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Service Unavailable"
+                        "description": "Capacity / timeout / cluster_too_large or upstream unavailable"
                     }
                 },
                 "summary": "Get multi-cluster graph (Cytoscape.js)",
@@ -732,10 +724,11 @@ const docTemplate = `{
         },
         "/v1/graph/nodegraph": {
             "get": {
-                "description": "Same data as /v1/graph but projected into the parallel-array shape Grafana's Node Graph panel expects when consumed via the JSON / Infinity datasource.",
+                "description": "Same underlying graph as ` + "`" + `/v1/graph` + "`" + ` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: ` + "`" + `nodes_fields[]` + "`" + `, ` + "`" + `nodes[]` + "`" + `, ` + "`" + `edges_fields[]` + "`" + `, ` + "`" + `edges[]` + "`" + `.\n\nFiltering, traversal, bucketing, and caching semantics are identical to ` + "`" + `/v1/graph` + "`" + ` — see that endpoint for full details.\n\nExample: ` + "`" + `GET /v1/graph/nodegraph?start=1746442800\u0026end=1746446400\u0026cluster=prod-eu\u0026edge_type=pod-calls-pod\u0026root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab\u0026depth=3\u0026direction=out` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"nodes_fields\": [\n{ \"name\": \"id\",    \"type\": \"string\" },\n{ \"name\": \"title\", \"type\": \"string\" },\n{ \"name\": \"subtitle\", \"type\": \"string\" }\n],\n\"nodes\": [\n{ \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"title\": \"checkout-7d9f6c8b8-abcde\", \"subtitle\": \"pod\" }\n],\n\"edges_fields\": [\n{ \"name\": \"id\",     \"type\": \"string\" },\n{ \"name\": \"source\", \"type\": \"string\" },\n{ \"name\": \"target\", \"type\": \"string\" }\n],\n\"edges\": [\n{ \"id\": \"...uuidv5...\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
-                        "description": "RFC 3339 or Unix-seconds timestamp",
+                        "description": "Window start. RFC 3339 or Unix seconds. Floored to the 60 s bucket grid.",
+                        "example": "2026-05-05T11:00:00Z",
                         "in": "query",
                         "name": "start",
                         "required": true,
@@ -744,7 +737,8 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "RFC 3339 or Unix-seconds timestamp",
+                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to now.",
+                        "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",
                         "required": true,
@@ -753,7 +747,8 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Restrict to listed clusters",
+                        "description": "Restrict to listed clusters (repeatable, OR-combined).",
+                        "example": "prod-eu",
                         "in": "query",
                         "name": "cluster",
                         "schema": {
@@ -765,7 +760,8 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to listed namespaces",
+                        "description": "Restrict to listed namespaces (repeatable, OR-combined).",
+                        "example": "payments",
                         "in": "query",
                         "name": "namespace",
                         "schema": {
@@ -777,23 +773,17 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to listed K8s node names",
-                        "in": "query",
-                        "name": "node",
-                        "schema": {
-                            "items": {
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
-                    },
-                    {
-                        "description": "Restrict to listed edge types",
+                        "description": "Restrict to listed edge types. Repeatable, OR-combined.",
+                        "example": "pod-calls-pod",
                         "in": "query",
                         "name": "edge_type",
                         "schema": {
                             "items": {
+                                "enum": [
+                                    "pod-runs-on-node",
+                                    "pod-mounts-pvc",
+                                    "pod-calls-pod"
+                                ],
                                 "type": "string"
                             },
                             "type": "array"
@@ -801,7 +791,8 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to pods whose name matches (exact, repeatable)",
+                        "description": "Restrict to pods whose name matches exactly. Repeatable.",
+                        "example": "checkout-7d9f6c8b8-abcde",
                         "in": "query",
                         "name": "pod",
                         "schema": {
@@ -813,16 +804,40 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to pods whose UID matches (exact, repeatable)",
+                        "description": "Cluster-scoped node ID anchoring a traversal. See /v1/graph for ID formats per type.",
+                        "example": "prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab",
                         "in": "query",
-                        "name": "pod_uid",
+                        "name": "root",
                         "schema": {
-                            "items": {
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "BFS traversal depth ` + "`" + `0..6` + "`" + `. Defaults to ` + "`" + `2` + "`" + ` when ` + "`" + `root` + "`" + ` is set.",
+                        "example": 2,
+                        "in": "query",
+                        "name": "depth",
+                        "schema": {
+                            "default": 2,
+                            "maximum": 6,
+                            "minimum": 0,
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Traversal direction. Defaults to ` + "`" + `both` + "`" + `.",
+                        "example": "both",
+                        "in": "query",
+                        "name": "direction",
+                        "schema": {
+                            "default": "both",
+                            "enum": [
+                                "in",
+                                "out",
+                                "both"
+                            ],
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -844,7 +859,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Request"
+                        "description": "Invalid parameters"
                     },
                     "503": {
                         "content": {
@@ -854,7 +869,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Service Unavailable"
+                        "description": "Capacity / timeout / upstream unavailable"
                     }
                 },
                 "summary": "Get multi-cluster graph (Grafana Node Graph datasource)",

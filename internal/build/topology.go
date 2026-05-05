@@ -38,11 +38,10 @@ type podObs struct {
 // Topology is the typed result of reading kube-state-metrics-style series for
 // a single time window across all clusters in scope.
 type Topology struct {
-	Pods         []*graph.PodNode
-	Nodes        []*graph.K8sNode
-	PVCs         []*graph.PVCNode
-	PodPVCs      []PodPVCBinding
-	RestartEdges []*graph.Edge // pod-replaced-by edges from in-window pod restarts.
+	Pods    []*graph.PodNode
+	Nodes   []*graph.K8sNode
+	PVCs    []*graph.PVCNode
+	PodPVCs []PodPVCBinding
 
 	// PodsByUID indexes every pod in Pods by its raw Kubernetes UID (without
 	// the cluster prefix). K8s pod UIDs are UUIDv4 and unique across clusters
@@ -203,9 +202,10 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		}
 		podsByUID[uid] = pod
 	}
-	restartEdges := []*graph.Edge{}
 	for k, group := range podGroups {
-		// Newest sample first.
+		// Newest sample first; pods that churned UIDs within the window collapse
+		// to the most recent observation since there is no reliable cross-UID
+		// identity link (deleted pods do not back-fill metrics).
 		sort.SliceStable(group, func(i, j int) bool { return group[i].ts > group[j].ts })
 		// kube-state-metrics emits multiple series per pod-UID as labels evolve
 		// during scheduling (e.g. node, pod_ip arrive after the first scrape).
@@ -220,27 +220,6 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		}
 		pods = append(pods, canonicalPod)
 		addPodToIndex(canonical.uid, canonicalPod)
-		// Emit prior pods + replacement edges.
-		seen := map[string]bool{canonical.uid: true}
-		for _, prior := range group[1:] {
-			if seen[prior.uid] {
-				continue
-			}
-			seen[prior.uid] = true
-			priorPod := &graph.PodNode{
-				IDValue:     graph.PodID(k.cluster, prior.uid),
-				NameValue:   k.pod,
-				LabelsValue: merged[prior.uid],
-			}
-			pods = append(pods, priorPod)
-			addPodToIndex(prior.uid, priorPod)
-			restartEdges = append(restartEdges, graph.NewEdge(
-				graph.EdgeTypePodReplacedBy,
-				graph.PodID(k.cluster, prior.uid),
-				graph.PodID(k.cluster, canonical.uid),
-				map[string]string{"cluster": k.cluster, "namespace": k.namespace, "pod": k.pod},
-			))
-		}
 	}
 
 	// PVCs + pod-PVC bindings.
@@ -299,7 +278,6 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		Nodes:            nodes,
 		PVCs:             pvcs,
 		PodPVCs:          bindings,
-		RestartEdges:     restartEdges,
 		PodsByUID:        podsByUID,
 		ClustersObserved: clusterList,
 	}

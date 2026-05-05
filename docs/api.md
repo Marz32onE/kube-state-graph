@@ -14,10 +14,8 @@ Returns the multi-cluster graph for `[start, end]` in Cytoscape.js shape.
 | `end`        | yes      | no         | Same. Must be `> start` and `<= now + --max-skew`. |
 | `cluster`    | no       | yes        | Restrict to clusters whose label matches. |
 | `namespace`  | no       | yes        | Restrict pods/PVCs by namespace. |
-| `node`       | no       | yes        | Restrict pods/nodes by K8s node name. |
-| `edge_type`  | no       | yes        | Restrict edges by type. Unknown types ⇒ silently empty. |
+| `edge_type`  | no       | yes        | Restrict edges by type. One of `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`. Unknown types ⇒ silently empty. |
 | `pod`        | no       | yes        | Restrict to pods whose name matches (exact). Pod names are not unique across clusters; all matches are returned. Combine with `cluster` / `namespace` to disambiguate. |
-| `pod_uid`    | no       | yes        | Restrict to pods whose UID matches (exact). UIDs are unique cross-cluster in practice. |
 | `root`       | no       | no         | Cluster-scoped node ID to anchor a traversal. |
 | `depth`      | no       | no         | Traversal depth (0..6, default 2 when `root` is set). |
 | `direction`  | no       | no         | `in | out | both` (default `both`). |
@@ -25,13 +23,13 @@ Returns the multi-cluster graph for `[start, end]` in Cytoscape.js shape.
 Multiple values for the same parameter are OR-combined; different parameters
 are AND-combined. Unknown values yield 200 + empty result, never an error.
 
-When `pod` or `pod_uid` is set, non-pod node types (`node`, `pvc`, `external`)
-survive only as edge endpoints of an in-scope pod (so `pod-runs-on-node`,
-`pod-mounts-pvc`, and external `pod-calls-pod` edges remain visible). The
-cross-cluster partner-rehydration rule that re-adds the out-of-scope endpoint
-of a `pod-calls-pod` edge under a `cluster` filter is **suppressed** when a
-pod-side filter is set — the caller has named an exact pod set, so partner
-pods outside that set are not auto-included.
+When `pod` is set, non-pod node types (`node`, `pvc`, `external`) survive only
+as edge endpoints of an in-scope pod (so `pod-runs-on-node`, `pod-mounts-pvc`,
+and external `pod-calls-pod` edges remain visible). The cross-cluster
+partner-rehydration rule that re-adds the out-of-scope endpoint of a
+`pod-calls-pod` edge under a `cluster` filter is **suppressed** when `pod` is
+set — the caller has named an exact pod set, so partner pods outside that set
+are not auto-included.
 
 ### Response shape
 

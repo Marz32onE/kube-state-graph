@@ -45,6 +45,7 @@ cover:
 
 docs:
 	go tool swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=true
+	go run ./tools/openapi-postprocess docs/swagger.json docs/swagger.yaml
 	@cp docs/swagger.yaml internal/api/static/openapi/openapi.yaml
 	@cp docs/swagger.json internal/api/static/openapi/openapi.json
 

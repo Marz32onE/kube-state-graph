@@ -39,7 +39,7 @@
 - [x] 5.3 Parse `kube_node_info` + `kube_node_status_addresses` into `K8sNode` entities; surface `external_ip` under `labels`.
 - [x] 5.4 Parse `kube_pod_spec_volumes_persistentvolumeclaims_info` into `PVCNode` entities; key `<cluster>/<namespace>/<claim_name>`.
 - [x] 5.5 Parse `kube_node_labels` `label_*` entries; flatten into the K8s node `labels` under their original keys (e.g., `label_topology_kubernetes_io_zone` → `topology.kubernetes.io/zone`).
-- [x] 5.6 Implement pod-restart handling: when multiple UIDs exist for the same `(cluster, namespace, pod)`, keep the latest as canonical, retain the prior, emit a `pod-replaced-by` synthetic edge.
+- [x] 5.6 Implement pod-restart handling: when multiple UIDs exist for the same `(cluster, namespace, pod)`, keep ONLY the latest UID as the canonical pod and discard prior UIDs (no synthetic linking edge — there is no reliable identity link once kubelet stops reporting the deleted UID).
 - [x] 5.7 Implement `cluster="unknown"` bucketing for series missing the `cluster` label; surface in `kube_state_graph_clusters_observed`.
 - [x] 5.8 Build `pod-runs-on-node` edges from `kube_pod_info{node=...}`.
 - [x] 5.9 Build `pod-mounts-pvc` edges by joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the pod's host node within the same cluster.
@@ -216,17 +216,17 @@
 - [x] 22.5 Run `make test` and (when available) `make lint` after migration; all 62 tests pass after migration.
 - [ ] 22.6 Update CONTRIBUTING / docs to state the testify-only convention: no `t.Errorf` / bare `t.Fatal` in new tests. _(Deferred — minor doc task.)_
 
-## 23. Pod-name / pod-UID filter (capability: graph-api — modified)
+## 23. Pod-name filter (capability: graph-api — modified)
 
-- [x] 23.1 Extend `graph.Scope` with `Pods map[string]struct{}` (matches `PodNode.Name`) and `PodUIDs map[string]struct{}` (matches the canonical pod UID; the suffix of `<cluster>/<uid>`). Update `graph.NewScope` signature to accept the two new repeatable string slices and convert via `stringSet`.
-- [x] 23.2 In `graph.nodePassesFilters` (and the cross-cluster preservation helper `nodePassesNonClusterFilters`), add a branch:
-  - For `PodNode`: must match `Pods` (by `n.Name()`) AND `PodUIDs` (by trailing `<uid>` of `n.ID()`) when those sets are non-empty.
-  - For `K8sNode`, `PVCNode`, `ExternalNode`: when either pod filter is set, drop directly in `nodePassesFilters`. Endpoints survive only via the existing edge-endpoint re-add pass in `filterEdges` (for in-scope pods' incident edges).
-- [x] 23.3 In `graph.preserveCrossClusterEdge`, return `false` when either `Pods` or `PodUIDs` is set so the cluster-scoped partner-rehydration rule does NOT fire (caller named the exact pod set).
-- [x] 23.4 In `internal/api/handlers.go` `parseGraphRequest` (or equivalent), parse `q["pod"]` and `q["pod_uid"]` and pass them to `graph.NewScope`. Apply identical wiring to both `/v1/graph` and `/v1/graph/nodegraph` handlers.
-- [x] 23.5 Add `@Param pod` and `@Param pod_uid` swag annotations (repeatable, `query`, `[]string`, `collectionFormat(multi)`) on both handlers; mention the pair in the `@Description`. Run `make docs` and commit the regenerated `docs/swagger.{json,yaml}` so `make check-docs` stays green.
-- [x] 23.6 Unit tests in `internal/graph/project_test.go`: pod-name filter narrows correctly; pod_uid exact match; pod name shared across clusters returns both; pod filter AND cluster filter; pod filter does NOT trigger cross-cluster preservation; unknown pod_uid returns empty.
-- [x] 23.7 Component tests in `internal/api/server_test.go`: HTTP `?pod=` and `?pod_uid=` map through to scope correctly; combine with existing filters; unknown values return 200 + empty. _(Coverage placed in `internal/integration/graph_e2e_test.go` next to the existing edge-type filter integration tests, which exercise the full HTTP→Project→serialise pipeline against a real VM container — a closer fit than the mock-PromQL `server_test.go` which only validates request parsing.)_
-- [x] 23.8 Property test in `internal/graph/property_test.go`: when `Pods` or `PodUIDs` is set, every returned pod node satisfies the filter, and no cross-cluster partner pod outside the filter is returned.
-- [x] 23.9 Add or reuse a golden scenario in `internal/api/testdata/golden/` exercising `?pod_uid=...` for one well-known UID; refresh with `go test ./internal/api/ -update -run Golden`.
-- [x] 23.10 Update `docs/api.md` filter-parameter table with the two new params and their semantics (exact match, repeatable, AND/OR rules, no cross-cluster partner preservation).
+- [x] 23.1 Extend `graph.Scope` with `Pods map[string]struct{}` (matches `PodNode.Name`). Update `graph.NewScope` signature to accept the new repeatable string slice and convert via `stringSet`. The `pod_uid` filter (matching the canonical pod UID) was considered and dropped — pod UIDs are opaque internal identifiers callers cannot obtain without first making a `/v1/graph` call.
+- [x] 23.2 In `graph.nodePassesFilters`, add a branch:
+  - For `PodNode`: must match `Pods` (by `n.Name()`) when the set is non-empty.
+  - For `K8sNode`, `PVCNode`, `ExternalNode`: when the pod filter is set, drop directly in `nodePassesFilters`. Endpoints survive only via the existing edge-endpoint re-add pass in `filterEdges` (for in-scope pods' incident edges).
+- [x] 23.3 In `graph.preserveCrossClusterEdge`, return `false` when `Pods` is set so the cluster-scoped partner-rehydration rule does NOT fire (caller named the exact pod set).
+- [x] 23.4 In `internal/api/handlers.go` `parseGraphRequest` (or equivalent), parse `q["pod"]` and pass it to `graph.NewScope`. Apply identical wiring to both `/v1/graph` and `/v1/graph/nodegraph` handlers.
+- [x] 23.5 Add `@Param pod` swag annotation (repeatable, `query`, `[]string`, `collectionFormat(multi)`) on both handlers; mention it in the `@Description`. Run `make docs` and commit the regenerated `docs/swagger.{json,yaml}` so `make check-docs` stays green.
+- [x] 23.6 Unit tests in `internal/graph/project_test.go`: pod-name filter narrows correctly; pod name shared across clusters returns both; pod filter AND cluster filter; pod filter does NOT trigger cross-cluster preservation; unknown pod name returns empty.
+- [x] 23.7 Component tests in `internal/api/server_test.go`: HTTP `?pod=` maps through to scope correctly; combines with existing filters; unknown values return 200 + empty. _(Coverage placed in `internal/integration/graph_e2e_test.go` next to the existing edge-type filter integration tests, which exercise the full HTTP→Project→serialise pipeline against a real VM container — a closer fit than the mock-PromQL `server_test.go` which only validates request parsing.)_
+- [x] 23.8 Property test in `internal/graph/property_test.go`: when `Pods` is set, every returned pod node satisfies the filter, and no cross-cluster partner pod outside the filter is returned.
+- [x] 23.9 Add or reuse a golden scenario in `internal/api/testdata/golden/` exercising `?pod=...` for one well-known pod name; refresh with `go test ./internal/api/ -update -run Golden`.
+- [x] 23.10 Update `docs/api.md` filter-parameter table with the new param and its semantics (exact match, repeatable, AND/OR rules, no cross-cluster partner preservation).

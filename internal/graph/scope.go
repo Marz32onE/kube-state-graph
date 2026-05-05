@@ -21,10 +21,8 @@ const MaxTraversalDepth = 6
 type Scope struct {
 	Clusters   map[string]struct{}   // empty ⇒ no cluster filter
 	Namespaces map[string]struct{}   // empty ⇒ no namespace filter
-	Nodes      map[string]struct{}   // empty ⇒ no node filter
 	EdgeTypes  map[EdgeType]struct{} // empty ⇒ all edge types
 	Pods       map[string]struct{}   // empty ⇒ no pod-name filter
-	PodUIDs    map[string]struct{}   // empty ⇒ no pod-UID filter
 
 	Root      string    // empty ⇒ no traversal
 	Depth     int       // 0..MaxTraversalDepth
@@ -32,7 +30,7 @@ type Scope struct {
 }
 
 // NewScope constructs a Scope from raw query parameter values, validating ranges.
-func NewScope(clusters, namespaces, nodes, edgeTypes, pods, podUIDs []string, root string, depth int, direction string) (Scope, error) {
+func NewScope(clusters, namespaces, edgeTypes, pods []string, root string, depth int, direction string) (Scope, error) {
 	if depth < 0 {
 		return Scope{}, errors.New("depth must be non-negative")
 	}
@@ -54,10 +52,8 @@ func NewScope(clusters, namespaces, nodes, edgeTypes, pods, podUIDs []string, ro
 	return Scope{
 		Clusters:   stringSet(clusters),
 		Namespaces: stringSet(namespaces),
-		Nodes:      stringSet(nodes),
 		EdgeTypes:  edgeTypeSet(edgeTypes),
 		Pods:       stringSet(pods),
-		PodUIDs:    stringSet(podUIDs),
 		Root:       root,
 		Depth:      depth,
 		Direction:  Direction(direction),
@@ -66,7 +62,7 @@ func NewScope(clusters, namespaces, nodes, edgeTypes, pods, podUIDs []string, ro
 
 // PodFilterActive reports whether the scope restricts to a named pod set.
 func (s Scope) PodFilterActive() bool {
-	return len(s.Pods) > 0 || len(s.PodUIDs) > 0
+	return len(s.Pods) > 0
 }
 
 func stringSet(values []string) map[string]struct{} {

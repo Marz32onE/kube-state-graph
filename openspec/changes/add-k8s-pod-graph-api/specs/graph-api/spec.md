@@ -152,9 +152,9 @@ The server SHALL expose `GET /v1/graph/nodegraph` that returns the same underlyi
 
 ### Requirement: Filter parameters
 
-`GET /v1/graph` and `GET /v1/graph/nodegraph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `node`, `edge_type`, `pod`, `pod_uid`. Filters SHALL be applied at response time over the cached graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
+`GET /v1/graph` and `GET /v1/graph/nodegraph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `edge_type`, `pod`. Filters SHALL be applied at response time over the cached graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
 
-The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from `kube_pod_info`) by exact string equality. Because pod names are not globally unique across clusters, a `pod` value MAY match multiple pods; all matches SHALL be returned. The `pod_uid` parameter SHALL match the canonical pod UID by exact string equality. When `pod` and/or `pod_uid` filters are set, non-pod node types (`node`, `pvc`, `external`) SHALL be excluded unless they are an endpoint of an edge whose pod side is in scope. Cross-cluster pod-calls-pod partner preservation (the rule that re-adds an out-of-scope cluster's endpoint when only `cluster` narrows scope) SHALL NOT apply when `pod` or `pod_uid` is set; the caller has named the exact pod set and partner pods outside that set SHALL NOT be re-added.
+The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from `kube_pod_info`) by exact string equality. Because pod names are not globally unique across clusters, a `pod` value MAY match multiple pods; all matches SHALL be returned. When the `pod` filter is set, non-pod node types (`node`, `pvc`, `external`) SHALL be excluded unless they are an endpoint of an edge whose pod side is in scope. Cross-cluster pod-calls-pod partner preservation (the rule that re-adds an out-of-scope cluster's endpoint when only `cluster` narrows scope) SHALL NOT apply when `pod` is set; the caller has named the exact pod set and partner pods outside that set SHALL NOT be re-added.
 
 #### Scenario: Cluster filter narrows result
 
@@ -181,11 +181,6 @@ The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from
 - **WHEN** the cached graph contains pods named `frontend` and `backend` in `cluster-alpha` and a client sends `?pod=frontend`
 - **THEN** the response contains the `frontend` pod node and any K8s-node, PVC, or external-endpoint nodes that are edge endpoints of `frontend`, but NOT the `backend` pod node
 
-#### Scenario: Pod UID filter exact match
-
-- **WHEN** a client sends `?pod_uid=11111111-1111-1111-1111-111111111111` and exactly one pod has that UID
-- **THEN** the response contains the matching pod node and its incident edges (with their resolved partner endpoints)
-
 #### Scenario: Pod name shared across clusters returns every match
 
 - **WHEN** a pod named `api` exists in both `cluster-alpha` and `cluster-beta` and a client sends `?pod=api`
@@ -198,12 +193,12 @@ The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from
 
 #### Scenario: Pod filter does NOT trigger cross-cluster partner preservation
 
-- **WHEN** a `pod-calls-pod` edge crosses from `cluster-alpha/<uid-A>` to `cluster-beta/<uid-B>` and a client sends `?pod_uid=<uid-A>`
+- **WHEN** a `pod-calls-pod` edge crosses from `cluster-alpha/<uid-A>` (pod name `frontend`) to `cluster-beta/<uid-B>` (pod name `backend`) and a client sends `?pod=frontend`
 - **THEN** the response contains only `cluster-alpha/<uid-A>` and SHALL NOT re-add `cluster-beta/<uid-B>` or the cross-cluster edge
 
-#### Scenario: Unknown pod_uid returns empty result
+#### Scenario: Unknown pod name returns empty result
 
-- **WHEN** a client sends `?pod_uid=does-not-exist`
+- **WHEN** a client sends `?pod=does-not-exist`
 - **THEN** the response is 200 with empty `elements.nodes` and `elements.edges`
 
 ### Requirement: Partial-graph traversal

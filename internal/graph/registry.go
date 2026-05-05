@@ -62,15 +62,6 @@ var EdgeTypes = []EdgeTypeDefinition{
 			{Name: "cluster", ValueType: "string"},
 		},
 	},
-	{
-		Type:            EdgeTypePodReplacedBy,
-		Description:     "Synthetic edge linking a prior pod UID to its replacement when the time window covers a pod restart. Always intra-cluster.",
-		SourceType:      []NodeType{NodeTypePod},
-		TargetType:      []NodeType{NodeTypePod},
-		Directed:        true,
-		MayCrossCluster: false,
-		Labels:          nil,
-	},
 }
 
 // EdgeTypesETag returns a stable hash of the EdgeTypes registry suitable as

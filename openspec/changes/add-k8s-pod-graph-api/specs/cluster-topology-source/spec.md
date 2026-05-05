@@ -101,12 +101,12 @@ Every emitted topology entity SHALL carry the four canonical fields consumed by 
 
 ### Requirement: Pod restart handling within window
 
-When `last_over_time(kube_pod_info[...])` returns multiple `uid` values for the same `(cluster, namespace, pod)` tuple within the requested window, the reader SHALL retain the entity with the latest evaluation timestamp as the canonical pod, retain the prior entity as a `replaced` pod, and emit a synthetic `pod-replaced-by` edge from the prior pod's ID to the latest pod's ID.
+When `last_over_time(kube_pod_info[...])` returns multiple `uid` values for the same `(cluster, namespace, pod)` tuple within the requested window (i.e. the pod was deleted and recreated mid-window), the reader SHALL retain ONLY the entity with the latest evaluation timestamp as the canonical pod and SHALL discard prior UIDs. There is no reliable identity link between the deleted pod and its replacement once kubelet stops reporting the deleted UID, so the API does not attempt to reconstruct one.
 
-#### Scenario: Pod replaced mid-window
+#### Scenario: Pod replaced mid-window collapses to latest UID
 
-- **WHEN** the window includes a pod restart producing two distinct UIDs for the same pod name
-- **THEN** the resulting topology contains two pod entities and a `pod-replaced-by` edge from the older UID's ID to the newer UID's ID
+- **WHEN** the window includes a pod restart producing two distinct UIDs for the same `(cluster, namespace, pod)` tuple
+- **THEN** the resulting topology contains exactly one pod entity, identified by the newest UID; the prior UID does not appear as a node and no synthetic edge is emitted
 
 ### Requirement: Cluster discovery query
 

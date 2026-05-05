@@ -105,7 +105,6 @@ resolve (to a known pod UID, or to an `external` node when the upstream
 | `pod-runs-on-node` | `kube_pod_info` (pod's `node` label) |
 | `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
 | `pod-calls-pod` | `traces_service_graph_request_total` |
-| `pod-replaced-by` | `kube_pod_info` (multiple UIDs for same `(cluster, namespace, pod)` within window) |
 
 ### Local rig coverage
 

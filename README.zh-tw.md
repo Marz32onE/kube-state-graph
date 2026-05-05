@@ -82,7 +82,6 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 | `pod-runs-on-node` | `kube_pod_info`（pod 的 `node` 標籤） |
 | `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
 | `pod-calls-pod` | `traces_service_graph_request_total` |
-| `pod-replaced-by` | `kube_pod_info`（同一視窗內相同 `(cluster, namespace, pod)` 出現多個 UID） |
 
 ### 本機驗證環境
 

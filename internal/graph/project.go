@@ -14,7 +14,7 @@ type View struct {
 //  1. If scope.Root is set, run a bounded BFS to determine the reachable
 //     node set; otherwise consider all nodes.
 //  2. Apply edge-type filter to edges among the reachable set.
-//  3. Apply cluster / namespace / node filters to nodes.
+//  3. Apply cluster / namespace / pod filters to nodes.
 //  4. Drop edges whose endpoints are no longer present.
 func Project(g *Graph, scope Scope) View {
 	if g == nil {
@@ -112,33 +112,6 @@ func nodePassesFilters(n GraphNode, scope Scope) bool {
 			}
 		}
 	}
-	if len(scope.Nodes) > 0 {
-		switch n.Type() {
-		case NodeTypeK8sNode:
-			if _, ok := scope.Nodes[n.Name()]; !ok {
-				return false
-			}
-		case NodeTypePod:
-			// Pods carry their cluster-scoped node ID; match by either suffix
-			// (raw node name) or full ID.
-			matched := false
-			if _, ok := scope.Nodes[labels["node"]]; ok {
-				matched = true
-			} else {
-				// Allow plain node-name match (strip cluster prefix).
-				if name := stripClusterPrefix(labels["node"]); name != "" {
-					if _, ok := scope.Nodes[name]; ok {
-						matched = true
-					}
-				}
-			}
-			if !matched {
-				return false
-			}
-		default:
-			return false
-		}
-	}
 	if scope.PodFilterActive() {
 		if n.Type() != NodeTypePod {
 			// Non-pod node types survive only as edge endpoints of in-scope pods,
@@ -158,25 +131,7 @@ func podMatches(n GraphNode, scope Scope) bool {
 			return false
 		}
 	}
-	if len(scope.PodUIDs) > 0 {
-		uid := stripClusterPrefix(n.ID())
-		if uid == "" {
-			return false
-		}
-		if _, ok := scope.PodUIDs[uid]; !ok {
-			return false
-		}
-	}
 	return true
-}
-
-func stripClusterPrefix(id string) string {
-	for i := range len(id) {
-		if id[i] == '/' {
-			return id[i+1:]
-		}
-	}
-	return ""
 }
 
 func filterEdges(g *Graph, scope Scope, nodes map[string]GraphNode) []*Edge {
@@ -194,7 +149,7 @@ func filterEdges(g *Graph, scope Scope, nodes map[string]GraphNode) []*Edge {
 			continue
 		}
 		// Cross-cluster pod-calls-pod preservation. When a client narrows by
-		// cluster (and not by pod / pod_uid), a cross-cluster service-graph
+		// cluster (and not by pod), a cross-cluster service-graph
 		// edge whose other endpoint sits in an out-of-scope cluster MUST still
 		// resolve (graph-api spec § "Cross-cluster edge representation"). When
 		// a pod-side filter IS set the caller has named the exact pod set, so
@@ -310,26 +265,6 @@ func nodePassesNonClusterFilters(n GraphNode, scope Scope) bool {
 			if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
 				return false
 			}
-		}
-	}
-	if len(scope.Nodes) > 0 {
-		switch n.Type() {
-		case NodeTypeK8sNode:
-			if _, ok := scope.Nodes[n.Name()]; !ok {
-				return false
-			}
-		case NodeTypePod:
-			if _, ok := scope.Nodes[labels["node"]]; ok {
-				return true
-			}
-			if name := stripClusterPrefix(labels["node"]); name != "" {
-				if _, ok := scope.Nodes[name]; ok {
-					return true
-				}
-			}
-			return false
-		default:
-			return false
 		}
 	}
 	return true

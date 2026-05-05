@@ -144,28 +144,6 @@ func TestProject_DepthZero(t *testing.T) {
 	assert.Equal(t, "cluster-alpha/p1", v.Nodes[0].ID())
 }
 
-// Node filter exercises both branches of nodePassesFilters: pods are matched by
-// their `node` label (cluster-scoped or plain name) while K8sNodes are matched
-// by their plain Name(). worker-0 exists in two clusters; selecting "worker-0"
-// must keep both K8sNodes and the pods running on either, but drop intra-cluster
-// nodes that don't match.
-func TestProject_NodeFilter_K8sNodeBranch(t *testing.T) {
-	g := sampleGraph()
-	scope := Scope{Nodes: map[string]struct{}{"worker-0": {}}}
-	v := Project(g, scope)
-
-	ids := map[string]bool{}
-	for _, n := range v.Nodes {
-		ids[n.ID()] = true
-	}
-	// Both worker-0 K8sNodes survive (K8sNode branch matches by Name()).
-	assert.True(t, ids["cluster-alpha/worker-0"], "alpha worker-0 K8sNode missing")
-	assert.True(t, ids["cluster-beta/worker-0"], "beta worker-0 K8sNode missing")
-	// Pods scheduled on those nodes also survive (Pod branch matches by labels.node suffix).
-	assert.True(t, ids["cluster-alpha/p1"], "pod on alpha worker-0 missing")
-	assert.True(t, ids["cluster-beta/p3"], "pod on beta worker-0 missing")
-}
-
 // Namespace filter must NOT drop K8sNode (cluster-scoped, no namespace label).
 // Otherwise pod-runs-on-node edges all vanish whenever a caller narrows by
 // namespace — discovered against the kind-local rig where namespace=ksg gave
@@ -192,18 +170,6 @@ func TestProject_NamespaceFilter_KeepsK8sNode(t *testing.T) {
 	assert.Equal(t, 2, podCount, "expected 2 pods in shop namespace")
 	assert.GreaterOrEqual(t, k8sCount, 1, "K8sNode must survive namespace filter")
 	assert.GreaterOrEqual(t, runEdges, 1, "pod-runs-on-node edges must survive when both endpoints in scope")
-}
-
-func TestProject_NodeFilter_K8sNode_NoMatch(t *testing.T) {
-	g := sampleGraph()
-	scope := Scope{Nodes: map[string]struct{}{"nonexistent-node": {}}}
-	v := Project(g, scope)
-
-	for _, n := range v.Nodes {
-		if n.Type() == NodeTypeK8sNode {
-			t.Errorf("unexpected K8sNode survived filter: %s", n.ID())
-		}
-	}
 }
 
 // multiClusterPodSampleGraph extends sampleGraph with a `payments` pod in
@@ -251,19 +217,6 @@ func TestProject_PodNameFilter_NarrowsToMatchingPods(t *testing.T) {
 	assert.False(t, ids["cluster-beta/worker-0"], "unrelated K8s node dropped")
 }
 
-func TestProject_PodUIDFilter_ExactMatch(t *testing.T) {
-	g := sampleGraph()
-	v := Project(g, Scope{PodUIDs: map[string]struct{}{"p1": {}}})
-
-	ids := map[string]bool{}
-	for _, n := range v.Nodes {
-		ids[n.ID()] = true
-	}
-	assert.True(t, ids["cluster-alpha/p1"])
-	assert.False(t, ids["cluster-alpha/p2"])
-	assert.False(t, ids["cluster-beta/p3"])
-}
-
 func TestProject_PodNameFilter_DuplicatesAcrossClusters(t *testing.T) {
 	g := multiClusterPodSampleGraph()
 	v := Project(g, Scope{Pods: map[string]struct{}{"payments": {}}})
@@ -294,9 +247,10 @@ func TestProject_PodNameFilter_AndedWithCluster(t *testing.T) {
 
 func TestProject_PodFilter_SuppressesCrossClusterPartner(t *testing.T) {
 	g := sampleGraph()
-	// Pick the cluster-alpha/p1 caller; its outgoing pod-calls-pod to
-	// cluster-beta/p3 must NOT re-add p3 because pod filter is set.
-	v := Project(g, Scope{PodUIDs: map[string]struct{}{"p1": {}}})
+	// Pick the cluster-alpha/p1 caller (pod name "checkout"); its outgoing
+	// pod-calls-pod to cluster-beta/p3 must NOT re-add p3 because pod filter
+	// is set.
+	v := Project(g, Scope{Pods: map[string]struct{}{"checkout": {}}})
 
 	ids := map[string]bool{}
 	for _, n := range v.Nodes {
@@ -310,9 +264,9 @@ func TestProject_PodFilter_SuppressesCrossClusterPartner(t *testing.T) {
 	}
 }
 
-func TestProject_PodUIDFilter_UnknownReturnsEmpty(t *testing.T) {
+func TestProject_PodNameFilter_UnknownReturnsEmpty(t *testing.T) {
 	g := sampleGraph()
-	v := Project(g, Scope{PodUIDs: map[string]struct{}{"does-not-exist": {}}})
+	v := Project(g, Scope{Pods: map[string]struct{}{"does-not-exist": {}}})
 	assert.Empty(t, v.Nodes)
 	assert.Empty(t, v.Edges)
 }

@@ -339,7 +339,7 @@ Service-graph metrics 帶 Tempo 風格 `client` / `server` 人類可讀 label。
 ## 風險 / 取捨
 
 - [Cold cache miss latency] → 文件說明首次進入某 time bucket 的查詢需付完整 multi-cluster PromQL fan-out 成本（目標：範圍內 ≤ 5k pods 聚合 ≤ 3 s）；同一 bucket 後續查詢為 cache hit。以 `kube_state_graph_build_duration_seconds` 的 `cache_status` 暴露。
-- [Pod UID 在重啟下於長 lookback 視窗內混雜] → 若 `last_over_time(kube_pod_info)` 在同一視窗內對相同 `(cluster, namespace, name)` 回傳多個 UID，保留最新 UID，並輸出 `pod-replaced-by` synthetic edge 連結舊 UID 與目前 UID。於 spec 中文件化。
+- [Pod UID 在重啟下於長 lookback 視窗內混雜] → 若 `last_over_time(kube_pod_info)` 在同一視窗內對相同 `(cluster, namespace, name)` 回傳多個 UID，**只保留**最新 UID 並丟棄舊 UID。kubelet 不再回報已刪除 UID 後，舊 pod 與新 pod 之間沒有可靠的 identity 鏈接（KSM series 直接消失，controller 為新 pod 配發全新 UUID 而無 back-reference），因此原本要發 `pod-replaced-by` synthetic edge 的構想被否決——它會暗示資料來源不支援的 identity mapping。於 spec 中文件化。
 - [Service-graph metrics 缺失或稀疏] → 僅 topology 的 graph 仍有效；缺 series 則零條 `pod-calls-pod` edge，不視為 build 失敗。
 - [多 cluster 時 PromQL fan-out 大] → `--clusters-allowlist` 限制 upstream 成本；超過 `--max-pods` 回 `503`、`reason: cluster_too_large`。Cache 吸收跨呼叫者成本。
 - [多樣查詢型態下 cache 記憶體成長] → 由 `MaxCost`（預設 256 MiB）限制；eviction 經 `kube_state_graph_cache_evictions_total` 觀察。
@@ -358,7 +358,7 @@ Greenfield repository——無遷移。Rollback 為對 merge commit 做 `git rev
 
 ## 待決問題
 
-- D4 所列三種以外最終 edge type 清單（例如 `pod-replaced-by`、`pod-shares-node`、`pod-shares-namespace`）——在撰寫 spec 時定案；v1 若納入須同時出現在 `Build()` 與靜態 `/v1/edge-types` registry。
+- D4 所列三種以外最終 edge type 清單（例如 `pod-shares-node`、`pod-shares-namespace`）——在撰寫 spec 時定案；v1 若納入須同時出現在 `Build()` 與靜態 `/v1/edge-types` registry。v1 出貨僅含三種：`pod-runs-on-node`、`pod-mounts-pvc`、`pod-calls-pod`。
 - `--max-window` 預設值（目前提案 `24h`）以及各 time class 是否應有不同上限。
 - DST 或 leap second 的 bucket 邊界政策——傾向「一律 UTC、不做 DST 調整」，於 spec 確認。
 - 可選 L2 序列化回應 cache（D6）要進 v1 或延到 v1.1——延到 profiling 顯示 serialise+ETag 成熱點再說。

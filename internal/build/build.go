@@ -126,8 +126,7 @@ func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*g
 	}
 
 	edges := make([]*graph.Edge, 0,
-		len(topology.RestartEdges)+len(sg.Edges)+len(topology.Pods)+len(topology.PodPVCs))
-	edges = append(edges, topology.RestartEdges...)
+		len(sg.Edges)+len(topology.Pods)+len(topology.PodPVCs))
 	edges = append(edges, TopologyEdges(topology)...)
 	edges = append(edges, sg.Edges...)
 	return nodes, edges

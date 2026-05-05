@@ -8,7 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseTopology_PodRestartHandling(t *testing.T) {
+// TestParseTopology_PodRestartCollapsesToLatestUID — when the same
+// (cluster, namespace, pod-name) churns UIDs within the window, only the
+// newest UID survives. There is no reliable way to map old → new pod
+// identity once kubelet has deleted the pod, so the API does not attempt it.
+func TestParseTopology_PodRestartCollapsesToLatestUID(t *testing.T) {
 	pod := func(uid string, ts model.Time) model.Sample {
 		return model.Sample{
 			Metric: model.Metric{
@@ -24,9 +28,8 @@ func TestParseTopology_PodRestartHandling(t *testing.T) {
 	}
 	vec := sampleVec(pod("uid-1", 100), pod("uid-2", 200))
 	tp := parseTopology(vec, nil, nil, nil, nil)
-	require.Len(t, tp.Pods, 2, "expected 2 pods")
-	require.Len(t, tp.RestartEdges, 1, "expected 1 pod-replaced-by edge")
-	assert.Equal(t, "cluster-alpha/uid-2", tp.RestartEdges[0].Target, "expected newest UID as target")
+	require.Len(t, tp.Pods, 1, "older UID must be discarded; only newest survives")
+	assert.Equal(t, "cluster-alpha/uid-2", tp.Pods[0].ID(), "newest UID must be canonical pod")
 }
 
 func TestParseTopology_MissingClusterBucketed(t *testing.T) {

@@ -157,22 +157,22 @@ func TestProperty_CrossClusterEdgesHaveDistinctClusterEndpoints(t *testing.T) {
 func TestProperty_PodFilterResultsAllMatchAndNoOutOfScopePartner(t *testing.T) {
 	for seed := int64(1); seed <= 25; seed++ {
 		g := genGraph(seed, 3, 5, 12)
-		// Pick the first pod's UID as the in-scope set. Random but deterministic.
-		var uid string
+		// Pick the first pod's name as the in-scope set. Random but deterministic.
+		var podName string
 		for _, n := range g.NodesByID {
 			if n.Type() == NodeTypePod {
-				uid = stripClusterPrefix(n.ID())
+				podName = n.Name()
 				break
 			}
 		}
-		require.NotEmpty(t, uid)
-		v := Project(g, Scope{PodUIDs: map[string]struct{}{uid: {}}})
+		require.NotEmpty(t, podName)
+		v := Project(g, Scope{Pods: map[string]struct{}{podName: {}}})
 
 		inScope := map[string]bool{}
 		for _, n := range v.Nodes {
 			if n.Type() == NodeTypePod {
-				assert.Equalf(t, uid, stripClusterPrefix(n.ID()),
-					"seed=%d: pod %s in result but UID does not match filter", seed, n.ID())
+				assert.Equalf(t, podName, n.Name(),
+					"seed=%d: pod %s in result but name does not match filter", seed, n.ID())
 				inScope[n.ID()] = true
 			}
 		}

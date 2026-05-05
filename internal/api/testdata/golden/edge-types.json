@@ -61,19 +61,6 @@
           "value_type": "string"
         }
       ]
-    },
-    {
-      "type": "pod-replaced-by",
-      "description": "Synthetic edge linking a prior pod UID to its replacement when the time window covers a pod restart. Always intra-cluster.",
-      "source_type": [
-        "pod"
-      ],
-      "target_type": [
-        "pod"
-      ],
-      "directed": true,
-      "may_cross_cluster": false,
-      "labels": null
     }
   ]
 }
