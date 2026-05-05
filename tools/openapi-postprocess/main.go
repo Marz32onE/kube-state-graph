@@ -36,7 +36,8 @@ func main() {
 }
 
 func processJSON(path string) error {
-	raw, err := os.ReadFile(path)
+	// gosec G304: path is a build-tool CLI argument, not user input.
+	raw, err := os.ReadFile(path) //nolint:gosec
 	if err != nil {
 		return err
 	}
@@ -50,11 +51,13 @@ func processJSON(path string) error {
 		return err
 	}
 	out = append(out, '\n')
-	return os.WriteFile(path, out, 0o644)
+	// gosec G306: openapi spec is a public, world-readable artefact.
+	return os.WriteFile(path, out, 0o644) //nolint:gosec
 }
 
 func processYAML(path string) error {
-	raw, err := os.ReadFile(path)
+	// gosec G304: path is a build-tool CLI argument, not user input.
+	raw, err := os.ReadFile(path) //nolint:gosec
 	if err != nil {
 		return err
 	}
@@ -71,7 +74,8 @@ func processYAML(path string) error {
 		}
 		buf = out
 	}
-	return os.WriteFile(path, buf, 0o644)
+	// gosec G306: openapi spec is a public, world-readable artefact.
+	return os.WriteFile(path, buf, 0o644) //nolint:gosec
 }
 
 // multiValueExamples seeds schema.example for repeatable filter params with
