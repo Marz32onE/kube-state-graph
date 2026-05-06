@@ -64,10 +64,10 @@ Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`)
 HTTP /v1/graph?start=&end=&...
    │
    ▼
-parseGraphRequest        ── timewindow.Align(start, end, now) → Window{StartActual, EndActual, BucketSeconds}
+parseGraphRequest        ── validates start/end (RFC 3339 or Unix seconds) and enforces --max-window / --max-skew
    │
    ▼
-Orchestrator.Resolve(ctx, window, end)
+Orchestrator.Resolve(ctx, end - start, end)
    ├─ semaphore.TryAcquire   ── overflow → 503 capacity
    ├─ context.WithTimeout    ── exceeded → 503 timeout
    └─ Builder.Build(ctx, window, end)
@@ -91,7 +91,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 (D1–D19) before changing any of them.
 
 - **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `pod`, traversal) are applied at response time as a projection over the freshly built `*Graph`. ETag (sha256(body)) is the only caching layer — revisit when the future cache mechanism (D6) lands.
-- **Time-window alignment is a pure function**, not a cache key. `start` is floored and `end` is **ceiled** to a fixed 60 s grid (so a request for `end=12:19` covers 12:17 in its 12:00→12:20 window). When `ceil(end, 60s) > now`, `end_actual` is clamped to `floor(now, 60s)`; callers receive `start_actual`/`end_actual` so they know what window they got. Helper: `internal/timewindow.Align`.
+- **No time-window alignment.** `start` and `end` are passed through to upstream PromQL verbatim (after `--max-window` / `--max-skew` validation). The previous 60 s `floor`/`ceil` grid was removed alongside the in-process cache it was bucketing for. Response body is `{apiVersion, clusters, elements}` — no time fields are echoed.
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,
   `error_rate`) and boolean flags (`cross_cluster`, `ghost`) are **deferred to a
@@ -135,7 +135,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   `/docs/assets/*`. Validation is constant-time and iterates the whole set —
   do NOT add early-return optimisations to `auth.KeySet.Validate`. Logs must
   never include the presented key value.
-- **ETag determinism is load-bearing.** sha256(body) is stable iff the body is byte-identical for the same `(window, filters, upstream-data)`. Serialisers MUST sort node/edge slices (`graph.SortNodes`/`SortEdges`), `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build fields (`built_at` was removed for this reason). Don't add timestamps, random IDs, or unsorted map iteration to the response without re-checking ETag stability.
+- **ETag determinism is load-bearing.** sha256(body) is stable iff the body is byte-identical for the same `(window, filters, upstream-data)`. Serialisers MUST sort node/edge slices (`graph.SortNodes`/`SortEdges`), `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Don't add timestamps, random IDs, or unsorted map iteration to the response without re-checking ETag stability.
 
 ### Sealed graph types
 
@@ -148,7 +148,7 @@ methods — never through type switches in the serialiser.
 
 | Layer | Where | What it covers |
 |---|---|---|
-| Unit | `internal/{graph,build,promql,config,timewindow}/*_test.go` | Pure functions: parsers, joins, projection, alignment, edge IDs. |
+| Unit | `internal/{graph,build,promql,config}/*_test.go` | Pure functions: parsers, joins, projection, edge IDs. |
 | Component | `internal/api/server_test.go` | Gin handlers against a `httptest.Server` mocking the Prometheus HTTP API. |
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | Wire-format snapshots; run with `-update` to refresh. |
 | Property | `internal/graph/property_test.go` | Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |

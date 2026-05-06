@@ -2,7 +2,7 @@
 
 - [x] 1.1 Initialise Go module (`go mod init github.com/<org>/kube-state-graph`, Go 1.22+).
 - [x] 1.2 Add direct dependencies: `github.com/gin-gonic/gin`, `github.com/prometheus/client_golang`, `github.com/google/uuid`, `golang.org/x/sync` (errgroup + semaphore).
-- [x] 1.3 Lay out package skeleton: `cmd/kube-state-graph/`, `internal/api/`, `internal/build/`, `internal/timewindow/`, `internal/promql/`, `internal/graph/`, `internal/config/`, `internal/observability/`.
+- [x] 1.3 Lay out package skeleton: `cmd/kube-state-graph/`, `internal/api/`, `internal/build/`, `internal/promql/`, `internal/graph/`, `internal/config/`, `internal/observability/`.
 - [x] 1.4 Add baseline `Makefile` targets: `build`, `test`, `vet`, `lint`, `cover`, `kind-up`, `kind-down`, `smoke`.
 - [x] 1.5 Wire up `golangci-lint` config and a pre-commit/CI step that runs `go vet`, `golangci-lint`, and `go test ./...`.
 - [x] 1.6 Add `.editorconfig`, `LICENSE`, top-level `README.md` placeholder.
@@ -57,7 +57,7 @@
 ## 7. Build pipeline + orchestrator
 
 - [x] 7.1 Implement `internal/build.Build(ctx, q, window, end, allowlist, externalPattern) (*graph.Graph, error)`: runs topology + service-graph readers in parallel, joins, returns the global multi-cluster graph plus pre-computed adjacency.
-- [x] 7.2 Implement `internal/timewindow.Align(start, end, now) Window`: floors `start` and ceils `end` to the 60 s grid; clamps `end` to `floor(now, 60s)`; exposes `(StartActual, EndActual, BucketSeconds)`. No TTL, no time-class — alignment is a pure function.
+- [x] 7.2 Validate caller-supplied `start` / `end` against `--max-window` and `--max-skew`; pass through to upstream PromQL verbatim. No server-side bucketing or alignment.
 - [x] 7.3 Implement build-concurrency cap via `semaphore.Weighted`; on `TryAcquire` failure return a typed error mapped to `503 capacity`.
 - [x] 7.4 Implement per-build timeout via `context.WithTimeout`; map timeout to `503 timeout`.
 - [x] 7.5 Implement `--max-pods` enforcement: on probe overflow return typed error mapped to `503 cluster_too_large`.
@@ -69,7 +69,7 @@
 
 - [x] 8.1 Stand up Gin engine with `/v1/` route group, request-ID + slog middleware.
 - [x] 8.2 Implement `GET /v1/graph` handler: parse + validate `start`, `end`, filter params, traversal params; align window + build + project + serialise + ETag.
-- [x] 8.3 Implement Cytoscape.js serialiser: `{ apiVersion, start, end, start_actual, end_actual, bucket_seconds, clusters, elements: { nodes, edges } }` with canonical node/edge `data` shape. `built_at` is **not** in the response — the body must be deterministic for ETag stability.
+- [x] 8.3 Implement Cytoscape.js serialiser: `{ apiVersion, clusters, elements: { nodes, edges } }` with canonical node/edge `data` shape. The body MUST NOT contain time-varying or echo-of-input fields — body shape is fixed so that identical inputs against the same upstream state produce a byte-identical body and `ETag`.
 - [x] 8.4 Implement `GET /v1/graph/nodegraph` handler: project → Grafana Node Graph JSON (`nodes_fields`/`nodes`/`edges_fields`/`edges`); map `name`→`title`, cluster·namespace→`subTitle`, `type`→`mainStat`, edge `type`→edge `mainStat`, `secondaryStat` omitted.
 - [x] 8.5 Implement `GET /v1/clusters` handler: live discovery query against VictoriaMetrics, intersected with `--clusters-allowlist`. No in-process discovery cache; ETag-based revalidation only.
 - [x] 8.6 Implement `GET /v1/edge-types` handler: serialise the in-code registry; long `Cache-Control` and registry-hash `ETag`; honour `If-None-Match`.
@@ -95,7 +95,7 @@
 - [x] 10.3 Unit-test service-graph parser: zero-rate drop, ghost-pod fallback, cross-cluster edge labels, allowlist filtering on both endpoints.
 - [x] 10.4 Unit-test external-name-pattern substitution: empty pattern (disabled), match on client only, match on server only, match on both, no match.
 - [x] 10.5 Unit-test edge-ID generator: stability across rebuilds, RFC 4122 / UUIDv5 format, distinct IDs for distinct `(type, source, target)`.
-- [x] 10.6 Unit-test `internal/timewindow.Align`: floor-of-start, ceil-of-end, clamp-to-now, already-aligned no-op.
+- [x] 10.6 Unit-test request validation: missing/invalid `start`/`end`, `end <= start`, `window_too_large`, `end_in_future`.
 
 ## 11. Component tests (httptest mock upstream)
 
@@ -150,7 +150,7 @@
 ## 17. Pre-archive verification
 
 - [x] 17.1 Run `openspec verify "add-k8s-pod-graph-api"` and confirm every requirement maps to an implementation file or test.
-- [ ] 17.2 Confirm `go test ./... -cover` reports ≥ 80 % coverage on `internal/build`, `internal/graph`, `internal/timewindow`, `internal/api`. _(Current: deferred — needs additional handler / orchestrator tests.)_
+- [ ] 17.2 Confirm `go test ./... -cover` reports ≥ 80 % coverage on `internal/build`, `internal/graph`, `internal/api`. _(Current: deferred — needs additional handler / orchestrator tests.)_
 - [ ] 17.3 Run the manual Grafana rig locally; record the resulting Grafana panel screenshot in `docs/`. _(Requires Docker + Kind on the host; not exercised in this session.)_
 - [ ] 17.4 Tag a `v0.1.0` release once all preceding tasks are checked.
 

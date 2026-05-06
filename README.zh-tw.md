@@ -23,7 +23,7 @@ cluster N: kube-state-metrics ──┤
 - Join 成多叢集圖，節點鍵為帶叢集範圍的 pod UID 與 node 名稱。
 - 回傳 Cytoscape.js JSON（`/v1/graph`）或 Grafana Node Graph 資料源形狀（`/v1/graph/nodegraph`）。
 - 提供叢集探索（`/v1/clusters`）與靜態邊類型目錄（`/v1/edge-types`）。
-- 以 Ristretto + singleflight + ETag 做時間桶快取，讓同一儀表板時間範圍的併發請求在上游只攤平成一次建圖。Bucket 對齊統一為 60 秒，TTL 仍依時間 class 分級（live=30 秒、recent=5 分、historical=1 小時、frozen=24 小時）。對齊規則為「往外擴」（`start = floor(start, 60s)`、`end = ceil(end, 60s)`），確保使用者指定的任何瞬間都被涵蓋；實際使用的視窗請讀回應裡的 `start_actual` / `end_actual`。
+- 每次請求都重新建圖——v1 **不附帶 in-process result cache，也不附帶 singleflight**。回應仍帶 HTTP `ETag`（body 的 sha256），呼叫端可透過 `If-None-Match` 取得 `304 Not Modified` 而免去 body 傳輸。後續分散式部署的水平擴展 cache 機制留待之後另案處理。呼叫端送出的 `start` / `end` 在通過 `--max-window` / `--max-skew` 驗證後直接 pass through 給上游 PromQL，**不做** server-side bucketing 或 alignment。回應 body 只包含 `apiVersion`、`clusters`、`elements`。
 
 ## 快速開始
 
@@ -45,7 +45,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 ## 上游指標
 
-每次 cache miss 建圖時，會對集中式 VictoriaMetrics 發出 PromQL。各 series 預期帶有由 `vmagent`／Prometheus `external_labels` 寫入的 `cluster` 標籤。
+每次請求都會對集中式 VictoriaMetrics 發出 PromQL（v1 無結果快取）。各 series 預期帶有由 `vmagent`／Prometheus `external_labels` 寫入的 `cluster` 標籤。
 
 ### 拓樸指標 — 由 [`kube-state-metrics`](https://github.com/kubernetes/kube-state-metrics) 產出
 
@@ -101,7 +101,9 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 | `--cluster-discovery-lookback` | `KSG_CLUSTER_DISCOVERY_LOOKBACK` | `1h` | 叢集探索回溯視窗。 |
 | `--clusters-allowlist` | `KSG_CLUSTERS_ALLOWLIST` | （空） | 逗號分隔 allowlist。 |
 | `--external-name-pattern` | `KSG_EXTERNAL_NAME_PATTERN` | （空） | 子字串；`client`／`server` 符合時該端成 `external` 節點。 |
-| `--cache-max-cost-bytes` | `KSG_CACHE_MAX_COST_BYTES` | `268435456`（256 MiB） | Ristretto 成本預算。 |
+| `--api-keys-file` | `KSG_API_KEYS_FILE` | （空） | 接受的 API key 檔案路徑（每行一個，`#` 為註解）。為 K8s `Secret` 掛載而設計，會週期性重新讀取。 |
+| `--api-keys` | `KSG_API_KEYS` | （空） | 逗號分隔字面 key；僅 dev 用途，設了 `--api-keys-file` 即忽略。 |
+| `--api-keys-reload-interval` | `KSG_API_KEYS_RELOAD_INTERVAL` | `30s` | `--api-keys-file` 重新讀取頻率；`0` 關閉熱重載。 |
 | `--enable-debug` | `KSG_ENABLE_DEBUG` | `false` | 啟用 `/debug/*`（目前 `/debug/last-queries` 為 501 未實作回應）。 |
 | `--log-level` | `KSG_LOG_LEVEL` | `info` | `debug \| info \| warn \| error`。 |
 

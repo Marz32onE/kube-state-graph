@@ -1,5 +1,5 @@
 .PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down local-up local-down local-smoke smoke clean \
-        docker-build docker-push docker-buildx docker-load-kind docker-run
+        docker-build docker-push docker-buildx docker-load-kind docker-run docker-docs docker-docs-stop
 
 BIN_DIR := bin
 BIN     := $(BIN_DIR)/kube-state-graph
@@ -115,3 +115,34 @@ PROM_URL ?= http://host.docker.internal:8428
 docker-run: docker-build
 	docker run --rm -p 8080:8080 $(LOCAL_TAG) \
 		--prom-url=$(PROM_URL) --listen-addr=:8080
+
+## Docker-only docs preview. Runs the API server in Docker with a placeholder
+## upstream so the static OpenAPI / Scalar UI routes are reachable. /v1/* and
+## /readyz will return upstream errors (no VictoriaMetrics is started); only the
+## docs surfaces are intended for verification here.
+##
+##   make docker-docs            # build + run, foreground (Ctrl-C to stop)
+##   make docker-docs DETACH=1   # run detached; stop with `make docker-docs-stop`
+##
+## Then visit:
+##   http://localhost:8080/docs           — Scalar UI
+##   http://localhost:8080/openapi.json   — OpenAPI JSON
+##   http://localhost:8080/openapi.yaml   — OpenAPI YAML
+DOCS_PORT ?= 8080
+DOCS_NAME ?= kube-state-graph-docs
+DETACH    ?=
+docker-docs: docker-build
+	@echo "Starting $(DOCS_NAME) on http://localhost:$(DOCS_PORT)/docs"
+	@echo "  Scalar UI : http://localhost:$(DOCS_PORT)/docs"
+	@echo "  OpenAPI   : http://localhost:$(DOCS_PORT)/openapi.json"
+	@echo "              http://localhost:$(DOCS_PORT)/openapi.yaml"
+	docker run --rm $(if $(DETACH),-d,) --name $(DOCS_NAME) \
+		-p $(DOCS_PORT):8080 \
+		$(LOCAL_TAG) \
+		--prom-url=http://127.0.0.1:8428 \
+		--listen-addr=:8080 \
+		--enable-debug \
+		--log-level=info
+
+docker-docs-stop:
+	-docker rm -f $(DOCS_NAME) 2>/dev/null || true

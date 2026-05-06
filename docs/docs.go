@@ -116,9 +116,6 @@ const docTemplate = `{
                     "apiVersion": {
                         "type": "string"
                     },
-                    "bucket_seconds": {
-                        "type": "integer"
-                    },
                     "clusters": {
                         "items": {
                             "type": "string"
@@ -128,18 +125,6 @@ const docTemplate = `{
                     },
                     "elements": {
                         "$ref": "#/components/schemas/internal_api.cytoscapeElems"
-                    },
-                    "end": {
-                        "type": "string"
-                    },
-                    "end_actual": {
-                        "type": "string"
-                    },
-                    "start": {
-                        "type": "string"
-                    },
-                    "start_actual": {
-                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -635,10 +620,10 @@ const docTemplate = `{
         },
         "/v1/graph": {
             "get": {
-                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. Window is aligned onto a 60 s grid (` + "`" + `start` + "`" + ` floored, ` + "`" + `end` + "`" + ` ceiled). Each request triggers a fresh upstream PromQL fan-out — there is no in-process result cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `pod` + "`" + `.\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Caching**: response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + ` and receive ` + "`" + `304 Not Modified` + "`" + ` when the body would be unchanged. No ` + "`" + `Cache-Control` + "`" + ` is emitted.\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"start\": \"2026-05-05T11:00:00Z\",\n\"end\":   \"2026-05-05T12:00:00Z\",\n\"start_actual\": \"2026-05-05T11:00:00Z\",\n\"end_actual\":   \"2026-05-05T12:00:00Z\",\n\"bucket_seconds\": 60,\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. The pair is passed through to upstream PromQL as-is (within ` + "`" + `--max-skew` + "`" + ` of ` + "`" + `now` + "`" + `); each request triggers a fresh fan-out — there is no in-process result cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `pod` + "`" + `.\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Caching**: response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + ` and receive ` + "`" + `304 Not Modified` + "`" + ` when the body would be unchanged. No ` + "`" + `Cache-Control` + "`" + ` is emitted.\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
-                        "description": "Window start. RFC 3339 (` + "`" + `2026-05-05T11:00:00Z` + "`" + `) or Unix seconds (` + "`" + `1746442800` + "`" + `). Floored to the 60 s grid.",
+                        "description": "Window start. RFC 3339 (` + "`" + `2026-05-05T11:00:00Z` + "`" + `) or Unix seconds (` + "`" + `1746442800` + "`" + `).",
                         "example": "2026-05-05T11:00:00Z",
                         "in": "query",
                         "name": "start",
@@ -648,7 +633,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to ` + "`" + `floor(now, 60s)` + "`" + ` if it would exceed now. Must be \u003e start and within --max-window.",
+                        "description": "Window end. RFC 3339 or Unix seconds. Must be \u003e start, within --max-window, and within --max-skew of now.",
                         "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",
@@ -814,10 +799,10 @@ const docTemplate = `{
         },
         "/v1/graph/nodegraph": {
             "get": {
-                "description": "Same underlying graph as ` + "`" + `/v1/graph` + "`" + ` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: ` + "`" + `nodes_fields[]` + "`" + `, ` + "`" + `nodes[]` + "`" + `, ` + "`" + `edges_fields[]` + "`" + `, ` + "`" + `edges[]` + "`" + `.\n\nFiltering, traversal, alignment, and ETag semantics are identical to ` + "`" + `/v1/graph` + "`" + ` — see that endpoint for full details.\n\nExample: ` + "`" + `GET /v1/graph/nodegraph?start=1746442800\u0026end=1746446400\u0026cluster=prod-eu\u0026edge_type=pod-calls-pod\u0026root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab\u0026depth=3\u0026direction=out` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"nodes_fields\": [\n{ \"name\": \"id\",    \"type\": \"string\" },\n{ \"name\": \"title\", \"type\": \"string\" },\n{ \"name\": \"subtitle\", \"type\": \"string\" }\n],\n\"nodes\": [\n{ \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"title\": \"checkout-7d9f6c8b8-abcde\", \"subtitle\": \"pod\" }\n],\n\"edges_fields\": [\n{ \"name\": \"id\",     \"type\": \"string\" },\n{ \"name\": \"source\", \"type\": \"string\" },\n{ \"name\": \"target\", \"type\": \"string\" }\n],\n\"edges\": [\n{ \"id\": \"...uuidv5...\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Same underlying graph as ` + "`" + `/v1/graph` + "`" + ` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: ` + "`" + `nodes_fields[]` + "`" + `, ` + "`" + `nodes[]` + "`" + `, ` + "`" + `edges_fields[]` + "`" + `, ` + "`" + `edges[]` + "`" + `.\n\nFiltering, traversal, and ETag semantics are identical to ` + "`" + `/v1/graph` + "`" + ` — see that endpoint for full details.\n\nExample: ` + "`" + `GET /v1/graph/nodegraph?start=1746442800\u0026end=1746446400\u0026cluster=prod-eu\u0026edge_type=pod-calls-pod\u0026root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab\u0026depth=3\u0026direction=out` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"nodes_fields\": [\n{ \"name\": \"id\",    \"type\": \"string\" },\n{ \"name\": \"title\", \"type\": \"string\" },\n{ \"name\": \"subtitle\", \"type\": \"string\" }\n],\n\"nodes\": [\n{ \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"title\": \"checkout-7d9f6c8b8-abcde\", \"subtitle\": \"pod\" }\n],\n\"edges_fields\": [\n{ \"name\": \"id\",     \"type\": \"string\" },\n{ \"name\": \"source\", \"type\": \"string\" },\n{ \"name\": \"target\", \"type\": \"string\" }\n],\n\"edges\": [\n{ \"id\": \"...uuidv5...\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
-                        "description": "Window start. RFC 3339 or Unix seconds. Floored to the 60 s grid.",
+                        "description": "Window start. RFC 3339 or Unix seconds.",
                         "example": "2026-05-05T11:00:00Z",
                         "in": "query",
                         "name": "start",
@@ -827,7 +812,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to now.",
+                        "description": "Window end. RFC 3339 or Unix seconds. Must be \u003e start, within --max-window, and within --max-skew of now.",
                         "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",

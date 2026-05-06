@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marz32one/kube-state-graph/internal/graph"
-	"github.com/marz32one/kube-state-graph/internal/timewindow"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -30,20 +29,11 @@ func TestGolden_GraphResponses(t *testing.T) {
 
 	for name, view := range scenarios {
 		t.Run(name+"-cytoscape", func(t *testing.T) {
-			req := graphRequest{
-				start: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
-				end:   time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),
-				window: timewindow.Window{
-					BucketSeconds: 60,
-					StartActual:   time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
-					EndActual:     time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),
-				},
-			}
 			g := &graph.Graph{BuiltAt: time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC), NodesByID: map[string]graph.GraphNode{}}
 			for _, n := range view.Nodes {
 				g.NodesByID[n.ID()] = n
 			}
-			body := serialiseCytoscape(req, g, view)
+			body := serialiseCytoscape(g, view)
 			compareGolden(t, name+"-cytoscape.json", body)
 		})
 		t.Run(name+"-nodegraph", func(t *testing.T) {

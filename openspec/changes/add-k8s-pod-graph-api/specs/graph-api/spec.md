@@ -21,7 +21,7 @@ The server SHALL expose `GET /v1/graph` that returns a multi-cluster pod / node 
 #### Scenario: Successful graph request with absolute timestamps
 
 - **WHEN** a client sends `GET /v1/graph?start=2026-05-01T12:00:00Z&end=2026-05-01T12:05:00Z`
-- **THEN** the server returns 200 with a Cytoscape.js JSON body containing `elements.nodes`, `elements.edges`, `start`, `end`, `start_actual`, `end_actual`, `bucket_seconds`, `built_at`, and `clusters` fields
+- **THEN** the server returns 200 with a Cytoscape.js JSON body containing exactly `apiVersion`, `clusters`, and `elements` (with `elements.nodes` and `elements.edges`)
 
 #### Scenario: Missing start parameter
 
@@ -48,23 +48,18 @@ The server SHALL expose `GET /v1/graph` that returns a multi-cluster pod / node 
 - **WHEN** a client supplies `end > now + --max-skew`
 - **THEN** the server returns 400 Bad Request with `reason: "end_in_future"`
 
-### Requirement: Time-window alignment in response
+### Requirement: Time-window passthrough
 
-The server SHALL align `start` and `end` to a uniform 60-second grid and SHALL surface the aligned values as `start_actual` and `end_actual` in the response body alongside the original caller-supplied `start` and `end`. Alignment SHALL widen the window outward — `start_actual = floor(start, 60s)` and `end_actual = ceil(end, 60s)` — so any user-requested instant inside `[start, end]` is also inside `[start_actual, end_actual]`. When the ceiled `end_actual` would land in the future relative to `now`, the server SHALL clamp it to `floor(now, 60s)`. Alignment is a pure function of `(start, end, now)` and is not tied to any TTL or cache class.
+The server SHALL pass caller-supplied `start` and `end` through to upstream PromQL verbatim, after enforcing `end > start`, `end - start <= --max-window`, and `end <= now + --max-skew`. There is no server-side bucketing, alignment, or grid; the response body SHALL NOT echo `start`, `end`, or any derived timestamp.
 
-#### Scenario: Sub-minute end is ceiled, not truncated
+#### Scenario: Caller timestamps drive PromQL
 
 - **WHEN** a client sends `GET /v1/graph?start=2026-05-02T12:04:17Z&end=2026-05-02T12:19:30Z`
-- **THEN** the response body has `start_actual: "2026-05-02T12:04:00Z"`, `end_actual: "2026-05-02T12:20:00Z"`, and `bucket_seconds: 60`, so the user's instants at 12:04:17 and 12:17:00 are both inside the resulting window
-
-#### Scenario: End is clamped to now
-
-- **WHEN** a client sends `GET /v1/graph?start=...&end=<now-15s>`
-- **THEN** `end_actual` SHALL NOT exceed `floor(now, 60s)`, and `bucket_seconds: 60`
+- **THEN** the upstream PromQL is evaluated with `<window> = end - start` and `<end> = 2026-05-02T12:19:30Z`, and the response body contains only `apiVersion`, `clusters`, and `elements`
 
 ### Requirement: Cytoscape.js response shape
 
-`GET /v1/graph` SHALL return a JSON document in Cytoscape.js shape: `{ apiVersion, start, end, start_actual, end_actual, bucket_seconds, clusters, elements: { nodes, edges } }`. The body SHALL NOT contain time-varying fields beyond the caller-supplied `start` / `end` and the alignment-derived `start_actual` / `end_actual`, so byte-identical inputs produce byte-identical bodies and a stable `ETag`.
+`GET /v1/graph` SHALL return a JSON document in Cytoscape.js shape: `{ apiVersion, clusters, elements: { nodes, edges } }`. The body SHALL NOT contain time-varying or echo-of-input fields, so identical inputs against the same upstream state produce byte-identical bodies and identical `ETag`s.
 
 Each **node** SHALL be `{ data: { id, name, type, labels } }`:
 - `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`). For external nodes, `id` SHALL be `external/<label-value>` (no cluster prefix).

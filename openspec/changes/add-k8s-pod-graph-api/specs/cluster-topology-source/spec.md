@@ -36,16 +36,16 @@ The topology reader SHALL consume at minimum the following `kube-state-metrics` 
 
 ### Requirement: Time-window evaluation
 
-Each topology query SHALL be evaluated at the bucketed `end` timestamp using `last_over_time(<series>[<window>]) @ <end>` so the result reflects the most recent value of each series within the requested window. The reader SHALL NOT fall back to instant evaluation at `now`.
+Each topology query SHALL be evaluated at the caller-supplied `end` timestamp using `last_over_time(<series>[<window>]) @ <end>` so the result reflects the most recent value of each series within the requested window. The reader SHALL NOT fall back to instant evaluation at `now`.
 
 #### Scenario: last_over_time used for kube_pod_info
 
 - **WHEN** the reader runs a query for `kube_pod_info`
-- **THEN** the issued PromQL string contains `last_over_time(kube_pod_info[<window>]) @ <end>` where `<window>` equals `end_actual - start_actual` and `<end>` equals the bucketed `end_actual`
+- **THEN** the issued PromQL string contains `last_over_time(kube_pod_info[<window>]) @ <end>` where `<window>` equals `end - start` and `<end>` equals the caller-supplied `end`
 
 #### Scenario: Windowed result mid-restart
 
-- **WHEN** a pod was running at `start_actual` and replaced before `end_actual`
+- **WHEN** a pod was running at `start` and replaced before `end`
 - **THEN** the reader emits both pod-info entries for the window (the prior and the current UID); see "Pod restart handling" requirement
 
 ### Requirement: Cluster-scoped IDs

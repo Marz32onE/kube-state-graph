@@ -7,14 +7,9 @@ import (
 // ----- Cytoscape.js shape ---------------------------------------------------
 
 type cytoscapeBody struct {
-	APIVersion    string         `json:"apiVersion"`
-	Start         string         `json:"start"`
-	End           string         `json:"end"`
-	StartActual   string         `json:"start_actual"`
-	EndActual     string         `json:"end_actual"`
-	BucketSeconds int            `json:"bucket_seconds"`
-	Clusters      []string       `json:"clusters"`
-	Elements      cytoscapeElems `json:"elements"`
+	APIVersion string         `json:"apiVersion"`
+	Clusters   []string       `json:"clusters"`
+	Elements   cytoscapeElems `json:"elements"`
 }
 
 type cytoscapeElems struct {
@@ -45,17 +40,10 @@ type cytoscapeEdgeData struct {
 	Labels map[string]string `json:"labels"`
 }
 
-const rfc3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
-
-func serialiseCytoscape(req graphRequest, g *graph.Graph, view graph.View) cytoscapeBody {
+func serialiseCytoscape(g *graph.Graph, view graph.View) cytoscapeBody {
 	body := cytoscapeBody{
-		APIVersion:    APIVersion,
-		Start:         req.start.UTC().Format(rfc3339Nano),
-		End:           req.end.UTC().Format(rfc3339Nano),
-		StartActual:   req.window.StartActual.UTC().Format(rfc3339Nano),
-		EndActual:     req.window.EndActual.UTC().Format(rfc3339Nano),
-		BucketSeconds: req.window.BucketSeconds,
-		Clusters:      g.ClusterNames(),
+		APIVersion: APIVersion,
+		Clusters:   g.ClusterNames(),
 	}
 	body.Elements.Nodes = make([]cytoscapeNode, 0, len(view.Nodes))
 	for _, n := range view.Nodes {

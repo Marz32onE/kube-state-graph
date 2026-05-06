@@ -35,10 +35,10 @@ cluster N: kube-state-metrics ──┤
   clients may revalidate cheaply via `If-None-Match` and receive
   `304 Not Modified` when the body would be unchanged. A horizontally
   scalable cache mechanism for distributed deployment is anticipated as a
-  future change. The requested window is widened outward
-  (`start = floor(start, 60s)`, `end = ceil(end, 60s)`) so any timestamp in
-  `[start, end]` is included in the response — read `start_actual` /
-  `end_actual` from the body for the actual window served.
+  future change. Caller-supplied `start` / `end` are passed through to
+  upstream PromQL verbatim (after `--max-window` / `--max-skew` validation);
+  there is no server-side bucketing or alignment. The response body carries
+  only `apiVersion`, `clusters`, and `elements`.
 
 ## Quick start
 

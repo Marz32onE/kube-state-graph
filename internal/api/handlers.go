@@ -15,7 +15,6 @@ import (
 
 	"github.com/marz32one/kube-state-graph/internal/graph"
 	"github.com/marz32one/kube-state-graph/internal/promql"
-	"github.com/marz32one/kube-state-graph/internal/timewindow"
 )
 
 // ----- /v1/graph (Cytoscape.js) ---------------------------------------------
@@ -25,7 +24,7 @@ import (
 //	@Summary		Get multi-cluster graph (Cytoscape.js)
 //	@Description	Returns the joined multi-cluster pod / node / PVC graph for the supplied `[start, end]` window in Cytoscape.js JSON shape (`{ elements: { nodes:[…], edges:[…] } }`).
 //	@Description
-//	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. Window is aligned onto a 60 s grid (`start` floored, `end` ceiled). Each request triggers a fresh upstream PromQL fan-out — there is no in-process result cache.
+//	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. The pair is passed through to upstream PromQL as-is (within `--max-skew` of `now`); each request triggers a fresh fan-out — there is no in-process result cache.
 //	@Description
 //	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `pod`.
 //	@Description
@@ -40,11 +39,6 @@ import (
 //	@Description	```json
 //	@Description	{
 //	@Description	  "apiVersion": "v1",
-//	@Description	  "start": "2026-05-05T11:00:00Z",
-//	@Description	  "end":   "2026-05-05T12:00:00Z",
-//	@Description	  "start_actual": "2026-05-05T11:00:00Z",
-//	@Description	  "end_actual":   "2026-05-05T12:00:00Z",
-//	@Description	  "bucket_seconds": 60,
 //	@Description	  "clusters": ["prod-eu", "prod-us"],
 //	@Description	  "elements": {
 //	@Description	    "nodes": [
@@ -62,8 +56,8 @@ import (
 //	@Description	</details>
 //	@Tags			graph
 //	@Produce		json
-//	@Param			start		query		string		true	"Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds (`1746442800`). Floored to the 60 s grid."	example(2026-05-05T11:00:00Z)
-//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to `floor(now, 60s)` if it would exceed now. Must be > start and within --max-window."	example(2026-05-05T12:00:00Z)
+//	@Param			start		query		string		true	"Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds (`1746442800`)."	example(2026-05-05T11:00:00Z)
+//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start, within --max-window, and within --max-skew of now."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined). Names match the upstream `cluster` label."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed Kubernetes namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
@@ -83,8 +77,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 	if errBody != nil {
 		return
 	}
-	window := req.window.EndActual.Sub(req.window.StartActual)
-	g, err := s.orch.Resolve(c.Request.Context(), window, req.window.EndActual)
+	g, err := s.orch.Resolve(c.Request.Context(), req.end.Sub(req.start), req.end)
 	if err != nil {
 		mapBuildError(c, err)
 		return
@@ -93,7 +86,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 	ptStart := time.Now()
 	view := graph.Project(g, req.scope)
 	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
-	body := serialiseCytoscape(req, g, view)
+	body := serialiseCytoscape(g, view)
 	s.writeJSON(c, body, "cytoscape")
 }
 
@@ -105,7 +98,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Summary		Get multi-cluster graph (Grafana Node Graph datasource)
 //	@Description	Same underlying graph as `/v1/graph` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: `nodes_fields[]`, `nodes[]`, `edges_fields[]`, `edges[]`.
 //	@Description
-//	@Description	Filtering, traversal, alignment, and ETag semantics are identical to `/v1/graph` — see that endpoint for full details.
+//	@Description	Filtering, traversal, and ETag semantics are identical to `/v1/graph` — see that endpoint for full details.
 //	@Description
 //	@Description	Example: `GET /v1/graph/nodegraph?start=1746442800&end=1746446400&cluster=prod-eu&edge_type=pod-calls-pod&root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab&depth=3&direction=out`
 //	@Description
@@ -136,8 +129,8 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Description	</details>
 //	@Tags			graph
 //	@Produce		json
-//	@Param			start		query		string		true	"Window start. RFC 3339 or Unix seconds. Floored to the 60 s grid."	example(2026-05-05T11:00:00Z)
-//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to now."	example(2026-05-05T12:00:00Z)
+//	@Param			start		query		string		true	"Window start. RFC 3339 or Unix seconds."	example(2026-05-05T11:00:00Z)
+//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start, within --max-window, and within --max-skew of now."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined)."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
@@ -157,8 +150,7 @@ func (s *Server) handleNodeGraph(c *gin.Context) {
 	if errBody != nil {
 		return
 	}
-	window := req.window.EndActual.Sub(req.window.StartActual)
-	g, err := s.orch.Resolve(c.Request.Context(), window, req.window.EndActual)
+	g, err := s.orch.Resolve(c.Request.Context(), req.end.Sub(req.start), req.end)
 	if err != nil {
 		mapBuildError(c, err)
 		return
@@ -389,7 +381,6 @@ func (s *Server) handleDebugLastQueries(c *gin.Context) {
 type graphRequest struct {
 	start  time.Time
 	end    time.Time
-	window timewindow.Window
 	scope  graph.Scope
 	format string
 }
@@ -430,8 +421,6 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 		return graphRequest{}, fmt.Errorf("end_in_future")
 	}
 
-	window := timewindow.Align(start, end, now)
-
 	depth := 0
 	if s := q.Get("depth"); s != "" {
 		v, err := strconv.Atoi(s)
@@ -462,7 +451,6 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 	return graphRequest{
 		start:  start,
 		end:    end,
-		window: window,
 		scope:  scope,
 		format: "cytoscape",
 	}, nil

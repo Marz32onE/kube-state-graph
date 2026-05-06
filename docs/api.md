@@ -63,10 +63,6 @@ are not auto-included.
 ```jsonc
 {
   "apiVersion": "v1",
-  "start": "2026-05-01T12:00:00Z",
-  "end":   "2026-05-01T12:05:00Z",
-  "start_actual": "...", "end_actual": "...",
-  "bucket_seconds": 60,
   "clusters": ["cluster-alpha", "cluster-beta"],
   "elements": {
     "nodes": [{"data": {"id": "<cluster>/<uid>", "name": "...", "type": "pod|node|pvc|external", "labels": {"cluster": "..."}}}],
@@ -74,6 +70,11 @@ are not auto-included.
   }
 }
 ```
+
+The body carries only `apiVersion`, `clusters`, and `elements`. Caller-supplied
+`start` / `end` are passed through to upstream PromQL verbatim (after
+`--max-window` / `--max-skew` validation); there is no server-side bucketing or
+alignment, and the body does not echo any timestamp.
 
 `labels` is strictly `map[string]string`. Numeric metrics are deferred to a
 future typed struct field (see the design doc, D9).

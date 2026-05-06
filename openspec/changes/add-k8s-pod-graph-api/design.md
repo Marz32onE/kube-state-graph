@@ -119,7 +119,7 @@ Each edge carries `type`, `source`, `target`, plus type-specific `attrs` (see D9
 - Alternative: untyped edges with a free-form attributes map (rejected — harder to validate and render).
 - New edge types are additive only; existing `type` strings are never repurposed (see D14).
 
-### D5. Time-range alignment
+### D5. Time-range passthrough
 
 `start` and `end` are mandatory query parameters in either RFC 3339 or Unix seconds form. The server enforces:
 
@@ -127,23 +127,12 @@ Each edge carries `type`, `source`, `target`, plus type-specific `attrs` (see D9
 - `end - start <= --max-window` (default `24h`).
 - `end <= now + --max-skew` (default `1m`).
 
-Both timestamps are **aligned** onto a fixed **60 s grid** before being used to drive PromQL. Alignment is no longer a cache-key concern (no cache exists in v1) — it serves two remaining purposes:
+Beyond those checks, the timestamps are passed through to upstream PromQL verbatim (`<window> = end - start`, `<end>` is the caller-supplied `end`). There is no server-side bucketing, alignment, or grid; the previous 60 s `floor`/`ceil` logic was removed alongside the in-process cache it was bucketing for.
 
-1. **PromQL step stability.** Aligning to 60 s matches upstream's typical scrape cadence, so identical inputs produce identical instant-query evaluation timestamps and identical numeric results.
-2. **Caller-visible bounds.** The response carries `start_actual` / `end_actual` so callers can label chart axes correctly without echoing the unaligned input.
-
-Alignment rules:
-
-- `start_actual = floor(start, 60s)` — the requested left edge can only widen leftward.
-- `end_actual = ceil(end, 60s)` — the requested right edge can only widen rightward, so any user-specified instant (e.g. `end=12:19` covering 12:17) is fully inside the resulting window. `floor` was rejected because it silently dropped data between `floor(end)` and `end`.
-- When `ceil(end, 60s)` would exceed `now`, `end_actual` is clamped to `floor(now, 60s)` so PromQL is never evaluated at a future timestamp.
-- Callers receive `start_actual` / `end_actual` in the response and **must** read those fields rather than echoing the original `start` / `end` when laying the response onto a chart axis.
-
-The alignment helper lives in `internal/timewindow` and exposes `Window{StartActual, EndActual, BucketSeconds}` and `Align(start, end, now)`. There is no time-class TTL ladder, no cache key, and no `Bucketing` struct.
-
+- Why pass-through: with no cache, alignment provides no hit-rate benefit; `last_over_time` / `rate` lookbacks span minutes, so sub-second `@end` drift is not load-bearing for upstream evaluation. Removing alignment also removes a Go package, a `Window` struct in handler signatures, and several rounds of doc/spec coordination.
 - Mitigation for unbounded cluster count: an optional `--clusters-allowlist` flag injects a `cluster=~"a|b|c"` selector into all PromQL queries and bounds upstream cost regardless of how many clusters exist in VM.
 - Alternatives considered:
-  - Bypass alignment and use raw `start`/`end` (rejected — sub-second drift produces noisy PromQL results across otherwise-identical requests; ETag would never hit on repeat queries).
+  - 60 s `floor`/`ceil` grid (removed in this change — was originally a cache-key bucket; ETag stability argument was post-hoc and weak in practice since real callers don't refresh sub-second).
   - Per-class TTL ladder (deferred — would only matter once a server-side cache returns; revisit in the future cache mechanism).
 
 ### D6. HTTP-layer caching only (ETag); no in-process result cache
@@ -157,7 +146,7 @@ v1 ships **only** the HTTP-layer `ETag`. The previous design's three-tier stack 
 - Sorting `view.Nodes` and `view.Edges` (`graph.SortNodes` / `graph.SortEdges`) before encoding.
 - Sorting `Graph.ClusterNames()`.
 - Relying on `encoding/json` map-key sorting for `labels map[string]string`.
-- Omitting time-varying fields from the response body. The previous `built_at` field was time-of-build and is **dropped** in v1; observability moves to logs/metrics instead.
+- Keeping body shape fixed at `{apiVersion, clusters, elements}`. No time-varying or echo-of-input fields are serialised; observability moves to logs/metrics.
 
 Routes that already had fixed long-lived TTLs keep their `Cache-Control` headers (`/v1/edge-types`: 3600 s, `/openapi.{yaml,json}`: 3600 s, `/docs/assets/*`: 86400 s, `/docs`: 300 s). `/v1/graph`, `/v1/graph/nodegraph`, and `/v1/clusters` emit only `ETag`.
 
@@ -261,11 +250,6 @@ The primary `GET /v1/graph` response is **Cytoscape.js**-shaped JSON:
 ```json
 {
   "apiVersion": "v1",
-  "start": "2026-05-01T12:00:00Z",
-  "end":   "2026-05-01T12:05:00Z",
-  "start_actual": "2026-05-01T12:00:00Z",
-  "end_actual":   "2026-05-01T12:05:00Z",
-  "bucket_seconds": 60,
   "clusters": ["cluster-alpha", "cluster-beta"],
   "elements": {
     "nodes": [
