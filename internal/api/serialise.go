@@ -13,7 +13,6 @@ type cytoscapeBody struct {
 	StartActual   string         `json:"start_actual"`
 	EndActual     string         `json:"end_actual"`
 	BucketSeconds int            `json:"bucket_seconds"`
-	BuiltAt       string         `json:"built_at"`
 	Clusters      []string       `json:"clusters"`
 	Elements      cytoscapeElems `json:"elements"`
 }
@@ -53,10 +52,9 @@ func serialiseCytoscape(req graphRequest, g *graph.Graph, view graph.View) cytos
 		APIVersion:    APIVersion,
 		Start:         req.start.UTC().Format(rfc3339Nano),
 		End:           req.end.UTC().Format(rfc3339Nano),
-		StartActual:   req.bucket.StartActual.UTC().Format(rfc3339Nano),
-		EndActual:     req.bucket.EndActual.UTC().Format(rfc3339Nano),
-		BucketSeconds: req.bucket.BucketSeconds,
-		BuiltAt:       g.BuiltAt.UTC().Format(rfc3339Nano),
+		StartActual:   req.window.StartActual.UTC().Format(rfc3339Nano),
+		EndActual:     req.window.EndActual.UTC().Format(rfc3339Nano),
+		BucketSeconds: req.window.BucketSeconds,
 		Clusters:      g.ClusterNames(),
 	}
 	body.Elements.Nodes = make([]cytoscapeNode, 0, len(view.Nodes))

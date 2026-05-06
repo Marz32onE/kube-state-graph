@@ -86,7 +86,7 @@ The container-integration suite SHALL contain at least one test for each of the 
 - A multi-cluster graph with at least one `pod-calls-pod` edge whose source-node `labels.cluster` differs from its target-node `labels.cluster` (cross-cluster edge recovered via the topology pod-UID index).
 - The `KSG_EXTERNAL_NAME_PATTERN` substitution producing an `external`-typed node.
 - ETag round-trip: an initial response yields an `ETag`; a follow-up request with `If-None-Match: <etag>` returns 304.
-- Cache observability: a fresh time-bucket request reports `X-Cache: MISS`; an immediate repeat reports `X-Cache: HIT` (or `COALESCED` under contention).
+- ETag determinism: two consecutive identical `GET /v1/graph` requests return byte-identical `ETag` headers (each request triggers an independent build; v1 has no result cache).
 - `/v1/clusters` listing both synthetic cluster names.
 - `/v1/edge-types` returning the static catalogue.
 

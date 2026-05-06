@@ -9,15 +9,13 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/graph"
 	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/internal/timewindow"
 )
 
 // ----- /v1/graph (Cytoscape.js) ---------------------------------------------
@@ -27,13 +25,13 @@ import (
 //	@Summary		Get multi-cluster graph (Cytoscape.js)
 //	@Description	Returns the joined multi-cluster pod / node / PVC graph for the supplied `[start, end]` window in Cytoscape.js JSON shape (`{ elements: { nodes:[…], edges:[…] } }`).
 //	@Description
-//	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. Window is bucketed onto a 60 s grid (`start` floored, `end` ceiled). The cache key is time-only — all filter / traversal params are applied at response time over the cached graph and never fragment the cache.
+//	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. Window is aligned onto a 60 s grid (`start` floored, `end` ceiled). Each request triggers a fresh upstream PromQL fan-out — there is no in-process result cache.
 //	@Description
 //	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `pod`.
 //	@Description
 //	@Description	**Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
 //	@Description
-//	@Description	**Caching**: response carries `ETag` + `Cache-Control` whose `max-age` follows the time class — live 30 s, recent 5 m, historical 1 h, frozen 24 h.
+//	@Description	**Caching**: response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match` and receive `304 Not Modified` when the body would be unchanged. No `Cache-Control` is emitted.
 //	@Description
 //	@Description	Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
 //	@Description
@@ -47,7 +45,6 @@ import (
 //	@Description	  "start_actual": "2026-05-05T11:00:00Z",
 //	@Description	  "end_actual":   "2026-05-05T12:00:00Z",
 //	@Description	  "bucket_seconds": 60,
-//	@Description	  "built_at": "2026-05-05T12:00:01Z",
 //	@Description	  "clusters": ["prod-eu", "prod-us"],
 //	@Description	  "elements": {
 //	@Description	    "nodes": [
@@ -65,8 +62,8 @@ import (
 //	@Description	</details>
 //	@Tags			graph
 //	@Produce		json
-//	@Param			start		query		string		true	"Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds (`1746442800`). Floored to the 60 s bucket grid."	example(2026-05-05T11:00:00Z)
-//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to `floor(now, 60s)` if it would exceed now. Must be > start and within --max-window."	example(2026-05-05T12:00:00Z)
+//	@Param			start		query		string		true	"Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds (`1746442800`). Floored to the 60 s grid."	example(2026-05-05T11:00:00Z)
+//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to `floor(now, 60s)` if it would exceed now. Must be > start and within --max-window."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined). Names match the upstream `cluster` label."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed Kubernetes namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
@@ -74,27 +71,30 @@ import (
 //	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, externals `external/<value>`."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
 //	@Param			depth		query		int			false	"BFS traversal depth in hops. Range `0..6`. Defaults to `2` when `root` is set, ignored otherwise."	minimum(0)	maximum(6)	default(2)	example(2)
 //	@Param			direction	query		string		false	"Traversal direction relative to `root`. `out` = downstream edges, `in` = upstream edges, `both` = undirected. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
+//	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200			{object}	cytoscapeBody
 //	@Failure		400			{object}	errorBody	"Invalid parameters (missing/invalid start|end, window_too_large, end_in_future, depth_too_large, invalid_scope)"
+//	@Failure		401			{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
 //	@Failure		503			{object}	errorBody	"Capacity / timeout / cluster_too_large or upstream unavailable"
+//	@Security		ApiKeyAuth
 //	@Router			/v1/graph [get]
 func (s *Server) handleGraph(c *gin.Context) {
 	req, errBody := s.parseGraphRequest(c)
 	if errBody != nil {
-		return // parseGraphRequest already wrote response
+		return
 	}
-	res, err := s.orch.Resolve(c.Request.Context(), req.cacheKey, req.bucket)
+	window := req.window.EndActual.Sub(req.window.StartActual)
+	g, err := s.orch.Resolve(c.Request.Context(), window, req.window.EndActual)
 	if err != nil {
 		mapBuildError(c, err)
 		return
 	}
-	c.Set("cache_status", res.CacheStatus)
 
 	ptStart := time.Now()
-	view := graph.Project(res.Graph, req.scope)
+	view := graph.Project(g, req.scope)
 	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
-	body := serialiseCytoscape(req, res.Graph, view)
-	s.writeJSONWithCaching(c, body, req.bucket, res.CacheStatus, "cytoscape")
+	body := serialiseCytoscape(req, g, view)
+	s.writeJSON(c, body, "cytoscape")
 }
 
 // ----- /v1/graph/nodegraph (Grafana) ----------------------------------------
@@ -105,7 +105,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Summary		Get multi-cluster graph (Grafana Node Graph datasource)
 //	@Description	Same underlying graph as `/v1/graph` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: `nodes_fields[]`, `nodes[]`, `edges_fields[]`, `edges[]`.
 //	@Description
-//	@Description	Filtering, traversal, bucketing, and caching semantics are identical to `/v1/graph` — see that endpoint for full details.
+//	@Description	Filtering, traversal, alignment, and ETag semantics are identical to `/v1/graph` — see that endpoint for full details.
 //	@Description
 //	@Description	Example: `GET /v1/graph/nodegraph?start=1746442800&end=1746446400&cluster=prod-eu&edge_type=pod-calls-pod&root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab&depth=3&direction=out`
 //	@Description
@@ -136,8 +136,8 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Description	</details>
 //	@Tags			graph
 //	@Produce		json
-//	@Param			start		query		string		true	"Window start. RFC 3339 or Unix seconds. Floored to the 60 s bucket grid."	example(2026-05-05T11:00:00Z)
-//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to now."	example(2026-05-05T12:00:00Z)
+//	@Param			start		query		string		true	"Window start. RFC 3339 or Unix seconds. Floored to the 60 s grid."	example(2026-05-05T11:00:00Z)
+//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to now."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined)."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
@@ -145,27 +145,30 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. See /v1/graph for ID formats per type."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
 //	@Param			depth		query		int			false	"BFS traversal depth `0..6`. Defaults to `2` when `root` is set."	minimum(0)	maximum(6)	default(2)	example(2)
 //	@Param			direction	query		string		false	"Traversal direction. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
+//	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200			{object}	grafanaBody
 //	@Failure		400			{object}	errorBody	"Invalid parameters"
+//	@Failure		401			{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
 //	@Failure		503			{object}	errorBody	"Capacity / timeout / upstream unavailable"
+//	@Security		ApiKeyAuth
 //	@Router			/v1/graph/nodegraph [get]
 func (s *Server) handleNodeGraph(c *gin.Context) {
 	req, errBody := s.parseGraphRequest(c)
 	if errBody != nil {
 		return
 	}
-	res, err := s.orch.Resolve(c.Request.Context(), req.cacheKey, req.bucket)
+	window := req.window.EndActual.Sub(req.window.StartActual)
+	g, err := s.orch.Resolve(c.Request.Context(), window, req.window.EndActual)
 	if err != nil {
 		mapBuildError(c, err)
 		return
 	}
-	c.Set("cache_status", res.CacheStatus)
 
 	ptStart := time.Now()
-	view := graph.Project(res.Graph, req.scope)
+	view := graph.Project(g, req.scope)
 	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
 	body := serialiseGrafanaNodeGraph(view)
-	s.writeJSONWithCaching(c, body, req.bucket, res.CacheStatus, "nodegraph")
+	s.writeJSON(c, body, "nodegraph")
 }
 
 // clustersBody is the response shape of GET /v1/clusters.
@@ -193,13 +196,6 @@ type debugLastQueriesBody struct {
 
 // ----- /v1/clusters ---------------------------------------------------------
 
-type discoveryCache struct {
-	mu      sync.Mutex
-	value   []ClusterInfo
-	expires time.Time
-	ttl     time.Duration
-}
-
 // ClusterInfo is one entry in /v1/clusters.
 type ClusterInfo struct {
 	Name string `json:"name"`
@@ -209,7 +205,7 @@ type ClusterInfo struct {
 // VictoriaMetrics over the discovery lookback.
 //
 //	@Summary		List clusters
-//	@Description	Returns the set of clusters observed in `kube_node_info` over the configured discovery lookback (default 1 h). Intersected with `--clusters-allowlist` when set. Result cached server-side for the discovery TTL; served with `Cache-Control: public, max-age=60` and a stable `ETag`.
+//	@Description	Returns the set of clusters observed in `kube_node_info` over the configured discovery lookback (default 1 h). Intersected with `--clusters-allowlist` when set. Each request hits VictoriaMetrics directly. The response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match`.
 //	@Description
 //	@Description	<details><summary><b>Sample response</b></summary>
 //	@Description
@@ -227,8 +223,11 @@ type ClusterInfo struct {
 //	@Description	</details>
 //	@Tags			discovery
 //	@Produce		json
+//	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200	{object}	clustersBody
+//	@Failure		401	{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
 //	@Failure		502	{object}	errorBody	"Upstream VictoriaMetrics unavailable"
+//	@Security		ApiKeyAuth
 //	@Router			/v1/clusters [get]
 func (s *Server) handleClusters(c *gin.Context) {
 	clusters, err := s.discoverClusters(c.Request.Context())
@@ -242,7 +241,6 @@ func (s *Server) handleClusters(c *gin.Context) {
 	}
 	raw, _ := json.Marshal(body)
 	etag := sha256ETag(raw)
-	c.Header("Cache-Control", "public, max-age=60")
 	c.Header("ETag", etag)
 	if c.GetHeader("If-None-Match") == etag {
 		c.Status(http.StatusNotModified)
@@ -252,12 +250,6 @@ func (s *Server) handleClusters(c *gin.Context) {
 }
 
 func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
-	s.discoveryCache.mu.Lock()
-	defer s.discoveryCache.mu.Unlock()
-	if !s.discoveryCache.expires.IsZero() && time.Now().Before(s.discoveryCache.expires) {
-		return s.discoveryCache.value, nil
-	}
-
 	allowlist := promql.AllowlistRegex(s.cfg.ClustersAllowlist)
 	q := promql.Render(promql.QClusterDiscovery, s.cfg.ClusterDiscoveryLookback, allowlist)
 	vec, err := s.prom.Instant(ctx, string(promql.QClusterDiscovery), q, time.Now().UTC())
@@ -283,9 +275,6 @@ func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 		out = append(out, ClusterInfo{Name: c})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-
-	s.discoveryCache.value = out
-	s.discoveryCache.expires = time.Now().Add(s.discoveryCache.ttl)
 	return out, nil
 }
 
@@ -319,7 +308,10 @@ func stringSliceToSet(values []string) map[string]struct{} {
 //	@Description	</details>
 //	@Tags			discovery
 //	@Produce		json
+//	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200	{object}	edgeTypesBody
+//	@Failure		401	{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
+//	@Security		ApiKeyAuth
 //	@Router			/v1/edge-types [get]
 func (s *Server) handleEdgeTypes(c *gin.Context) {
 	body := map[string]any{
@@ -370,18 +362,7 @@ func (s *Server) handleReadyz(c *gin.Context) {
 	c.String(http.StatusOK, "ok")
 }
 
-// ----- /admin/cache, /debug/last-queries ------------------------------------
-
-// handleAdminCacheFlush flushes the in-process Ristretto cache.
-//
-//	@Summary	Flush in-process graph cache
-//	@Tags		admin
-//	@Success	204
-//	@Router		/admin/cache [delete]
-func (s *Server) handleAdminCacheFlush(c *gin.Context) {
-	s.cache.Clear()
-	c.Status(http.StatusNoContent)
-}
+// ----- /debug/last-queries --------------------------------------------------
 
 // handleDebugLastQueries returns the raw upstream query strings of the most
 // recent build (only available with --enable-debug).
@@ -393,7 +374,10 @@ func (s *Server) handleAdminCacheFlush(c *gin.Context) {
 //	@Summary	Debug: last upstream queries
 //	@Tags		debug
 //	@Produce	json
+//	@Param		X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success	501	{object}	errorBody	"Not implemented in v1"
+//	@Failure	401	{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
+//	@Security	ApiKeyAuth
 //	@Router		/debug/last-queries [get]
 func (s *Server) handleDebugLastQueries(c *gin.Context) {
 	writeError(c, http.StatusNotImplemented, "not_implemented",
@@ -403,12 +387,11 @@ func (s *Server) handleDebugLastQueries(c *gin.Context) {
 // ----- request parsing ------------------------------------------------------
 
 type graphRequest struct {
-	start    time.Time
-	end      time.Time
-	bucket   cache.Bucketing
-	cacheKey uint64
-	scope    graph.Scope
-	format   string
+	start  time.Time
+	end    time.Time
+	window timewindow.Window
+	scope  graph.Scope
+	format string
 }
 
 func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
@@ -447,8 +430,7 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 		return graphRequest{}, fmt.Errorf("end_in_future")
 	}
 
-	bucket := cache.Bucket(start, end, now)
-	cacheKey := cache.Key(bucket)
+	window := timewindow.Align(start, end, now)
 
 	depth := 0
 	if s := q.Get("depth"); s != "" {
@@ -478,17 +460,15 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 	}
 
 	return graphRequest{
-		start:    start,
-		end:      end,
-		bucket:   bucket,
-		cacheKey: cacheKey,
-		scope:    scope,
-		format:   "cytoscape",
+		start:  start,
+		end:    end,
+		window: window,
+		scope:  scope,
+		format: "cytoscape",
 	}, nil
 }
 
 func parseTimestamp(s string) (time.Time, error) {
-	// Unix seconds first.
 	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return time.Unix(n, 0).UTC(), nil
 	}
@@ -500,7 +480,7 @@ func parseTimestamp(s string) (time.Time, error) {
 
 // ----- response helpers -----------------------------------------------------
 
-func (s *Server) writeJSONWithCaching(c *gin.Context, body any, bucket cache.Bucketing, cacheStatus, format string) {
+func (s *Server) writeJSON(c *gin.Context, body any, format string) {
 	start := time.Now()
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -509,9 +489,7 @@ func (s *Server) writeJSONWithCaching(c *gin.Context, body any, bucket cache.Buc
 	}
 	s.metrics.SerialiseDuration.WithLabelValues(format).Observe(time.Since(start).Seconds())
 	etag := sha256ETag(raw)
-	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d", bucket.MaxAge))
 	c.Header("ETag", etag)
-	c.Header("X-Cache", strings.ToUpper(cacheStatus))
 	if c.GetHeader("If-None-Match") == etag {
 		c.Status(http.StatusNotModified)
 		return

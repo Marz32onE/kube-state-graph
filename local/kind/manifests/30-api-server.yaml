@@ -16,6 +16,11 @@ spec:
       labels:
         app: kube-state-graph
     spec:
+      volumes:
+        - name: api-keys
+          secret:
+            secretName: kube-state-graph-api-keys
+            defaultMode: 0o444
       containers:
         - name: server
           image: localhost/kube-state-graph/server:dev
@@ -27,8 +32,16 @@ spec:
               value: ":8080"
             - name: KSG_EXTERNAL_NAME_PATTERN
               value: "://"
+            - name: KSG_API_KEYS_FILE
+              value: "/etc/kube-state-graph/api-keys/keys"
+            - name: KSG_API_KEYS_RELOAD_INTERVAL
+              value: "30s"
             - name: KSG_LOG_LEVEL
               value: "info"
+          volumeMounts:
+            - name: api-keys
+              mountPath: /etc/kube-state-graph/api-keys
+              readOnly: true
           ports:
             - containerPort: 8080
               name: http

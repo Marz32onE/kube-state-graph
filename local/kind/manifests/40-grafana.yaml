@@ -15,6 +15,12 @@ data:
         isDefault: true
         jsonData:
           global_queries: []
+          # Inject the X-API-Key header on every request from this datasource.
+          # The literal value matches one of the keys mounted into the API
+          # server via Secret kube-state-graph-api-keys.
+          httpHeaderName1: X-API-Key
+        secureJsonData:
+          httpHeaderValue1: dev-key-rotate-me-please
 ---
 apiVersion: v1
 kind: ConfigMap

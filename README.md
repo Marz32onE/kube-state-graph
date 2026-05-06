@@ -30,14 +30,15 @@ cluster N: kube-state-metrics ──┤
   Graph datasource shape (`/v1/graph/nodegraph`).
 - Exposes cluster discovery (`/v1/clusters`) and a static edge-type catalogue
   (`/v1/edge-types`).
-- Caches per time bucket with Ristretto + singleflight + ETag so concurrent
-  users sharing a dashboard cost the upstream a single fan-out. The bucket
-  grid is uniformly 60 seconds across all time classes; TTL still varies
-  (live=30 s, recent=5 min, historical=1 h, frozen=24 h). The requested
-  window is widened outward (`start = floor(start, 60s)`,
-  `end = ceil(end, 60s)`) so any timestamp in `[start, end]` is included
-  in the response — read `start_actual` / `end_actual` from the body for
-  the actual window served.
+- Builds the graph on every request — v1 ships **no in-process result cache**
+  and **no singleflight**. Responses carry an `ETag` (sha256 of the body) so
+  clients may revalidate cheaply via `If-None-Match` and receive
+  `304 Not Modified` when the body would be unchanged. A horizontally
+  scalable cache mechanism for distributed deployment is anticipated as a
+  future change. The requested window is widened outward
+  (`start = floor(start, 60s)`, `end = ceil(end, 60s)`) so any timestamp in
+  `[start, end]` is included in the response — read `start_actual` /
+  `end_actual` from the body for the actual window served.
 
 ## Quick start
 
@@ -55,11 +56,26 @@ curl 'http://localhost:8080/v1/clusters'
 curl 'http://localhost:8080/v1/graph?start=$(date -u -d "-5 min" +%s)&end=$(date -u +%s)' | jq '.elements'
 ```
 
+When the server is started with API keys configured (`--api-keys-file` or
+`--api-keys`), every `/v1/*` and `/debug/*` request must carry an
+`X-API-Key: <key>` header:
+
+```bash
+curl -H 'X-API-Key: my-secret-key' 'http://localhost:8080/v1/clusters'
+```
+
+Health probes (`/livez`, `/readyz`), `/metrics`, and the docs routes
+(`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key. With
+no keys configured the middleware is a no-op and every route is open — see
+[`docs/operations.md`](docs/operations.md) for the K8s `Secret` mount and
+rotation procedure.
+
 ## Upstream metrics consumed
 
 The graph build issues these PromQL queries against centralised VictoriaMetrics
-on every cache miss. Every series is expected to carry a `cluster` external
-label (injected by `vmagent` / Prometheus `external_labels` per source cluster).
+on every request (v1 has no result cache). Every series is expected to carry a
+`cluster` external label (injected by `vmagent` / Prometheus `external_labels`
+per source cluster).
 
 ### Topology metrics — produced by [`kube-state-metrics`](https://github.com/kubernetes/kube-state-metrics)
 
@@ -138,7 +154,9 @@ container.
 | `--cluster-discovery-lookback`  | `KSG_CLUSTER_DISCOVERY_LOOKBACK` | `1h`                 | Cluster discovery lookback. |
 | `--clusters-allowlist`          | `KSG_CLUSTERS_ALLOWLIST`         | (empty)              | Comma-separated allowlist. |
 | `--external-name-pattern`       | `KSG_EXTERNAL_NAME_PATTERN`      | (empty)              | Substring; when matched on `client`/`server`, that endpoint becomes an `external` node. |
-| `--cache-max-cost-bytes`        | `KSG_CACHE_MAX_COST_BYTES`       | `268435456` (256 MiB)| Ristretto budget. |
+| `--api-keys-file`               | `KSG_API_KEYS_FILE`              | (empty)              | Path to a file holding accepted API keys (one per line, `#` comments allowed). Designed for K8s `Secret` mounts. Reloaded periodically. |
+| `--api-keys`                    | `KSG_API_KEYS`                   | (empty)              | Comma-separated literal keys. Dev only; ignored when `--api-keys-file` is set. |
+| `--api-keys-reload-interval`    | `KSG_API_KEYS_RELOAD_INTERVAL`   | `30s`                | How often `--api-keys-file` is re-read. Set to `0` to disable hot reload. |
 | `--enable-debug`                | `KSG_ENABLE_DEBUG`               | `false`              | Enable `/debug/*` endpoints. |
 | `--log-level`                   | `KSG_LOG_LEVEL`                  | `info`               | `debug | info | warn | error`. |
 

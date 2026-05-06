@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
@@ -25,27 +25,24 @@ type Server struct {
 	cfg     config.Config
 	builder *build.Builder
 	orch    *build.Orchestrator
-	cache   cache.Cache
 	prom    *promql.Client
 	metrics *observability.Metrics
 	logger  *slog.Logger
-
-	// cluster discovery cache (60 s TTL, fixed key).
-	discoveryCache *discoveryCache
+	keys    *auth.KeySet
 }
 
-// New wires up a Server. The Orchestrator is constructed from cfg.
-func New(cfg config.Config, builder *build.Builder, c cache.Cache, prom *promql.Client, m *observability.Metrics, logger *slog.Logger) *Server {
-	orch := build.NewOrchestrator(builder, c, cfg.BuildConcurrency, cfg.BuildTimeout, m)
+// New wires up a Server. The Orchestrator is constructed from cfg. keys may
+// be nil or empty to run with API-key authentication disabled.
+func New(cfg config.Config, builder *build.Builder, prom *promql.Client, m *observability.Metrics, logger *slog.Logger, keys *auth.KeySet) *Server {
+	orch := build.NewOrchestrator(builder, cfg.BuildConcurrency, cfg.BuildTimeout, m)
 	return &Server{
-		cfg:            cfg,
-		builder:        builder,
-		orch:           orch,
-		cache:          c,
-		prom:           prom,
-		metrics:        m,
-		logger:         logger,
-		discoveryCache: &discoveryCache{ttl: 60 * time.Second},
+		cfg:     cfg,
+		builder: builder,
+		orch:    orch,
+		prom:    prom,
+		metrics: m,
+		logger:  logger,
+		keys:    keys,
 	}
 }
 
@@ -53,7 +50,7 @@ func New(cfg config.Config, builder *build.Builder, c cache.Cache, prom *promql.
 func (s *Server) Handler() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(s.requestIDMiddleware(), s.loggingMiddleware())
+	r.Use(s.requestIDMiddleware(), s.apiKeyMiddleware(), s.loggingMiddleware())
 
 	v1 := r.Group("/" + APIVersion)
 	v1.GET("/graph", s.handleGraph)
@@ -70,7 +67,6 @@ func (s *Server) Handler() http.Handler {
 	r.GET("/docs", s.handleDocs)
 	r.GET("/docs/assets/*path", s.handleDocsAsset)
 
-	r.DELETE("/admin/cache", s.handleAdminCacheFlush)
 	if s.cfg.EnableDebug {
 		r.GET("/debug/last-queries", s.handleDebugLastQueries)
 	}
@@ -115,7 +111,6 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 			return
 		}
 		clusters := c.Request.URL.Query()["cluster"]
-		cacheStatus, _ := c.Get("cache_status")
 
 		s.logger.Info("http",
 			"method", c.Request.Method,
@@ -124,7 +119,6 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 			"duration_ms", duration.Milliseconds(),
 			"request_id", c.GetString("request_id"),
 			"clusters", clusters,
-			"cache_status", cacheStatus,
 		)
 		s.metrics.HTTPRequests.WithLabelValues(path, statusClass(status)).Inc()
 	}

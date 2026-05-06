@@ -8,16 +8,9 @@ import (
 type Metrics struct {
 	Registry *prometheus.Registry
 
-	BuildDuration     *prometheus.HistogramVec
+	BuildDuration     prometheus.Histogram
 	ProjectDuration   prometheus.Histogram
 	SerialiseDuration *prometheus.HistogramVec
-	CacheHits         *prometheus.CounterVec
-	CacheMisses       *prometheus.CounterVec
-	CacheSizeEntries  prometheus.Gauge
-	CacheCostBytes    prometheus.Gauge
-	CacheEvictions    *prometheus.CounterVec
-	CacheRejected     prometheus.Counter
-	SingleflightDedup prometheus.Counter
 	BuildConcurrency  prometheus.Gauge
 	BuildRejected     *prometheus.CounterVec
 	GraphNodeCount    *prometheus.GaugeVec
@@ -26,6 +19,7 @@ type Metrics struct {
 	UpstreamQueryDur  *prometheus.HistogramVec
 	UpstreamQueryFail *prometheus.CounterVec
 	HTTPRequests      *prometheus.CounterVec
+	AuthRejected      *prometheus.CounterVec
 }
 
 // NewMetrics registers and returns a fresh Metrics bundle.
@@ -33,14 +27,14 @@ func NewMetrics() *Metrics {
 	reg := prometheus.NewRegistry()
 	m := &Metrics{
 		Registry: reg,
-		BuildDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		BuildDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "kube_state_graph_build_duration_seconds",
-			Help:    "Time to build (or hit cache for) a multi-cluster graph snapshot.",
+			Help:    "Time to build a multi-cluster graph snapshot.",
 			Buckets: prometheus.DefBuckets,
-		}, []string{"cache_status"}),
+		}),
 		ProjectDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "kube_state_graph_project_duration_seconds",
-			Help:    "Time spent applying filters and traversal over a cached graph.",
+			Help:    "Time spent applying filters and traversal over a built graph.",
 			Buckets: []float64{0.0001, 0.001, 0.01, 0.1, 1},
 		}),
 		SerialiseDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -48,34 +42,6 @@ func NewMetrics() *Metrics {
 			Help:    "Time spent encoding the response and computing the ETag.",
 			Buckets: []float64{0.0001, 0.001, 0.01, 0.1, 1},
 		}, []string{"format"}),
-		CacheHits: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "kube_state_graph_cache_hits_total",
-			Help: "Cache hits per layer.",
-		}, []string{"layer"}),
-		CacheMisses: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "kube_state_graph_cache_misses_total",
-			Help: "Cache misses per layer.",
-		}, []string{"layer"}),
-		CacheSizeEntries: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "kube_state_graph_cache_size_entries",
-			Help: "Number of entries currently in the in-process cache.",
-		}),
-		CacheCostBytes: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "kube_state_graph_cache_cost_bytes",
-			Help: "Approximate cache memory cost in bytes.",
-		}),
-		CacheEvictions: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "kube_state_graph_cache_evictions_total",
-			Help: "Cache evictions by reason.",
-		}, []string{"reason"}),
-		CacheRejected: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "kube_state_graph_cache_rejected_total",
-			Help: "Cache Set calls rejected by the admission policy.",
-		}),
-		SingleflightDedup: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "kube_state_graph_singleflight_dedup_total",
-			Help: "Number of duplicate concurrent build requests coalesced by singleflight.",
-		}),
 		BuildConcurrency: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "kube_state_graph_build_concurrency",
 			Help: "Number of in-flight builds.",
@@ -109,19 +75,16 @@ func NewMetrics() *Metrics {
 			Name: "kube_state_graph_http_requests_total",
 			Help: "HTTP requests by path and status.",
 		}, []string{"path", "status"}),
+		AuthRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kube_state_graph_auth_rejected_total",
+			Help: "API-key authentication rejections by reason (missing | invalid).",
+		}, []string{"reason"}),
 	}
 
 	reg.MustRegister(
 		m.BuildDuration,
 		m.ProjectDuration,
 		m.SerialiseDuration,
-		m.CacheHits,
-		m.CacheMisses,
-		m.CacheSizeEntries,
-		m.CacheCostBytes,
-		m.CacheEvictions,
-		m.CacheRejected,
-		m.SingleflightDedup,
 		m.BuildConcurrency,
 		m.BuildRejected,
 		m.GraphNodeCount,
@@ -130,6 +93,7 @@ func NewMetrics() *Metrics {
 		m.UpstreamQueryDur,
 		m.UpstreamQueryFail,
 		m.HTTPRequests,
+		m.AuthRejected,
 	)
 	return m
 }

@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
@@ -51,11 +51,25 @@ func newTestServer(t *testing.T, mock *httptest.Server, override func(*config.Co
 	metrics := observability.NewMetrics()
 	prom, err := promql.New(cfg.PromURL, metrics)
 	require.NoError(t, err)
-	c, err := cache.New(cfg.CacheMaxCostBytes, metrics)
-	require.NoError(t, err)
-	t.Cleanup(c.Close)
 	builder := build.New(prom, cfg, metrics)
-	return New(cfg, builder, c, prom, metrics, logger)
+	return New(cfg, builder, prom, metrics, logger, auth.NewKeySet())
+}
+
+// newTestServerWithKeys constructs a Server with a populated keyset so tests
+// can exercise the API-key middleware end-to-end.
+func newTestServerWithKeys(t *testing.T, mock *httptest.Server, keys []string) *Server {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.PromURL = mock.URL
+	require.NoError(t, cfg.Validate())
+	logger := observability.NewLogger("error")
+	metrics := observability.NewMetrics()
+	prom, err := promql.New(cfg.PromURL, metrics)
+	require.NoError(t, err)
+	ks := auth.NewKeySet()
+	ks.LoadCSV(strings.Join(keys, ","))
+	builder := build.New(prom, cfg, metrics)
+	return New(cfg, builder, prom, metrics, logger, ks)
 }
 
 // TestDebugLastQueries_NotImplemented guards the contract that the route
@@ -182,18 +196,6 @@ func TestMetricsEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestAdminCacheFlush(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/admin/cache", nil)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
 func TestDebugEndpoint_DisabledByDefault(t *testing.T) {

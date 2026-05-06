@@ -48,28 +48,23 @@ The server SHALL expose `GET /v1/graph` that returns a multi-cluster pod / node 
 - **WHEN** a client supplies `end > now + --max-skew`
 - **THEN** the server returns 400 Bad Request with `reason: "end_in_future"`
 
-### Requirement: Time-bucket alignment in response
+### Requirement: Time-window alignment in response
 
-The server SHALL align `start` and `end` to a uniform 60-second bucket grid for every time class, and SHALL surface the aligned values as `start_actual` and `end_actual` in the response body alongside the original caller-supplied `start` and `end`. Alignment SHALL widen the window outward — `start_actual = floor(start, 60s)` and `end_actual = ceil(end, 60s)` — so any user-requested instant inside `[start, end]` is also inside `[start_actual, end_actual]`. When the ceiled `end_actual` would land in the future relative to `now`, the server SHALL clamp it to `floor(now, 60s)`.
+The server SHALL align `start` and `end` to a uniform 60-second grid and SHALL surface the aligned values as `start_actual` and `end_actual` in the response body alongside the original caller-supplied `start` and `end`. Alignment SHALL widen the window outward — `start_actual = floor(start, 60s)` and `end_actual = ceil(end, 60s)` — so any user-requested instant inside `[start, end]` is also inside `[start_actual, end_actual]`. When the ceiled `end_actual` would land in the future relative to `now`, the server SHALL clamp it to `floor(now, 60s)`. Alignment is a pure function of `(start, end, now)` and is not tied to any TTL or cache class.
 
 #### Scenario: Sub-minute end is ceiled, not truncated
 
-- **WHEN** a client sends `GET /v1/graph?start=2026-05-02T12:04:17Z&end=2026-05-02T12:19:30Z` (historical window)
+- **WHEN** a client sends `GET /v1/graph?start=2026-05-02T12:04:17Z&end=2026-05-02T12:19:30Z`
 - **THEN** the response body has `start_actual: "2026-05-02T12:04:00Z"`, `end_actual: "2026-05-02T12:20:00Z"`, and `bucket_seconds: 60`, so the user's instants at 12:04:17 and 12:17:00 are both inside the resulting window
 
-#### Scenario: Live end is clamped to now
+#### Scenario: End is clamped to now
 
-- **WHEN** a client sends `GET /v1/graph?start=...&end=<now-15s>` (live class)
+- **WHEN** a client sends `GET /v1/graph?start=...&end=<now-15s>`
 - **THEN** `end_actual` SHALL NOT exceed `floor(now, 60s)`, and `bucket_seconds: 60`
-
-#### Scenario: TTL still varies by class
-
-- **WHEN** the request resolves to time class `frozen` (`end` older than 7 days)
-- **THEN** the response carries `Cache-Control: public, max-age=86400` regardless of the uniform bucket size
 
 ### Requirement: Cytoscape.js response shape
 
-`GET /v1/graph` SHALL return a JSON document in Cytoscape.js shape: `{ apiVersion, start, end, start_actual, end_actual, bucket_seconds, built_at, clusters, elements: { nodes, edges } }`.
+`GET /v1/graph` SHALL return a JSON document in Cytoscape.js shape: `{ apiVersion, start, end, start_actual, end_actual, bucket_seconds, clusters, elements: { nodes, edges } }`. The body SHALL NOT contain time-varying fields beyond the caller-supplied `start` / `end` and the alignment-derived `start_actual` / `end_actual`, so byte-identical inputs produce byte-identical bodies and a stable `ETag`.
 
 Each **node** SHALL be `{ data: { id, name, type, labels } }`:
 - `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`). For external nodes, `id` SHALL be `external/<label-value>` (no cluster prefix).
@@ -152,13 +147,13 @@ The server SHALL expose `GET /v1/graph/nodegraph` that returns the same underlyi
 
 ### Requirement: Filter parameters
 
-`GET /v1/graph` and `GET /v1/graph/nodegraph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `edge_type`, `pod`. Filters SHALL be applied at response time over the cached graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
+`GET /v1/graph` and `GET /v1/graph/nodegraph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `edge_type`, `pod`. Filters SHALL be applied at response time as a projection over the freshly built graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
 
 The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from `kube_pod_info`) by exact string equality. Because pod names are not globally unique across clusters, a `pod` value MAY match multiple pods; all matches SHALL be returned. When the `pod` filter is set, non-pod node types (`node`, `pvc`, `external`) SHALL be excluded unless they are an endpoint of an edge whose pod side is in scope. Cross-cluster pod-calls-pod partner preservation (the rule that re-adds an out-of-scope cluster's endpoint when only `cluster` narrows scope) SHALL NOT apply when `pod` is set; the caller has named the exact pod set and partner pods outside that set SHALL NOT be re-added.
 
 #### Scenario: Cluster filter narrows result
 
-- **WHEN** the cached graph contains pods in `cluster-alpha` and `cluster-beta` and a client sends `?cluster=cluster-alpha`
+- **WHEN** the freshly built graph contains pods in `cluster-alpha` and `cluster-beta` and a client sends `?cluster=cluster-alpha`
 - **THEN** the response contains pod nodes only for `cluster-alpha`, plus any cross-cluster edge endpoints in `cluster-beta` that participate in an edge to `cluster-alpha`
 
 #### Scenario: Namespace filter combined with cluster
@@ -178,7 +173,7 @@ The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from
 
 #### Scenario: Pod name filter narrows to matching pods
 
-- **WHEN** the cached graph contains pods named `frontend` and `backend` in `cluster-alpha` and a client sends `?pod=frontend`
+- **WHEN** the freshly built graph contains pods named `frontend` and `backend` in `cluster-alpha` and a client sends `?pod=frontend`
 - **THEN** the response contains the `frontend` pod node and any K8s-node, PVC, or external-endpoint nodes that are edge endpoints of `frontend`, but NOT the `backend` pod node
 
 #### Scenario: Pod name shared across clusters returns every match
@@ -203,7 +198,7 @@ The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from
 
 ### Requirement: Partial-graph traversal
 
-`GET /v1/graph` SHALL accept `?root=<id>&depth=<n>&direction=in|out|both` for partial-graph traversal. `depth` SHALL default to 2 and SHALL NOT exceed 6. Traversal SHALL run a BFS on the cached graph's adjacency map, then any other filter parameters SHALL apply to the traversal result.
+`GET /v1/graph` SHALL accept `?root=<id>&depth=<n>&direction=in|out|both` for partial-graph traversal. `depth` SHALL default to 2 and SHALL NOT exceed 6. Traversal SHALL run a BFS on the freshly built graph's adjacency map, then any other filter parameters SHALL apply to the traversal result.
 
 #### Scenario: Outgoing traversal at depth 1
 
@@ -222,7 +217,7 @@ The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from
 
 ### Requirement: Cluster discovery endpoint
 
-The server SHALL expose `GET /v1/clusters` that returns the list of clusters with data in centralised VictoriaMetrics over the discovery lookback window (default 1 hour). The response SHALL be derived live from a single `group by (cluster) (kube_node_info)` query and SHALL be cached internally for 60 seconds. When `--clusters-allowlist` is set, the result SHALL be intersected with the allowlist before being returned.
+The server SHALL expose `GET /v1/clusters` that returns the list of clusters with data in centralised VictoriaMetrics over the discovery lookback window (default 1 hour). The response SHALL be derived live from a single `group by (cluster) (kube_node_info)` query on every request — there is no in-process discovery cache in v1; clients revalidate via the response `ETag`. When `--clusters-allowlist` is set, the result SHALL be intersected with the allowlist before being returned.
 
 #### Scenario: Live discovery
 
@@ -255,7 +250,7 @@ The server SHALL expose `GET /v1/edge-types` that returns the static catalogue o
 
 ### Requirement: Cross-cluster edge representation
 
-When the cached graph contains a `pod-calls-pod` edge whose source-node cluster differs from its target-node cluster, the API SHALL emit it as a single edge carrying `labels.cluster` (the trace source / client-side cluster) and SHALL include both endpoint nodes in the response `elements.nodes` whenever the projection scope includes either endpoint's cluster. Consumers detect cross-cluster status by comparing the `labels.cluster` of the edge's resolved source and target nodes — not from edge labels.
+When the freshly built graph contains a `pod-calls-pod` edge whose source-node cluster differs from its target-node cluster, the API SHALL emit it as a single edge carrying `labels.cluster` (the trace source / client-side cluster) and SHALL include both endpoint nodes in the response `elements.nodes` whenever the projection scope includes either endpoint's cluster. Consumers detect cross-cluster status by comparing the `labels.cluster` of the edge's resolved source and target nodes — not from edge labels.
 
 #### Scenario: Cross-cluster edge with both clusters in scope
 
@@ -267,24 +262,65 @@ When the cached graph contains a `pod-calls-pod` edge whose source-node cluster 
 - **WHEN** a client requests `?cluster=cluster-alpha` and a cross-cluster edge exists from a pod in `cluster-alpha` to a pod in `cluster-beta`
 - **THEN** the response contains the `cluster-alpha` endpoint, the `cluster-beta` endpoint (so the edge resolves), and the edge with `labels.cluster: "cluster-alpha"`; the cross-cluster status is detected by comparing the two endpoint nodes' `labels.cluster` values
 
-### Requirement: HTTP caching headers
+### Requirement: HTTP caching headers (ETag only on graph endpoints)
 
-Every successful response from `GET /v1/graph`, `GET /v1/graph/nodegraph`, `GET /v1/clusters`, and `GET /v1/edge-types` SHALL carry a `Cache-Control: public, max-age=<n>` header derived from the time class of the underlying data and an `ETag` header derived from a SHA-256 of the response body. Requests carrying a matching `If-None-Match` SHALL receive `304 Not Modified`.
+Every successful response from `GET /v1/graph`, `GET /v1/graph/nodegraph`, `GET /v1/clusters`, and `GET /v1/edge-types` SHALL carry an `ETag` header derived from a SHA-256 of the response body. Requests carrying a matching `If-None-Match` SHALL receive `304 Not Modified` with no body.
+
+`GET /v1/edge-types` SHALL additionally carry `Cache-Control: public, max-age=3600` because the catalogue is compiled into the binary. `GET /v1/graph`, `GET /v1/graph/nodegraph`, and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header in v1, because the server has no in-process result cache to advertise; clients are expected to revalidate via `If-None-Match`.
 
 #### Scenario: 304 Not Modified on repeated request
 
 - **WHEN** a client receives an `ETag` from a previous `GET /v1/graph` response and re-sends the same query with `If-None-Match: "<etag>"`
 - **THEN** the server returns 304 Not Modified with no body
 
-#### Scenario: X-Cache header on cache hit
+#### Scenario: ETag determinism across rebuilds
 
-- **WHEN** an in-process cache hit serves the request
-- **THEN** the response carries `X-Cache: HIT`
+- **WHEN** a client sends two consecutive `GET /v1/graph` requests with identical query parameters and the upstream data has not changed between them
+- **THEN** both responses carry byte-identical `ETag` headers, even though each request triggered an independent upstream fan-out
 
-#### Scenario: X-Cache header on cache miss
+### Requirement: API-key authentication on `/v1/*` and `/debug/*`
 
-- **WHEN** the server builds the graph from upstream for the request
-- **THEN** the response carries `X-Cache: MISS` (or `COALESCED` if the request was deduplicated by singleflight)
+When the server is started with at least one API key configured (via `--api-keys-file` or `--api-keys`), every request to `/v1/*` and `/debug/*` SHALL carry an `X-API-Key: <key>` header. Requests without the header SHALL receive `401 Unauthorized` with reason `unauthorized` and a JSON message indicating the missing header. Requests with a header value that is not present in the configured key set SHALL receive `401 Unauthorized` with reason `unauthorized`.
+
+When no keys are configured (both flags empty), the middleware SHALL be a no-op: every route SHALL behave as if auth were not configured. The server SHALL log a warning at boot identifying that auth is disabled.
+
+The following routes SHALL be exempt from authentication regardless of configuration: `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`, and `/docs/assets/*`.
+
+Key comparison SHALL be constant-time and SHALL iterate the full configured key set on every request so neither match latency nor early exit reveals the matching position.
+
+The server SHALL increment `kube_state_graph_auth_rejected_total{reason="missing"}` on requests without the header and `kube_state_graph_auth_rejected_total{reason="invalid"}` on requests whose header value is unknown.
+
+When `--api-keys-file` is set and `--api-keys-reload-interval` is positive, the server SHALL re-read the file on the configured cadence and atomically swap the active key set. A key removed from the file SHALL be rejected on subsequent requests; a key added SHALL be accepted.
+
+#### Scenario: Missing header is rejected
+
+- **WHEN** the server is started with `--api-keys=k1` and a client sends `GET /v1/graph?start=...&end=...` with no `X-API-Key`
+- **THEN** the response is `401 Unauthorized` with body `{"error":{"reason":"unauthorized", ...}}`
+
+#### Scenario: Wrong key is rejected
+
+- **WHEN** the server is started with `--api-keys=k1` and a client sends `X-API-Key: wrong`
+- **THEN** the response is `401 Unauthorized` with reason `unauthorized`
+
+#### Scenario: Valid key is accepted
+
+- **WHEN** the server is started with `--api-keys=k1,k2` and a client sends `X-API-Key: k2` to `/v1/edge-types`
+- **THEN** the response is `200 OK` with the edge-type catalogue
+
+#### Scenario: Open paths bypass auth even when keys are configured
+
+- **WHEN** the server is started with keys configured and a client sends `GET /livez` / `GET /metrics` / `GET /docs` with no header
+- **THEN** the response is `200 OK` (open routes ignore auth)
+
+#### Scenario: Auth disabled when no keys configured
+
+- **WHEN** the server is started with neither `--api-keys-file` nor `--api-keys` set
+- **THEN** every route, including `/v1/graph`, accepts requests with no `X-API-Key` header, and the server boot log emits a warning identifying disabled auth
+
+#### Scenario: Hot reload picks up rotated keys
+
+- **WHEN** the operator updates `--api-keys-file` content (e.g., a Kubernetes `Secret` rotation propagates) and `--api-keys-reload-interval` elapses
+- **THEN** subsequent requests presenting a key newly added to the file are accepted, and subsequent requests presenting a key removed from the file are rejected, all without process restart
 
 ### Requirement: Health endpoints
 
@@ -302,7 +338,7 @@ The server SHALL expose `GET /livez` that returns 200 while the process is runni
 
 ### Requirement: Self-metrics endpoint
 
-The server SHALL expose `GET /metrics` in Prometheus exposition format including at least: `kube_state_graph_build_duration_seconds`, `kube_state_graph_project_duration_seconds`, `kube_state_graph_serialise_duration_seconds`, `kube_state_graph_cache_hits_total`, `kube_state_graph_cache_misses_total`, `kube_state_graph_cache_size_entries`, `kube_state_graph_cache_cost_bytes`, `kube_state_graph_singleflight_dedup_total`, `kube_state_graph_build_concurrency`, `kube_state_graph_build_rejected_total`, `kube_state_graph_graph_node_count`, `kube_state_graph_graph_edge_count`, `kube_state_graph_clusters_observed`, `kube_state_graph_upstream_query_duration_seconds`, `kube_state_graph_upstream_query_failures_total`, and `kube_state_graph_http_requests_total`.
+The server SHALL expose `GET /metrics` in Prometheus exposition format including at least: `kube_state_graph_build_duration_seconds`, `kube_state_graph_project_duration_seconds`, `kube_state_graph_serialise_duration_seconds`, `kube_state_graph_build_concurrency`, `kube_state_graph_build_rejected_total`, `kube_state_graph_graph_node_count`, `kube_state_graph_graph_edge_count`, `kube_state_graph_clusters_observed`, `kube_state_graph_upstream_query_duration_seconds`, `kube_state_graph_upstream_query_failures_total`, `kube_state_graph_http_requests_total`, and `kube_state_graph_auth_rejected_total`.
 
 #### Scenario: Metrics exposition
 
@@ -320,7 +356,7 @@ The server SHALL cap the number of concurrent in-flight graph builds to a config
 
 #### Scenario: Build over capacity
 
-- **WHEN** the configured cap is 1 and two concurrent cache-missing requests arrive for different time buckets
+- **WHEN** the configured cap is 1 and two concurrent build requests arrive
 - **THEN** the second request returns 503 with `reason: "capacity"` and `Retry-After: 1`
 
 ### Requirement: Per-build timeout
@@ -352,12 +388,7 @@ When a topology query for the requested window returns zero rows but the upstrea
 
 ### Requirement: Operator endpoints
 
-The server SHALL expose `DELETE /admin/cache` that flushes the in-process Ristretto cache and returns 204 No Content. Behind a `--enable-debug` flag the server SHALL additionally expose `GET /debug/last-queries` that returns the raw upstream query strings and a redacted summary (counts and labels, not values) of the most recent build.
-
-#### Scenario: Cache flush
-
-- **WHEN** a client sends `DELETE /admin/cache`
-- **THEN** the server returns 204 No Content and the next graph request results in a cache miss
+Behind a `--enable-debug` flag the server SHALL expose `GET /debug/last-queries` that returns the raw upstream query strings and a redacted summary (counts and labels, not values) of the most recent build. v1 does NOT expose a cache-flush endpoint because it has no in-process result cache.
 
 #### Scenario: Debug endpoint disabled by default
 
@@ -366,7 +397,7 @@ The server SHALL expose `DELETE /admin/cache` that flushes the in-process Ristre
 
 ### Requirement: Structured request logging
 
-Every served HTTP request SHALL emit exactly one structured log line via `log/slog` JSON handler containing at least `method`, `path`, `status`, `duration_ms`, `request_id`, applied `cluster` filter values, and `cache_status`.
+Every served HTTP request SHALL emit exactly one structured log line via `log/slog` JSON handler containing at least `method`, `path`, `status`, `duration_ms`, `request_id`, and applied `cluster` filter values.
 
 #### Scenario: Request log line
 
@@ -416,7 +447,7 @@ The server SHALL serve the Scalar API Reference UI at `GET /docs`, rendering the
 The repository SHALL include a Go test that parses the embedded OpenAPI spec and asserts that:
 
 - Every `(method, path)` pair declared in the spec corresponds to a registered Gin route in `Server.Handler()`.
-- Every Gin route registered in `Server.Handler()` corresponds to a `(method, path)` pair declared in the spec, modulo an explicit allowlist of infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/admin/cache`, `/debug/last-queries`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*`).
+- Every Gin route registered in `Server.Handler()` corresponds to a `(method, path)` pair declared in the spec, modulo an explicit allowlist of infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/debug/last-queries`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*`).
 
 The test SHALL run on every PR via `go test ./...` and SHALL fail when annotations and routes drift.
 

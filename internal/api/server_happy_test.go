@@ -55,9 +55,7 @@ func TestGraphEndpoint_HappyPath(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	assert.Contains(t, resp.Header.Get("Cache-Control"), "max-age=")
 	assert.NotEmpty(t, resp.Header.Get("ETag"))
-	assert.Equal(t, "MISS", strings.ToUpper(resp.Header.Get("X-Cache")))
 
 	var body cytoscapeBody
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
@@ -249,7 +247,7 @@ func TestClustersEndpoint_AllowlistFilter(t *testing.T) {
 	assert.Equal(t, "prod-east", body.Clusters[0].Name)
 }
 
-func TestClustersEndpoint_CacheHit(t *testing.T) {
+func TestClustersEndpoint_HitsUpstreamPerRequest(t *testing.T) {
 	mock, cp := newCountingProm(t, map[string]string{"group by (cluster)": promFixtureClusters})
 	s := newTestServer(t, mock, nil)
 	srv := httptest.NewServer(s.Handler())
@@ -261,7 +259,7 @@ func TestClustersEndpoint_CacheHit(t *testing.T) {
 		resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 	}
-	assert.Equal(t, int32(1), cp.calls.Load(), "discovery should be cached after first call")
+	assert.Equal(t, int32(3), cp.calls.Load(), "each /v1/clusters request must hit upstream (no in-process cache)")
 }
 
 func TestClustersEndpoint_UpstreamError_Returns502(t *testing.T) {

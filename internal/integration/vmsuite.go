@@ -19,8 +19,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/marz32one/kube-state-graph/internal/api"
+	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
@@ -194,12 +194,16 @@ func (s *VMSuite) StartAPIServer(configure func(*config.Config)) *httptest.Serve
 	metrics := observability.NewMetrics()
 	prom, err := promql.New(cfg.PromURL, metrics)
 	s.Require().NoError(err)
-	c, err := cache.New(cfg.CacheMaxCostBytes, metrics)
-	s.Require().NoError(err)
-	s.T().Cleanup(c.Close)
 
+	ks := auth.NewKeySet()
+	if cfg.APIKeys != "" {
+		ks.LoadCSV(cfg.APIKeys)
+	}
+	if cfg.APIKeysFile != "" {
+		s.Require().NoError(ks.LoadFile(cfg.APIKeysFile))
+	}
 	builder := build.New(prom, cfg, metrics)
-	srv := api.New(cfg, builder, c, prom, metrics, logger)
+	srv := api.New(cfg, builder, prom, metrics, logger, ks)
 
 	httpSrv := httptest.NewServer(srv.Handler())
 	s.T().Cleanup(httpSrv.Close)

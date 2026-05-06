@@ -197,15 +197,17 @@ func (s *GraphSuite) TestETagRoundTrip304() {
 	s.Equal(http.StatusNotModified, second.StatusCode)
 }
 
-func (s *GraphSuite) TestCacheMissThenHit() {
+func (s *GraphSuite) TestRepeatedRequestsReturnSameETag() {
 	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
-	miss := s.httpGet(s.graphURL(srv.URL, nil))
-	_ = miss.Body.Close()
-	s.NotEqual("HIT", miss.Header.Get("X-Cache"), "first request should not be HIT")
+	first := s.httpGet(s.graphURL(srv.URL, nil))
+	etag1 := first.Header.Get("ETag")
+	_ = first.Body.Close()
+	s.Require().NotEmpty(etag1)
 
-	hit := s.httpGet(s.graphURL(srv.URL, nil))
-	_ = hit.Body.Close()
-	s.Equal("HIT", hit.Header.Get("X-Cache"))
+	second := s.httpGet(s.graphURL(srv.URL, nil))
+	etag2 := second.Header.Get("ETag")
+	_ = second.Body.Close()
+	s.Equal(etag1, etag2, "deterministic body must yield deterministic ETag across rebuilds")
 }
 
 func (s *GraphSuite) TestClustersDiscovery() {
@@ -230,4 +232,43 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 	for _, et := range []string{"pod-runs-on-node", "pod-mounts-pvc", "pod-calls-pod"} {
 		s.Contains(string(body), et)
 	}
+}
+
+func (s *GraphSuite) TestAPIKey_FileBacked_Enforced() {
+	srv := s.StartAPIServer(func(cfg *config.Config) {
+		cfg.MaxSkew = 365 * 24 * time.Hour
+		cfg.APIKeys = "secret-test-key-1,secret-test-key-2"
+	})
+
+	// Without header → 401.
+	without, err := http.NewRequestWithContext(s.T().Context(), http.MethodGet, s.graphURL(srv.URL, nil), nil)
+	s.Require().NoError(err)
+	resp1, err := http.DefaultClient.Do(without)
+	s.Require().NoError(err)
+	_ = resp1.Body.Close()
+	s.Equal(http.StatusUnauthorized, resp1.StatusCode)
+
+	// With wrong key → 401.
+	wrong, err := http.NewRequestWithContext(s.T().Context(), http.MethodGet, s.graphURL(srv.URL, nil), nil)
+	s.Require().NoError(err)
+	wrong.Header.Set("X-API-Key", "nope")
+	resp2, err := http.DefaultClient.Do(wrong)
+	s.Require().NoError(err)
+	_ = resp2.Body.Close()
+	s.Equal(http.StatusUnauthorized, resp2.StatusCode)
+
+	// With valid key → 200.
+	good, err := http.NewRequestWithContext(s.T().Context(), http.MethodGet, s.graphURL(srv.URL, nil), nil)
+	s.Require().NoError(err)
+	good.Header.Set("X-API-Key", "secret-test-key-2")
+	resp3, err := http.DefaultClient.Do(good)
+	s.Require().NoError(err)
+	_ = resp3.Body.Close()
+	s.Equal(http.StatusOK, resp3.StatusCode)
+
+	// /livez stays open even with auth enabled.
+	live, err := http.Get(srv.URL + "/livez") //nolint:noctx,gosec // local httptest URL
+	s.Require().NoError(err)
+	_ = live.Body.Close()
+	s.Equal(http.StatusOK, live.StatusCode)
 }

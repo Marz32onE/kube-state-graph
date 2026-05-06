@@ -9,7 +9,7 @@
 - 新增 Go（Gin）REST API server `kube-state-graph`，回傳統一的 nodes-and-edges JSON，涵蓋**一或多個 Kubernetes cluster** 的 pod、node、PVC topology，以及以 pod UID 解析的 RPC edge（含**跨越 cluster 邊界**的 edge）。
 - 所有輸入從單一 centralised VictoriaMetrics，經 Prometheus HTTP API 讀取。每條 upstream series（無論 `kube-state-metrics` 或 `traces_service_graph_*`）皆預期帶單一 `cluster` external label，標示其來源 cluster（service-graph metrics 即執行 trace producer 的 cluster；server 端 cluster 由 build 時用 topology pod-UID index 還原）。
 - 依呼叫端指定的 `[start, end]` 時間區間**即時**建 graph，使用 PromQL `@` timestamp modifier 與 range-aware 函式（`last_over_time`、`rate`）。
-- 針對多使用者 dashboard 模式優化：分層 cache——HTTP `ETag` / `Cache-Control`、以 `singleflight` 合併請求、以 in-process Ristretto cache 僅以 time bucket 為 key（filter 與 cluster 選擇在回應階段對 cached graph 套用，不同 filter 的併發使用者可共用同一 cache entry）。
+- **每次請求都重新建構 graph**（v1 不附帶 in-process result cache，也不附帶 singleflight）。每次請求都對 centralised VictoriaMetrics 執行一次完整 PromQL fan-out。Filter、cluster 選擇、traversal 仍在回應階段對新建的 graph 做 projection。回應仍帶 HTTP `ETag`（body 的 sha256），讓呼叫端能透過 `If-None-Match` 取得 `304 Not Modified` 而免去 body 傳輸。針對分散式部署的水平擴展 cache 機制留待之後另案處理（design.md 的「Future cache mechanism」）。
 - 在 `GET /v1/graph` 以 **Cytoscape.js** JSON 形狀暴露 graph，在 `GET /v1/graph/nodegraph` 以 **Grafana Node Graph** datasource 形狀暴露，方便用 Grafana dashboard 做視覺驗證。
 - 提供 cluster discovery（`GET /v1/clusters`）與靜態 edge-type catalogue（`GET /v1/edge-types`），讓呼叫端可填 filter dropdown 而不必讀文件。
 - 全 server 使用 Go 標準庫 `log/slog` 做 structured logging。
@@ -30,8 +30,8 @@
 
 ## 影響
 
-- 新 Go module，主要依賴：Gin、Prometheus Go client、`github.com/dgraph-io/ristretto/v2`、`golang.org/x/sync/{singleflight,errgroup,semaphore}`、`log/slog`。VictoriaMetrics 經 HTTP 以 Prometheus query API 使用，不 vendor。無 `client-go`、無 informer、不存取 Kubernetes API。
-- 新 HTTP API 表面（`/v1/graph`、`/v1/graph/nodegraph`、`/v1/clusters`、`/v1/edge-types`、`/v1/livez`、`/v1/readyz`、`/metrics`、可選 `/admin/cache`、`/debug/last-queries`），下游 UI 與 script 會依賴。
+- 新 Go module，主要依賴：Gin、Prometheus Go client、`golang.org/x/sync/{errgroup,semaphore}`、`log/slog`。VictoriaMetrics 經 HTTP 以 Prometheus query API 使用，不 vendor。無 `client-go`、無 informer、不存取 Kubernetes API。
+- 新 HTTP API 表面（`/v1/graph`、`/v1/graph/nodegraph`、`/v1/clusters`、`/v1/edge-types`、`/v1/livez`、`/v1/readyz`、`/metrics`、可選 `/debug/last-queries`），下游 UI 與 script 會依賴。
 - repository 內新增驗證產物：本機 rig（Kind config、in-cluster VictoriaMetrics manifest、真實 `kube-state-metrics` Deployment manifest 含 scrape-side `cluster=kind-local` relabel、Grafana 與儀表板、`local/kind/smoke.sh`）僅供人工執行；CI 整合測試在 `internal/integration/` 用 `testcontainers-go` 跑。無獨立 fixtures binary。
 - 各 upstream cluster 營運方需自行確保 scrape pipeline 對 `kube-state-metrics` 與 service-graph metrics 一致套用 `cluster` external label；文件會說明，程式不強制。
 - 不修改既有程式路徑或 spec。

@@ -1,3 +1,5 @@
+> **翻譯狀態**：v1 已移除 in-process result cache 與 singleflight。本譯本的 D5 / D6 / D12 等與 cache 直接相關段落可能仍留有舊敘述；以英文 `design.md` 為唯一權威來源。後續分散式部署的 cache 機制將以另案處理。
+
 ## 背景
 
 本 repository 只交付**graph API server** 這一個元件。其餘——centralised VictoriaMetrics、餵資料的 per-cluster scrape pipeline（`kube-state-metrics`、vmagent / Prometheus、客製化的 service-graph metrics source）、以及 Kind 為主的 integration-test harness——都視為外部依賴；在本 repo 僅以測試 scaffolding 形式存在。

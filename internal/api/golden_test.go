@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/graph"
+	"github.com/marz32one/kube-state-graph/internal/timewindow"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -33,7 +33,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 			req := graphRequest{
 				start: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
 				end:   time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),
-				bucket: cache.Bucketing{
+				window: timewindow.Window{
 					BucketSeconds: 60,
 					StartActual:   time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
 					EndActual:     time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),

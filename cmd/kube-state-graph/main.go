@@ -3,10 +3,17 @@
 //	@title			kube-state-graph API
 //	@version		v1
 //	@description	Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.
+//	@description
+//	@description	**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` and `/debug/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.
 //	@license.name	Apache 2.0
 //	@license.url	https://www.apache.org/licenses/LICENSE-2.0.html
 //	@BasePath		/
 //	@host			localhost:8080
+//
+//	@securityDefinitions.apikey	ApiKeyAuth
+//	@in							header
+//	@name						X-API-Key
+//	@description				API key presented in the `X-API-Key` header. Required on `/v1/*` and `/debug/*` when the server is started with keys configured. Health, metrics, and docs routes are exempt.
 package main
 
 import (
@@ -21,8 +28,8 @@ import (
 	"time"
 
 	"github.com/marz32one/kube-state-graph/internal/api"
+	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/cache"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
@@ -57,14 +64,13 @@ func run() error {
 		return fmt.Errorf("promql client: %w", err)
 	}
 
-	graphCache, err := cache.New(cfg.CacheMaxCostBytes, metrics)
+	keys, err := loadAPIKeys(cfg, logger)
 	if err != nil {
-		return fmt.Errorf("cache: %w", err)
+		return fmt.Errorf("api keys: %w", err)
 	}
-	defer graphCache.Close()
 
 	builder := build.New(promClient, cfg, metrics)
-	server := api.New(cfg, builder, graphCache, promClient, metrics, logger)
+	server := api.New(cfg, builder, promClient, metrics, logger, keys)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -98,4 +104,43 @@ func run() error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// loadAPIKeys returns a populated KeySet (file or CSV) or an empty one when
+// neither source is configured. When --api-keys-file is set and the reload
+// interval is positive, a background goroutine re-reads the file periodically
+// so a Kubernetes Secret rotation is picked up without a restart.
+func loadAPIKeys(cfg config.Config, logger *slog.Logger) (*auth.KeySet, error) {
+	ks := auth.NewKeySet()
+	switch {
+	case cfg.APIKeysFile != "":
+		if err := ks.LoadFile(cfg.APIKeysFile); err != nil {
+			return nil, err
+		}
+		logger.Info("api key auth enabled (file)",
+			"path", cfg.APIKeysFile,
+			"keys", ks.Snapshot(),
+			"reload_interval", cfg.APIKeysReloadInterval,
+		)
+		if cfg.APIKeysReloadInterval > 0 {
+			go reloadAPIKeys(ks, cfg.APIKeysFile, cfg.APIKeysReloadInterval, logger)
+		}
+	case cfg.APIKeys != "":
+		ks.LoadCSV(cfg.APIKeys)
+		logger.Info("api key auth enabled (env)", "keys", ks.Snapshot())
+	default:
+		logger.Warn("api key auth DISABLED — no --api-keys-file or --api-keys configured")
+	}
+	return ks, nil
+}
+
+func reloadAPIKeys(ks *auth.KeySet, path string, interval time.Duration, logger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := ks.LoadFile(path); err != nil {
+			logger.Error("api keys reload failed", "path", path, "err", err)
+			continue
+		}
+	}
 }

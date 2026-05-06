@@ -119,9 +119,6 @@ const docTemplate = `{
                     "bucket_seconds": {
                         "type": "integer"
                     },
-                    "built_at": {
-                        "type": "string"
-                    },
                     "clusters": {
                         "items": {
                             "type": "string"
@@ -313,6 +310,14 @@ const docTemplate = `{
                 "additionalProperties": {},
                 "type": "object"
             }
+        },
+        "securitySchemes": {
+            "ApiKeyAuth": {
+                "description": "API key presented in the ` + "`" + `X-API-Key` + "`" + ` header. Required on ` + "`" + `/v1/*` + "`" + ` and ` + "`" + `/debug/*` + "`" + ` when the server is started with keys configured. Health, metrics, and docs routes are exempt.",
+                "in": "header",
+                "name": "X-API-Key",
+                "type": "apiKey"
+            }
         }
     },
     "info": {
@@ -329,22 +334,29 @@ const docTemplate = `{
         "url": ""
     },
     "paths": {
-        "/admin/cache": {
-            "delete": {
-                "responses": {
-                    "204": {
-                        "description": "No Content"
-                    }
-                },
-                "summary": "Flush in-process graph cache",
-                "tags": [
-                    "admin"
-                ]
-            }
-        },
         "/debug/last-queries": {
             "get": {
+                "parameters": [
+                    {
+                        "description": "API key. Required when the server is started with API keys configured.",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "responses": {
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
+                    },
                     "501": {
                         "content": {
                             "application/json": {
@@ -356,6 +368,11 @@ const docTemplate = `{
                         "description": "Not implemented in v1"
                     }
                 },
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "summary": "Debug: last upstream queries",
                 "tags": [
                     "debug"
@@ -516,7 +533,17 @@ const docTemplate = `{
         },
         "/v1/clusters": {
             "get": {
-                "description": "Returns the set of clusters observed in ` + "`" + `kube_node_info` + "`" + ` over the configured discovery lookback (default 1 h). Intersected with ` + "`" + `--clusters-allowlist` + "`" + ` when set. Result cached server-side for the discovery TTL; served with ` + "`" + `Cache-Control: public, max-age=60` + "`" + ` and a stable ` + "`" + `ETag` + "`" + `.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\n{ \"name\": \"prod-eu\" },\n{ \"name\": \"prod-us\" },\n{ \"name\": \"stage-eu\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Returns the set of clusters observed in ` + "`" + `kube_node_info` + "`" + ` over the configured discovery lookback (default 1 h). Intersected with ` + "`" + `--clusters-allowlist` + "`" + ` when set. Each request hits VictoriaMetrics directly. The response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + `.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\n{ \"name\": \"prod-eu\" },\n{ \"name\": \"prod-us\" },\n{ \"name\": \"stage-eu\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "parameters": [
+                    {
+                        "description": "API key. Required when the server is started with API keys configured.",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
                         "content": {
@@ -527,6 +554,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "OK"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
                     },
                     "502": {
                         "content": {
@@ -539,6 +576,11 @@ const docTemplate = `{
                         "description": "Upstream VictoriaMetrics unavailable"
                     }
                 },
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "summary": "List clusters",
                 "tags": [
                     "discovery"
@@ -548,6 +590,16 @@ const docTemplate = `{
         "/v1/edge-types": {
             "get": {
                 "description": "Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with ` + "`" + `Cache-Control: public, max-age=3600` + "`" + ` and a stable ` + "`" + `ETag` + "`" + `. Use this to validate the ` + "`" + `edge_type` + "`" + ` filter on ` + "`" + `/v1/graph` + "`" + ` and to drive UI legends.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eEdge type matrix\u003c/b\u003e\u003c/summary\u003e\n\n| type | source → target | directed | cross-cluster |\n|---|---|---|---|\n| ` + "`" + `pod-runs-on-node` + "`" + ` | pod → node | yes | no |\n| ` + "`" + `pod-mounts-pvc` + "`" + ` | pod → pvc | yes | no |\n| ` + "`" + `pod-calls-pod` + "`" + ` | pod → pod \\| external | yes | yes |\n\n\u003c/details\u003e",
+                "parameters": [
+                    {
+                        "description": "API key. Required when the server is started with API keys configured.",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
                         "content": {
@@ -558,8 +610,23 @@ const docTemplate = `{
                             }
                         },
                         "description": "OK"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
                     }
                 },
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "summary": "Edge-type catalogue",
                 "tags": [
                     "discovery"
@@ -568,10 +635,10 @@ const docTemplate = `{
         },
         "/v1/graph": {
             "get": {
-                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. Window is bucketed onto a 60 s grid (` + "`" + `start` + "`" + ` floored, ` + "`" + `end` + "`" + ` ceiled). The cache key is time-only — all filter / traversal params are applied at response time over the cached graph and never fragment the cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `pod` + "`" + `.\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Caching**: response carries ` + "`" + `ETag` + "`" + ` + ` + "`" + `Cache-Control` + "`" + ` whose ` + "`" + `max-age` + "`" + ` follows the time class — live 30 s, recent 5 m, historical 1 h, frozen 24 h.\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"start\": \"2026-05-05T11:00:00Z\",\n\"end\":   \"2026-05-05T12:00:00Z\",\n\"start_actual\": \"2026-05-05T11:00:00Z\",\n\"end_actual\":   \"2026-05-05T12:00:00Z\",\n\"bucket_seconds\": 60,\n\"built_at\": \"2026-05-05T12:00:01Z\",\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. Window is aligned onto a 60 s grid (` + "`" + `start` + "`" + ` floored, ` + "`" + `end` + "`" + ` ceiled). Each request triggers a fresh upstream PromQL fan-out — there is no in-process result cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `pod` + "`" + `.\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Caching**: response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + ` and receive ` + "`" + `304 Not Modified` + "`" + ` when the body would be unchanged. No ` + "`" + `Cache-Control` + "`" + ` is emitted.\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"start\": \"2026-05-05T11:00:00Z\",\n\"end\":   \"2026-05-05T12:00:00Z\",\n\"start_actual\": \"2026-05-05T11:00:00Z\",\n\"end_actual\":   \"2026-05-05T12:00:00Z\",\n\"bucket_seconds\": 60,\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
-                        "description": "Window start. RFC 3339 (` + "`" + `2026-05-05T11:00:00Z` + "`" + `) or Unix seconds (` + "`" + `1746442800` + "`" + `). Floored to the 60 s bucket grid.",
+                        "description": "Window start. RFC 3339 (` + "`" + `2026-05-05T11:00:00Z` + "`" + `) or Unix seconds (` + "`" + `1746442800` + "`" + `). Floored to the 60 s grid.",
                         "example": "2026-05-05T11:00:00Z",
                         "in": "query",
                         "name": "start",
@@ -581,7 +648,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to ` + "`" + `floor(now, 60s)` + "`" + ` if it would exceed now. Must be \u003e start and within --max-window.",
+                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to ` + "`" + `floor(now, 60s)` + "`" + ` if it would exceed now. Must be \u003e start and within --max-window.",
                         "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",
@@ -682,6 +749,14 @@ const docTemplate = `{
                             ],
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "API key. Required when the server is started with API keys configured.",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -705,6 +780,16 @@ const docTemplate = `{
                         },
                         "description": "Invalid parameters (missing/invalid start|end, window_too_large, end_in_future, depth_too_large, invalid_scope)"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
+                    },
                     "503": {
                         "content": {
                             "application/json": {
@@ -716,6 +801,11 @@ const docTemplate = `{
                         "description": "Capacity / timeout / cluster_too_large or upstream unavailable"
                     }
                 },
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "summary": "Get multi-cluster graph (Cytoscape.js)",
                 "tags": [
                     "graph"
@@ -724,10 +814,10 @@ const docTemplate = `{
         },
         "/v1/graph/nodegraph": {
             "get": {
-                "description": "Same underlying graph as ` + "`" + `/v1/graph` + "`" + ` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: ` + "`" + `nodes_fields[]` + "`" + `, ` + "`" + `nodes[]` + "`" + `, ` + "`" + `edges_fields[]` + "`" + `, ` + "`" + `edges[]` + "`" + `.\n\nFiltering, traversal, bucketing, and caching semantics are identical to ` + "`" + `/v1/graph` + "`" + ` — see that endpoint for full details.\n\nExample: ` + "`" + `GET /v1/graph/nodegraph?start=1746442800\u0026end=1746446400\u0026cluster=prod-eu\u0026edge_type=pod-calls-pod\u0026root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab\u0026depth=3\u0026direction=out` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"nodes_fields\": [\n{ \"name\": \"id\",    \"type\": \"string\" },\n{ \"name\": \"title\", \"type\": \"string\" },\n{ \"name\": \"subtitle\", \"type\": \"string\" }\n],\n\"nodes\": [\n{ \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"title\": \"checkout-7d9f6c8b8-abcde\", \"subtitle\": \"pod\" }\n],\n\"edges_fields\": [\n{ \"name\": \"id\",     \"type\": \"string\" },\n{ \"name\": \"source\", \"type\": \"string\" },\n{ \"name\": \"target\", \"type\": \"string\" }\n],\n\"edges\": [\n{ \"id\": \"...uuidv5...\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Same underlying graph as ` + "`" + `/v1/graph` + "`" + ` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: ` + "`" + `nodes_fields[]` + "`" + `, ` + "`" + `nodes[]` + "`" + `, ` + "`" + `edges_fields[]` + "`" + `, ` + "`" + `edges[]` + "`" + `.\n\nFiltering, traversal, alignment, and ETag semantics are identical to ` + "`" + `/v1/graph` + "`" + ` — see that endpoint for full details.\n\nExample: ` + "`" + `GET /v1/graph/nodegraph?start=1746442800\u0026end=1746446400\u0026cluster=prod-eu\u0026edge_type=pod-calls-pod\u0026root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab\u0026depth=3\u0026direction=out` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"nodes_fields\": [\n{ \"name\": \"id\",    \"type\": \"string\" },\n{ \"name\": \"title\", \"type\": \"string\" },\n{ \"name\": \"subtitle\", \"type\": \"string\" }\n],\n\"nodes\": [\n{ \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"title\": \"checkout-7d9f6c8b8-abcde\", \"subtitle\": \"pod\" }\n],\n\"edges_fields\": [\n{ \"name\": \"id\",     \"type\": \"string\" },\n{ \"name\": \"source\", \"type\": \"string\" },\n{ \"name\": \"target\", \"type\": \"string\" }\n],\n\"edges\": [\n{ \"id\": \"...uuidv5...\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
-                        "description": "Window start. RFC 3339 or Unix seconds. Floored to the 60 s bucket grid.",
+                        "description": "Window start. RFC 3339 or Unix seconds. Floored to the 60 s grid.",
                         "example": "2026-05-05T11:00:00Z",
                         "in": "query",
                         "name": "start",
@@ -737,7 +827,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to now.",
+                        "description": "Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to now.",
                         "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",
@@ -838,6 +928,14 @@ const docTemplate = `{
                             ],
                             "type": "string"
                         }
+                    },
+                    {
+                        "description": "API key. Required when the server is started with API keys configured.",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
@@ -861,6 +959,16 @@ const docTemplate = `{
                         },
                         "description": "Invalid parameters"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
+                    },
                     "503": {
                         "content": {
                             "application/json": {
@@ -872,6 +980,11 @@ const docTemplate = `{
                         "description": "Capacity / timeout / upstream unavailable"
                     }
                 },
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
                 "summary": "Get multi-cluster graph (Grafana Node Graph datasource)",
                 "tags": [
                     "graph"
@@ -891,7 +1004,7 @@ const docTemplate = `{
 var SwaggerInfo = &swag.Spec{
 	Version:          "v1",
 	Title:            "kube-state-graph API",
-	Description:      "Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.",
+	Description:      "Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.\n\n**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` and `/debug/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

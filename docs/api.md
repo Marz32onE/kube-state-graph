@@ -2,6 +2,33 @@
 
 All routes are prefixed `/v1/`. Every JSON body carries `apiVersion: "v1"`.
 
+## Authentication
+
+When the server is started with API keys configured (`--api-keys-file=<path>`
+or `--api-keys=<csv>`), every request to `/v1/*` and `/debug/*` MUST carry an
+`X-API-Key: <key>` header.
+
+```bash
+curl -H 'X-API-Key: my-secret-key' \
+  'http://localhost:8080/v1/graph?start=2026-05-01T12:00:00Z&end=2026-05-01T12:05:00Z'
+```
+
+- Missing header or unrecognised key → `401 Unauthorized` with body
+  `{"error":{"reason":"unauthorized","message":"…"}}`. The server increments
+  `kube_state_graph_auth_rejected_total{reason="missing|invalid"}`.
+- Open routes that **never** require a key:
+  `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`,
+  `/docs/assets/*`. Health probes and Prometheus scrapes work unauthenticated;
+  `/metrics` should be gated by `NetworkPolicy` or a separate listen address
+  in production.
+- When the server is started with **no** keys configured (both flags empty),
+  the middleware is a no-op and every route accepts requests without a key. A
+  startup log line warns that auth is disabled.
+- File-backed keys (`--api-keys-file`, one key per line, `#` comments allowed)
+  are re-read every `--api-keys-reload-interval` (default `30s`). A
+  Kubernetes `Secret` rotation propagates without a Pod restart; combined
+  end-to-end latency is roughly `kubelet sync (~60s) + reload-interval (30s)`.
+
 ## `GET /v1/graph`
 
 Returns the multi-cluster graph for `[start, end]` in Cytoscape.js shape.
@@ -39,8 +66,7 @@ are not auto-included.
   "start": "2026-05-01T12:00:00Z",
   "end":   "2026-05-01T12:05:00Z",
   "start_actual": "...", "end_actual": "...",
-  "bucket_seconds": 15,
-  "built_at": "...",
+  "bucket_seconds": 60,
   "clusters": ["cluster-alpha", "cluster-beta"],
   "elements": {
     "nodes": [{"data": {"id": "<cluster>/<uid>", "name": "...", "type": "pod|node|pvc|external", "labels": {"cluster": "..."}}}],
@@ -54,10 +80,10 @@ future typed struct field (see the design doc, D9).
 
 ### Headers
 
-- `Cache-Control: public, max-age=<n>` (n derived from time class).
 - `ETag: "<sha256-of-body>"`.
-- `X-Cache: HIT | MISS | COALESCED`.
 - `If-None-Match` ⇒ `304 Not Modified`.
+
+`/v1/graph` and `/v1/graph/nodegraph` do **not** emit `Cache-Control` in v1 — there is no in-process result cache to advertise. Repeated identical requests return the same `ETag`, so clients save bandwidth via `If-None-Match` revalidation. A future cache mechanism for distributed deployment will reintroduce stronger caching headers.
 
 ### Status codes / `reason`
 
@@ -71,6 +97,7 @@ future typed struct field (see the design doc, D9).
 | 400    | `end_in_future`         | `end > now + --max-skew`. |
 | 400    | `depth_too_large`       | `depth > 6`. |
 | 400    | `outside_retention`     | Empty topology and healthy upstream. |
+| 401    | `unauthorized`          | Missing or invalid `X-API-Key` (only when API key auth is configured). |
 | 503    | `capacity`              | Build concurrency exhausted (`Retry-After: 1`). |
 | 503    | `timeout`               | Build exceeded `--build-timeout`. |
 | 503    | `cluster_too_large`     | `count(kube_pod_info) > --max-pods`. |
@@ -78,7 +105,7 @@ future typed struct field (see the design doc, D9).
 
 ## `GET /v1/graph/nodegraph`
 
-Same query parameters and caching as `/v1/graph`. Returns Grafana Node Graph
+Same query parameters and ETag semantics as `/v1/graph`. Returns Grafana Node Graph
 datasource shape with `nodes_fields` / `nodes` / `edges_fields` / `edges`
 arrays. The serialiser maps:
 
@@ -90,8 +117,7 @@ arrays. The serialiser maps:
 ## `GET /v1/clusters`
 
 Returns the list of clusters seen in `kube_node_info` over
-`--cluster-discovery-lookback`. Cached internally for 60 s. Intersected with
-`--clusters-allowlist` when configured.
+`--cluster-discovery-lookback`. Each request hits VictoriaMetrics directly; clients revalidate via the response `ETag`. Intersected with `--clusters-allowlist` when configured.
 
 ## `GET /v1/edge-types`
 
@@ -107,6 +133,6 @@ Static catalogue. Long `Cache-Control: max-age=3600` and registry-hash
 
 Prometheus exposition with `kube_state_graph_*` self-metrics.
 
-## `DELETE /admin/cache`, `GET /debug/last-queries`
+## `GET /debug/last-queries`
 
-Admin / debug endpoints (debug behind `--enable-debug`).
+Debug endpoint behind `--enable-debug`. Returns the raw upstream query strings of the most recent build. v1 does not expose a cache-flush endpoint because there is no result cache.

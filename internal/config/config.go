@@ -22,7 +22,9 @@ type Config struct {
 	ClusterDiscoveryLookback time.Duration
 	ClustersAllowlist        []string
 	ExternalNamePattern      string
-	CacheMaxCostBytes        int64
+	APIKeysFile              string
+	APIKeys                  string
+	APIKeysReloadInterval    time.Duration
 	EnableDebug              bool
 	LogLevel                 string
 }
@@ -43,7 +45,9 @@ func Defaults() Config {
 		ClusterDiscoveryLookback: time.Hour,
 		ClustersAllowlist:        nil,
 		ExternalNamePattern:      "",
-		CacheMaxCostBytes:        256 * 1024 * 1024,
+		APIKeysFile:              "",
+		APIKeys:                  "",
+		APIKeysReloadInterval:    30 * time.Second,
 		EnableDebug:              false,
 		LogLevel:                 "info",
 	}
@@ -69,7 +73,9 @@ func Parse(args []string, lookup LookupEnvFunc) (Config, error) {
 		return nil
 	})
 	fs.StringVar(&cfg.ExternalNamePattern, "external-name-pattern", cfg.ExternalNamePattern, "Substring; when set and matched against client/server label values, that endpoint becomes an external node.")
-	fs.Int64Var(&cfg.CacheMaxCostBytes, "cache-max-cost-bytes", cfg.CacheMaxCostBytes, "Ristretto MaxCost in bytes.")
+	fs.StringVar(&cfg.APIKeysFile, "api-keys-file", cfg.APIKeysFile, "Path to a file holding accepted API keys (one per line, # comments allowed). Reloaded periodically. Takes precedence over --api-keys.")
+	fs.StringVar(&cfg.APIKeys, "api-keys", cfg.APIKeys, "Comma-separated list of accepted API keys. Used when --api-keys-file is unset.")
+	fs.DurationVar(&cfg.APIKeysReloadInterval, "api-keys-reload-interval", cfg.APIKeysReloadInterval, "How often to re-read --api-keys-file. Set to 0 to disable hot reload.")
 	fs.BoolVar(&cfg.EnableDebug, "enable-debug", cfg.EnableDebug, "Enable /debug/* endpoints.")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, error.")
 
@@ -102,13 +108,6 @@ func applyEnv(cfg *Config, lookup LookupEnvFunc) {
 			}
 		}
 	}
-	getInt64 := func(env string, dst *int64) {
-		if v, ok := lookup(env); ok {
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-				*dst = n
-			}
-		}
-	}
 	getBool := func(env string, dst *bool) {
 		if v, ok := lookup(env); ok {
 			if b, err := strconv.ParseBool(v); err == nil {
@@ -129,7 +128,9 @@ func applyEnv(cfg *Config, lookup LookupEnvFunc) {
 		cfg.ClustersAllowlist = splitAndTrim(v)
 	}
 	getStr("KSG_EXTERNAL_NAME_PATTERN", &cfg.ExternalNamePattern)
-	getInt64("KSG_CACHE_MAX_COST_BYTES", &cfg.CacheMaxCostBytes)
+	getStr("KSG_API_KEYS_FILE", &cfg.APIKeysFile)
+	getStr("KSG_API_KEYS", &cfg.APIKeys)
+	getDur("KSG_API_KEYS_RELOAD_INTERVAL", &cfg.APIKeysReloadInterval)
 	getBool("KSG_ENABLE_DEBUG", &cfg.EnableDebug)
 	getStr("KSG_LOG_LEVEL", &cfg.LogLevel)
 }
@@ -163,9 +164,6 @@ func (c Config) Validate() error {
 	}
 	if c.ClusterDiscoveryLookback <= 0 {
 		return errors.New("cluster-discovery-lookback must be positive")
-	}
-	if c.CacheMaxCostBytes <= 0 {
-		return errors.New("cache-max-cost-bytes must be positive")
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":

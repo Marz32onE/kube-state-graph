@@ -78,8 +78,6 @@ components:
                     type: string
                 bucket_seconds:
                     type: integer
-                built_at:
-                    type: string
                 clusters:
                     items:
                         type: string
@@ -206,11 +204,20 @@ components:
         internal_api.grafanaRow:
             additionalProperties: {}
             type: object
+    securitySchemes:
+        ApiKeyAuth:
+            description: API key presented in the `X-API-Key` header. Required on `/v1/*` and `/debug/*` when the server is started with keys configured. Health, metrics, and docs routes are exempt.
+            in: header
+            name: X-API-Key
+            type: apiKey
 externalDocs:
     description: ""
     url: ""
 info:
-    description: Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.
+    description: |-
+        Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.
+
+        **Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` and `/debug/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.
     license:
         name: Apache 2.0
         url: https://www.apache.org/licenses/LICENSE-2.0.html
@@ -218,23 +225,29 @@ info:
     version: v1
 openapi: 3.1.0
 paths:
-    /admin/cache:
-        delete:
-            responses:
-                "204":
-                    description: No Content
-            summary: Flush in-process graph cache
-            tags:
-                - admin
     /debug/last-queries:
         get:
+            parameters:
+                - description: API key. Required when the server is started with API keys configured.
+                  in: header
+                  name: X-API-Key
+                  schema:
+                    type: string
             responses:
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/internal_api.errorBody'
+                    description: Missing or invalid `X-API-Key` (only when API key auth is configured)
                 "501":
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/internal_api.errorBody'
                     description: Not implemented in v1
+            security:
+                - ApiKeyAuth: []
             summary: 'Debug: last upstream queries'
             tags:
                 - debug
@@ -333,7 +346,7 @@ paths:
     /v1/clusters:
         get:
             description: |-
-                Returns the set of clusters observed in `kube_node_info` over the configured discovery lookback (default 1 h). Intersected with `--clusters-allowlist` when set. Result cached server-side for the discovery TTL; served with `Cache-Control: public, max-age=60` and a stable `ETag`.
+                Returns the set of clusters observed in `kube_node_info` over the configured discovery lookback (default 1 h). Intersected with `--clusters-allowlist` when set. Each request hits VictoriaMetrics directly. The response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match`.
 
                 <details><summary><b>Sample response</b></summary>
 
@@ -349,6 +362,12 @@ paths:
                 ```
 
                 </details>
+            parameters:
+                - description: API key. Required when the server is started with API keys configured.
+                  in: header
+                  name: X-API-Key
+                  schema:
+                    type: string
             responses:
                 "200":
                     content:
@@ -356,12 +375,20 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/internal_api.clustersBody'
                     description: OK
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/internal_api.errorBody'
+                    description: Missing or invalid `X-API-Key` (only when API key auth is configured)
                 "502":
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/internal_api.errorBody'
                     description: Upstream VictoriaMetrics unavailable
+            security:
+                - ApiKeyAuth: []
             summary: List clusters
             tags:
                 - discovery
@@ -379,6 +406,12 @@ paths:
                 | `pod-calls-pod` | pod → pod \| external | yes | yes |
 
                 </details>
+            parameters:
+                - description: API key. Required when the server is started with API keys configured.
+                  in: header
+                  name: X-API-Key
+                  schema:
+                    type: string
             responses:
                 "200":
                     content:
@@ -386,6 +419,14 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/internal_api.edgeTypesBody'
                     description: OK
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/internal_api.errorBody'
+                    description: Missing or invalid `X-API-Key` (only when API key auth is configured)
+            security:
+                - ApiKeyAuth: []
             summary: Edge-type catalogue
             tags:
                 - discovery
@@ -394,13 +435,13 @@ paths:
             description: |-
                 Returns the joined multi-cluster pod / node / PVC graph for the supplied `[start, end]` window in Cytoscape.js JSON shape (`{ elements: { nodes:[…], edges:[…] } }`).
 
-                **Window**: `start`/`end` accept RFC 3339 or Unix seconds. Window is bucketed onto a 60 s grid (`start` floored, `end` ceiled). The cache key is time-only — all filter / traversal params are applied at response time over the cached graph and never fragment the cache.
+                **Window**: `start`/`end` accept RFC 3339 or Unix seconds. Window is aligned onto a 60 s grid (`start` floored, `end` ceiled). Each request triggers a fresh upstream PromQL fan-out — there is no in-process result cache.
 
                 **Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `pod`.
 
                 **Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
 
-                **Caching**: response carries `ETag` + `Cache-Control` whose `max-age` follows the time class — live 30 s, recent 5 m, historical 1 h, frozen 24 h.
+                **Caching**: response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match` and receive `304 Not Modified` when the body would be unchanged. No `Cache-Control` is emitted.
 
                 Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
 
@@ -414,7 +455,6 @@ paths:
                 "start_actual": "2026-05-05T11:00:00Z",
                 "end_actual":   "2026-05-05T12:00:00Z",
                 "bucket_seconds": 60,
-                "built_at": "2026-05-05T12:00:01Z",
                 "clusters": ["prod-eu", "prod-us"],
                 "elements": {
                 "nodes": [
@@ -431,14 +471,14 @@ paths:
 
                 </details>
             parameters:
-                - description: Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds (`1746442800`). Floored to the 60 s bucket grid.
+                - description: Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds (`1746442800`). Floored to the 60 s grid.
                   in: query
                   name: start
                   required: true
                   schema:
                     example: "2026-05-05T11:00:00Z"
                     type: string
-                - description: Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to `floor(now, 60s)` if it would exceed now. Must be > start and within --max-window.
+                - description: Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to `floor(now, 60s)` if it would exceed now. Must be > start and within --max-window.
                   in: query
                   name: end
                   required: true
@@ -523,6 +563,11 @@ paths:
                         - both
                     example: both
                     type: string
+                - description: API key. Required when the server is started with API keys configured.
+                  in: header
+                  name: X-API-Key
+                  schema:
+                    type: string
             responses:
                 "200":
                     content:
@@ -536,12 +581,20 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/internal_api.errorBody'
                     description: Invalid parameters (missing/invalid start|end, window_too_large, end_in_future, depth_too_large, invalid_scope)
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/internal_api.errorBody'
+                    description: Missing or invalid `X-API-Key` (only when API key auth is configured)
                 "503":
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/internal_api.errorBody'
                     description: Capacity / timeout / cluster_too_large or upstream unavailable
+            security:
+                - ApiKeyAuth: []
             summary: Get multi-cluster graph (Cytoscape.js)
             tags:
                 - graph
@@ -550,7 +603,7 @@ paths:
             description: |-
                 Same underlying graph as `/v1/graph` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: `nodes_fields[]`, `nodes[]`, `edges_fields[]`, `edges[]`.
 
-                Filtering, traversal, bucketing, and caching semantics are identical to `/v1/graph` — see that endpoint for full details.
+                Filtering, traversal, alignment, and ETag semantics are identical to `/v1/graph` — see that endpoint for full details.
 
                 Example: `GET /v1/graph/nodegraph?start=1746442800&end=1746446400&cluster=prod-eu&edge_type=pod-calls-pod&root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab&depth=3&direction=out`
 
@@ -580,14 +633,14 @@ paths:
 
                 </details>
             parameters:
-                - description: Window start. RFC 3339 or Unix seconds. Floored to the 60 s bucket grid.
+                - description: Window start. RFC 3339 or Unix seconds. Floored to the 60 s grid.
                   in: query
                   name: start
                   required: true
                   schema:
                     example: "2026-05-05T11:00:00Z"
                     type: string
-                - description: Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s bucket grid; clamped to now.
+                - description: Window end. RFC 3339 or Unix seconds. Ceiled to the 60 s grid; clamped to now.
                   in: query
                   name: end
                   required: true
@@ -672,6 +725,11 @@ paths:
                         - both
                     example: both
                     type: string
+                - description: API key. Required when the server is started with API keys configured.
+                  in: header
+                  name: X-API-Key
+                  schema:
+                    type: string
             responses:
                 "200":
                     content:
@@ -685,12 +743,20 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/internal_api.errorBody'
                     description: Invalid parameters
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/internal_api.errorBody'
+                    description: Missing or invalid `X-API-Key` (only when API key auth is configured)
                 "503":
                     content:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/internal_api.errorBody'
                     description: Capacity / timeout / upstream unavailable
+            security:
+                - ApiKeyAuth: []
             summary: Get multi-cluster graph (Grafana Node Graph datasource)
             tags:
                 - graph

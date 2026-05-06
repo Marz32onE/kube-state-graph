@@ -64,43 +64,34 @@ Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`)
 HTTP /v1/graph?start=&end=&...
    │
    ▼
-parseGraphRequest        ── cache.Bucket(start, end, now) → (StartActual, EndActual, BucketSeconds, TTL)
-   │                        cache.Key(bucket) → uint64   (time-only key)
+parseGraphRequest        ── timewindow.Align(start, end, now) → Window{StartActual, EndActual, BucketSeconds}
+   │
    ▼
-Orchestrator.Resolve(ctx, key, bucket)
-   ├─ cache.Get(key)               ── HIT  → return *Graph
-   └─ singleflight.Do(key, …)
-         ├─ semaphore.TryAcquire   ── overflow → 503 capacity
-         ├─ context.WithTimeout    ── exceeded → 503 timeout
-         ├─ Builder.Build(ctx, window, end)
-         │     ├─ probeClusterSize        ── overflow → 503 cluster_too_large
-         │     ├─ ReadTopology  (errgroup of 5 PromQL queries in parallel)
-         │     ├─ ReadServiceGraph (1 PromQL, joined with topology)
-         │     └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
-         └─ cache.Set(key, *Graph, cost, TTL)
+Orchestrator.Resolve(ctx, window, end)
+   ├─ semaphore.TryAcquire   ── overflow → 503 capacity
+   ├─ context.WithTimeout    ── exceeded → 503 timeout
+   └─ Builder.Build(ctx, window, end)
+         ├─ probeClusterSize        ── overflow → 503 cluster_too_large
+         ├─ ReadTopology  (errgroup of 5 PromQL queries in parallel)
+         ├─ ReadServiceGraph (1 PromQL, joined with topology)
+         └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
    ▼
 graph.Project(g, scope)            ── filters + traversal applied here, NOT during build
    ▼
 serialiseCytoscape / serialiseGrafanaNodeGraph
    ▼
-ETag = sha256(body); Cache-Control = public, max-age=<from time class>
+ETag = sha256(body); If-None-Match honoured for 304
 ```
+
+v1 has **no in-process result cache** and **no singleflight**. Each request runs a fresh upstream fan-out. ETag-based revalidation is the only caching layer. A future iteration is expected to add a horizontally scalable cache mechanism for distributed deployment (Redis L2, background materialiser, or graph DB) — tracked as a separate change.
 
 ### Load-bearing design rules
 
 These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 (D1–D19) before changing any of them.
 
-- **Cache key is time-only** (`start_bucket, end_bucket, bucket_size`). Filters
-  (`cluster`, `namespace`, `edge_type`, `pod`, traversal) are applied at
-  response time over the cached `*Graph`. Adding filters to the key would
-  fragment the cache catastrophically — D5/D7.
-- **Time-bucketing classes**: bucket grid is **uniformly 60 s** for every class;
-  TTL still varies — `live` (30 s), `recent` (5 m), `historical` (1 h), `frozen`
-  (24 h). `start` is floored and `end` is **ceiled** to the 60 s grid (so a
-  request for `end=12:19` covers 12:17 in its 12:00→12:20 window). When
-  `ceil(end, 60s) > now`, `end_actual` is clamped to `floor(now, 60s)`;
-  callers receive `start_actual`/`end_actual` so they know what window they got.
+- **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `pod`, traversal) are applied at response time as a projection over the freshly built `*Graph`. ETag (sha256(body)) is the only caching layer — revisit when the future cache mechanism (D6) lands.
+- **Time-window alignment is a pure function**, not a cache key. `start` is floored and `end` is **ceiled** to a fixed 60 s grid (so a request for `end=12:19` covers 12:17 in its 12:00→12:20 window). When `ceil(end, 60s) > now`, `end_actual` is clamped to `floor(now, 60s)`; callers receive `start_actual`/`end_actual` so they know what window they got. Helper: `internal/timewindow.Align`.
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,
   `error_rate`) and boolean flags (`cross_cluster`, `ghost`) are **deferred to a
@@ -133,15 +124,18 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   metric does not carry server-side cluster; cross-cluster edges whose target
   pod lives in a non-allowlisted cluster drop silently when the target
   topology is not loaded). All caller-supplied filters are projection-time only.
-- **Ristretto async-write race with singleflight**: the `singleflight.Do`
-  callback returns the *built `*Graph` value*, not a "go re-read the cache"
-  signal. Waiters see the same `*Graph`. We additionally call `cache.Wait()`
-  inside `cache.Set` so the entry is visible to the *next* request. Don't
-  rewrite this without re-reading D6.
 - **`/v1/edge-types` reads from `graph.EdgeTypes` only** — a single in-code
   registry shared with the builder. Adding an edge type = update both the
   builder and the registry in the same change; the API can never list a type
   the builder cannot produce.
+- **API-key auth is the only HTTP auth in v1.** Header is `X-API-Key`. Keys
+  come from `--api-keys-file` (K8s `Secret` mount, hot-reloaded) or
+  `--api-keys`. Empty keyset = auth disabled (dev default). Open paths
+  (no key required): `/livez`, `/readyz`, `/metrics`, `/openapi.*`, `/docs`,
+  `/docs/assets/*`. Validation is constant-time and iterates the whole set —
+  do NOT add early-return optimisations to `auth.KeySet.Validate`. Logs must
+  never include the presented key value.
+- **ETag determinism is load-bearing.** sha256(body) is stable iff the body is byte-identical for the same `(window, filters, upstream-data)`. Serialisers MUST sort node/edge slices (`graph.SortNodes`/`SortEdges`), `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build fields (`built_at` was removed for this reason). Don't add timestamps, random IDs, or unsorted map iteration to the response without re-checking ETag stability.
 
 ### Sealed graph types
 
@@ -154,7 +148,7 @@ methods — never through type switches in the serialiser.
 
 | Layer | Where | What it covers |
 |---|---|---|
-| Unit | `internal/{graph,cache,build,promql,config}/*_test.go` | Pure functions: parsers, joins, projection, cache key, edge IDs. |
+| Unit | `internal/{graph,build,promql,config,timewindow}/*_test.go` | Pure functions: parsers, joins, projection, alignment, edge IDs. |
 | Component | `internal/api/server_test.go` | Gin handlers against a `httptest.Server` mocking the Prometheus HTTP API. |
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | Wire-format snapshots; run with `-update` to refresh. |
 | Property | `internal/graph/property_test.go` | Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
@@ -195,7 +189,6 @@ When making non-trivial behaviour changes, update the relevant artifact
   All cluster facts come from VictoriaMetrics. Informers were considered and
   rejected — see D1 / D16. Tests and harness tooling are exempt.
 - Don't add dependencies casually. Current direct deps: Gin, Prometheus
-  client_golang, Ristretto v2, google/uuid, cespare/xxhash v2, golang.org/x/sync,
-  testify v1.10.0 (test-only),
+  client_golang, google/uuid, golang.org/x/sync, testify v1.10.0 (test-only),
   testcontainers-go (integration test-only), swaggo/swag/v2 (codegen tool, not
   imported at runtime). Adding more requires a design-doc note.
