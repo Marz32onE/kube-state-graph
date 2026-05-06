@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Fetch /v1/graph (Cytoscape format) and deserialise into Pydantic models.
+"""Wrapped httpx client for the kube-state-graph API server.
 
-Run:
+Exposes `KubeStateGraphClient`, a thin Pydantic-typed wrapper around
+`httpx.Client` covering `/v1/graph` (Cytoscape), `/v1/graph/nodegraph`
+(Grafana Node Graph), `/v1/clusters`, `/v1/edge-types`, and the health
+probes. Supports `X-API-Key` auth, `If-None-Match` revalidation, and
+context-manager use.
+
+Run as a script:
     uv run --with httpx --with pydantic --with rich examples/python/get_graph.py \
         --base-url http://localhost:8080 \
         --start 2026-05-01T12:00:00Z \
@@ -10,6 +16,12 @@ Run:
 Or with pip:
     pip install 'httpx>=0.27' 'pydantic>=2.7' 'rich>=13'
     python examples/python/get_graph.py
+
+As a library:
+    from get_graph import KubeStateGraphClient
+    with KubeStateGraphClient("http://localhost:8080", api_key="...") as c:
+        clusters = c.list_clusters()
+        g, etag = c.get_graph(start=..., end=..., cluster=["prod-eu"])
 """
 
 from __future__ import annotations
@@ -107,69 +119,252 @@ class GraphResponse(_Frozen):
         return out
 
 
-# Re-usable adapter (faster than re-parsing a model on every call).
-GraphAdapter: TypeAdapter[GraphResponse] = TypeAdapter(GraphResponse)
+class ClusterInfo(_Frozen):
+    name: str
+
+
+class ClustersResponse(_Frozen):
+    api_version: str = Field(alias="apiVersion")
+    clusters: list[ClusterInfo]
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+
+class EdgeTypeLabel(_Frozen):
+    name: str
+    description: str | None = None
+    value_type: str | None = None
+
+
+class EdgeTypeDefinition(_Frozen):
+    type: str
+    description: str | None = None
+    directed: bool
+    source_type: list[NodeType]
+    target_type: list[NodeType]
+    may_cross_cluster: bool
+    labels: list[EdgeTypeLabel] = Field(default_factory=list)
+
+
+class EdgeTypesResponse(_Frozen):
+    api_version: str = Field(alias="apiVersion")
+    edge_types: list[EdgeTypeDefinition]
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+
+# Re-usable adapters (faster than re-parsing a model on every call).
+_GraphAdapter: TypeAdapter[GraphResponse] = TypeAdapter(GraphResponse)
+_ClustersAdapter: TypeAdapter[ClustersResponse] = TypeAdapter(ClustersResponse)
+_EdgeTypesAdapter: TypeAdapter[EdgeTypesResponse] = TypeAdapter(EdgeTypesResponse)
 
 
 Direction = Literal["in", "out", "both"]
 
 
-def fetch_graph(
-    base_url: str,
-    *,
-    start: datetime,
-    end: datetime,
-    api_key: str | None = None,
-    cluster: list[str] | None = None,
-    namespace: list[str] | None = None,
-    edge_type: list[EdgeType] | None = None,
-    pod: list[str] | None = None,
-    root: str | None = None,
-    depth: int | None = None,
-    direction: Direction | None = None,
-    if_none_match: str | None = None,
-    timeout: float = 30.0,
-) -> tuple[GraphResponse | None, str | None, int]:
-    """Call GET /v1/graph and return (graph, etag, status).
+# ----- Client ---------------------------------------------------------------
 
-    On 304 Not Modified the graph is None — the caller already has the body
-    matching the supplied If-None-Match etag.
+
+class KubeStateGraphError(RuntimeError):
+    """Raised on non-2xx / non-304 responses."""
+
+    def __init__(self, status: int, reason: str, body: str):
+        super().__init__(f"HTTP {status} {reason}: {body[:200]}")
+        self.status = status
+        self.reason = reason
+        self.body = body
+
+
+class KubeStateGraphClient:
+    """Thin httpx wrapper around the kube-state-graph HTTP API.
+
+    Lifecycle: call `.close()` or use as a context manager.
+    Threading: backed by a single `httpx.Client`; share across threads only
+    if you'd share a plain httpx.Client (httpx itself is thread-safe for
+    simple GETs).
     """
-    params: list[tuple[str, str]] = [
-        ("start", start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
-        ("end", end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
-    ]
-    for c in cluster or []:
-        params.append(("cluster", c))
-    for n in namespace or []:
-        params.append(("namespace", n))
-    for t in edge_type or []:
-        params.append(("edge_type", t))
-    for p in pod or []:
-        params.append(("pod", p))
-    if root:
-        params.append(("root", root))
-    if depth is not None:
-        params.append(("depth", str(depth)))
-    if direction:
-        params.append(("direction", direction))
 
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-    if if_none_match:
-        headers["If-None-Match"] = if_none_match
+    USER_AGENT = "kube-state-graph-py/1"
 
-    with httpx.Client(base_url=base_url, timeout=timeout) as client:
-        resp = client.get("/v1/graph", params=params, headers=headers)
-        if resp.status_code == 304:
-            return None, resp.headers.get("etag"), 304
-        resp.raise_for_status()
-        return (
-            GraphAdapter.validate_json(resp.content),
-            resp.headers.get("etag"),
-            resp.status_code,
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        api_key: str | None = None,
+        timeout: float = 30.0,
+        verify: bool | str = True,
+        client: httpx.Client | None = None,
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._owns_client = client is None
+        if client is None:
+            client = httpx.Client(
+                base_url=self._base_url,
+                timeout=timeout,
+                verify=verify,
+                headers={"Accept": "application/json", "User-Agent": self.USER_AGENT},
+            )
+        self._client = client
+
+    # ---- context manager / lifecycle -----------------------------------------
+
+    def __enter__(self) -> "KubeStateGraphClient":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    # ---- low-level GET --------------------------------------------------------
+
+    def _get(
+        self,
+        path: str,
+        *,
+        params: list[tuple[str, str]] | None = None,
+        if_none_match: str | None = None,
+    ) -> httpx.Response:
+        headers: dict[str, str] = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        if if_none_match:
+            headers["If-None-Match"] = if_none_match
+        resp = self._client.get(path, params=params, headers=headers)
+        if resp.status_code in (200, 304):
+            return resp
+        # Try to surface the structured `reason` field if present.
+        reason = ""
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict):
+                reason = str(payload.get("reason", ""))
+        except ValueError:
+            pass
+        raise KubeStateGraphError(resp.status_code, reason, resp.text)
+
+    # ---- /v1/graph ------------------------------------------------------------
+
+    def get_graph(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        cluster: list[str] | None = None,
+        namespace: list[str] | None = None,
+        edge_type: list[EdgeType] | None = None,
+        pod: list[str] | None = None,
+        root: str | None = None,
+        depth: int | None = None,
+        direction: Direction | None = None,
+        if_none_match: str | None = None,
+    ) -> tuple[GraphResponse | None, str | None]:
+        """GET /v1/graph (Cytoscape).
+
+        Returns (graph, etag). On 304 Not Modified, graph is None and the
+        caller's cached body matches the returned etag.
+        """
+        params = self._graph_params(
+            start, end, cluster, namespace, edge_type, pod, root, depth, direction
         )
+        resp = self._get("/v1/graph", params=params, if_none_match=if_none_match)
+        etag = resp.headers.get("etag")
+        if resp.status_code == 304:
+            return None, etag
+        return _GraphAdapter.validate_json(resp.content), etag
+
+    def get_node_graph(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        cluster: list[str] | None = None,
+        namespace: list[str] | None = None,
+        edge_type: list[EdgeType] | None = None,
+        pod: list[str] | None = None,
+        root: str | None = None,
+        depth: int | None = None,
+        direction: Direction | None = None,
+        if_none_match: str | None = None,
+    ) -> tuple[dict | None, str | None]:
+        """GET /v1/graph/nodegraph (Grafana Node Graph datasource shape).
+
+        Returned as raw dict — the Grafana shape (`nodes_fields`, `nodes`,
+        `edges_fields`, `edges`) is not modelled in this client.
+        """
+        params = self._graph_params(
+            start, end, cluster, namespace, edge_type, pod, root, depth, direction
+        )
+        resp = self._get("/v1/graph/nodegraph", params=params, if_none_match=if_none_match)
+        etag = resp.headers.get("etag")
+        if resp.status_code == 304:
+            return None, etag
+        return resp.json(), etag
+
+    @staticmethod
+    def _graph_params(
+        start: datetime,
+        end: datetime,
+        cluster: list[str] | None,
+        namespace: list[str] | None,
+        edge_type: list[EdgeType] | None,
+        pod: list[str] | None,
+        root: str | None,
+        depth: int | None,
+        direction: Direction | None,
+    ) -> list[tuple[str, str]]:
+        params: list[tuple[str, str]] = [
+            ("start", start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+            ("end", end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+        ]
+        for c in cluster or []:
+            params.append(("cluster", c))
+        for n in namespace or []:
+            params.append(("namespace", n))
+        for t in edge_type or []:
+            params.append(("edge_type", t))
+        for p in pod or []:
+            params.append(("pod", p))
+        if root:
+            params.append(("root", root))
+        if depth is not None:
+            params.append(("depth", str(depth)))
+        if direction:
+            params.append(("direction", direction))
+        return params
+
+    # ---- /v1/clusters, /v1/edge-types ----------------------------------------
+
+    def list_clusters(self, *, if_none_match: str | None = None) -> tuple[ClustersResponse | None, str | None]:
+        resp = self._get("/v1/clusters", if_none_match=if_none_match)
+        etag = resp.headers.get("etag")
+        if resp.status_code == 304:
+            return None, etag
+        return _ClustersAdapter.validate_json(resp.content), etag
+
+    def list_edge_types(self, *, if_none_match: str | None = None) -> tuple[EdgeTypesResponse | None, str | None]:
+        resp = self._get("/v1/edge-types", if_none_match=if_none_match)
+        etag = resp.headers.get("etag")
+        if resp.status_code == 304:
+            return None, etag
+        return _EdgeTypesAdapter.validate_json(resp.content), etag
+
+    # ---- health probes --------------------------------------------------------
+
+    def livez(self) -> bool:
+        try:
+            self._get("/livez")
+            return True
+        except KubeStateGraphError:
+            return False
+
+    def readyz(self) -> bool:
+        try:
+            self._get("/readyz")
+            return True
+        except KubeStateGraphError:
+            return False
 
 
 def render(g: GraphResponse, console: Console) -> None:
@@ -218,32 +413,30 @@ def main() -> int:
     args = parse_args()
     console = Console()
     try:
-        g, etag, status = fetch_graph(
-            args.base_url,
-            start=datetime.fromisoformat(args.start.replace("Z", "+00:00")),
-            end=datetime.fromisoformat(args.end.replace("Z", "+00:00")),
-            api_key=args.api_key,
-            cluster=args.cluster or None,
-            namespace=args.namespace or None,
-            edge_type=args.edge_type or None,
-            pod=args.pod or None,
-            root=args.root,
-            depth=args.depth,
-            direction=args.direction,
-            if_none_match=args.if_none_match,
-        )
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]HTTP {e.response.status_code}[/]: {e.response.text}")
+        with KubeStateGraphClient(args.base_url, api_key=args.api_key) as client:
+            g, etag = client.get_graph(
+                start=datetime.fromisoformat(args.start.replace("Z", "+00:00")),
+                end=datetime.fromisoformat(args.end.replace("Z", "+00:00")),
+                cluster=args.cluster or None,
+                namespace=args.namespace or None,
+                edge_type=args.edge_type or None,
+                pod=args.pod or None,
+                root=args.root,
+                depth=args.depth,
+                direction=args.direction,
+                if_none_match=args.if_none_match,
+            )
+    except KubeStateGraphError as e:
+        console.print(f"[red]HTTP {e.status}[/] reason={e.reason!r}: {e.body[:300]}")
         return 1
     except httpx.HTTPError as e:
         console.print(f"[red]request failed[/]: {e}")
         return 1
 
-    if status == 304:
+    if g is None:
         console.print(f"[green]304 Not Modified[/] etag={etag}")
         return 0
 
-    assert g is not None
     if args.json:
         sys.stdout.write(g.model_dump_json(by_alias=True, indent=2))
         sys.stdout.write("\n")
