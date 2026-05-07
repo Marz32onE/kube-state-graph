@@ -1,7 +1,8 @@
 {
   "apiVersion": "v1",
   "clusters": [
-    "cluster-alpha"
+    "cluster-alpha",
+    "cluster-beta"
   ],
   "elements": {
     "nodes": [
@@ -26,6 +27,18 @@
             "cluster": "cluster-alpha"
           }
         }
+      },
+      {
+        "data": {
+          "id": "cluster-beta/p2",
+          "name": "payments",
+          "type": "pod",
+          "labels": {
+            "cluster": "cluster-beta",
+            "namespace": "billing",
+            "node": "cluster-beta/worker-0"
+          }
+        }
       }
     ],
     "edges": [
@@ -36,6 +49,17 @@
           "source": "cluster-alpha/p1",
           "target": "cluster-alpha/worker-0",
           "labels": {}
+        }
+      },
+      {
+        "data": {
+          "id": "9db88ec6-f174-5bfc-9fba-7f29b361f7dd",
+          "type": "pod-calls-pod",
+          "source": "cluster-alpha/p1",
+          "target": "cluster-beta/p2",
+          "labels": {
+            "cluster": "cluster-alpha"
+          }
         }
       }
     ]

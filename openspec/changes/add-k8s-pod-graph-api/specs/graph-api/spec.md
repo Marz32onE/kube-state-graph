@@ -142,9 +142,11 @@ The server SHALL expose `GET /v1/graph/nodegraph` that returns the same underlyi
 
 ### Requirement: Filter parameters
 
-`GET /v1/graph` and `GET /v1/graph/nodegraph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `edge_type`, `pod`. Filters SHALL be applied at response time as a projection over the freshly built graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
+`GET /v1/graph` and `GET /v1/graph/nodegraph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `edge_type`, `name`. Filters SHALL be applied at response time as a projection over the freshly built graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
 
-The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from `kube_pod_info`) by exact string equality. Because pod names are not globally unique across clusters, a `pod` value MAY match multiple pods; all matches SHALL be returned. When the `pod` filter is set, non-pod node types (`node`, `pvc`, `external`) SHALL be excluded unless they are an endpoint of an edge whose pod side is in scope. Cross-cluster pod-calls-pod partner preservation (the rule that re-adds an out-of-scope cluster's endpoint when only `cluster` narrows scope) SHALL NOT apply when `pod` is set; the caller has named the exact pod set and partner pods outside that set SHALL NOT be re-added.
+The `name` parameter SHALL match `n.Name()` by exact string equality across **every** node type (`PodNode`, `K8sNode`, `PVCNode`, `ExternalNode`) — a single `?name=` value matches a pod, a K8s node, a PVC, or an external endpoint with the same name. Names are not globally unique (pods and K8s nodes can share a name; PVCs can repeat across namespaces); all matches SHALL be returned.
+
+**Edge retention rule (unified across all filters).** An edge SHALL be retained when at least one resolved endpoint is in scope after node filtering. When exactly one endpoint is in scope, the missing endpoint SHALL be re-added from the freshly built graph's node index provided it passes the non-cluster filters (namespace check; types without a namespace label pass through). This single rule covers (a) anchoring on a named node and visualising its incident edges with their partner endpoints, and (b) cross-cluster `pod-calls-pod` edges where only `cluster` narrows scope and the partner pod lives outside the in-scope cluster set.
 
 #### Scenario: Cluster filter narrows result
 
@@ -166,29 +168,44 @@ The `pod` parameter SHALL match `PodNode.name` (the human-readable pod name from
 - **WHEN** a client sends `?cluster=does-not-exist`
 - **THEN** the response is 200 with empty `elements.nodes` and `elements.edges`
 
-#### Scenario: Pod name filter narrows to matching pods
+#### Scenario: Name filter matches a pod
 
-- **WHEN** the freshly built graph contains pods named `frontend` and `backend` in `cluster-alpha` and a client sends `?pod=frontend`
+- **WHEN** the freshly built graph contains pods named `frontend` and `backend` in `cluster-alpha` and a client sends `?name=frontend`
 - **THEN** the response contains the `frontend` pod node and any K8s-node, PVC, or external-endpoint nodes that are edge endpoints of `frontend`, but NOT the `backend` pod node
 
-#### Scenario: Pod name shared across clusters returns every match
+#### Scenario: Name filter matches a K8s node
 
-- **WHEN** a pod named `api` exists in both `cluster-alpha` and `cluster-beta` and a client sends `?pod=api`
+- **WHEN** the freshly built graph contains a K8s node named `worker-1` in `cluster-alpha` and a client sends `?name=worker-1`
+- **THEN** the response contains the `worker-1` K8s-node and any pod nodes that are edge endpoints of `worker-1` via `pod-runs-on-node`
+
+#### Scenario: Name filter matches a PVC
+
+- **WHEN** the freshly built graph contains a PVC named `checkout-data` in `cluster-alpha/shop` and a client sends `?name=checkout-data`
+- **THEN** the response contains the `checkout-data` PVC node and any pod nodes that mount it via `pod-mounts-pvc`
+
+#### Scenario: Name shared across types returns every match
+
+- **WHEN** a pod and a K8s node both happen to be named `worker-1` and a client sends `?name=worker-1`
+- **THEN** the response contains both the matching pod node AND the matching K8s-node node
+
+#### Scenario: Name shared across clusters returns every match
+
+- **WHEN** a pod named `api` exists in both `cluster-alpha` and `cluster-beta` and a client sends `?name=api`
 - **THEN** the response contains both `cluster-alpha`'s `api` pod node and `cluster-beta`'s `api` pod node
 
-#### Scenario: Pod filter combined with cluster
+#### Scenario: Name filter combined with cluster
 
-- **WHEN** a pod named `api` exists in both `cluster-alpha` and `cluster-beta` and a client sends `?pod=api&cluster=cluster-alpha`
+- **WHEN** a pod named `api` exists in both `cluster-alpha` and `cluster-beta` and a client sends `?name=api&cluster=cluster-alpha`
 - **THEN** the response contains only `cluster-alpha`'s `api` pod node
 
-#### Scenario: Pod filter does NOT trigger cross-cluster partner preservation
+#### Scenario: Name filter retains incident edges with re-hydrated partner
 
-- **WHEN** a `pod-calls-pod` edge crosses from `cluster-alpha/<uid-A>` (pod name `frontend`) to `cluster-beta/<uid-B>` (pod name `backend`) and a client sends `?pod=frontend`
-- **THEN** the response contains only `cluster-alpha/<uid-A>` and SHALL NOT re-add `cluster-beta/<uid-B>` or the cross-cluster edge
+- **WHEN** a `pod-calls-pod` edge crosses from `cluster-alpha/<uid-A>` (pod name `frontend`) to `cluster-beta/<uid-B>` (pod name `backend`) and a client sends `?name=frontend`
+- **THEN** the response contains `cluster-alpha/<uid-A>` (the named match), `cluster-beta/<uid-B>` (re-added as the missing edge endpoint), and the cross-cluster edge
 
-#### Scenario: Unknown pod name returns empty result
+#### Scenario: Unknown name returns empty result
 
-- **WHEN** a client sends `?pod=does-not-exist`
+- **WHEN** a client sends `?name=does-not-exist`
 - **THEN** the response is 200 with empty `elements.nodes` and `elements.edges`
 
 ### Requirement: Partial-graph traversal
@@ -257,11 +274,13 @@ When the freshly built graph contains a `pod-calls-pod` edge whose source-node c
 - **WHEN** a client requests `?cluster=cluster-alpha` and a cross-cluster edge exists from a pod in `cluster-alpha` to a pod in `cluster-beta`
 - **THEN** the response contains the `cluster-alpha` endpoint, the `cluster-beta` endpoint (so the edge resolves), and the edge with `labels.cluster: "cluster-alpha"`; the cross-cluster status is detected by comparing the two endpoint nodes' `labels.cluster` values
 
-### Requirement: HTTP caching headers (ETag only on graph endpoints)
+### Requirement: Conditional GET via response validator (ETag)
 
-Every successful response from `GET /v1/graph`, `GET /v1/graph/nodegraph`, `GET /v1/clusters`, and `GET /v1/edge-types` SHALL carry an `ETag` header derived from a SHA-256 of the response body. Requests carrying a matching `If-None-Match` SHALL receive `304 Not Modified` with no body.
+Every successful response from `GET /v1/graph`, `GET /v1/graph/nodegraph`, `GET /v1/clusters`, and `GET /v1/edge-types` SHALL carry an `ETag` strong validator (RFC 9110 §8.8.3) computed as `sha256(<response body>)`. Requests carrying a matching `If-None-Match` SHALL receive `304 Not Modified` with no body and the same `ETag` (RFC 9110 §13.1 conditional GET / revalidation).
 
-`GET /v1/edge-types` SHALL additionally carry `Cache-Control: public, max-age=3600` because the catalogue is compiled into the binary. `GET /v1/graph`, `GET /v1/graph/nodegraph`, and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header in v1, because the server has no in-process result cache to advertise; clients are expected to revalidate via `If-None-Match`.
+The validator is content-addressed: the server still runs the full upstream fan-out and serialisation pipeline on every request and compares the freshly computed sha256 against the supplied `If-None-Match` value. The 304 path saves response-body bytes-on-the-wire (and the client's deserialisation cost) but does NOT save upstream PromQL evaluation — v1 ships no in-process result cache.
+
+`GET /v1/edge-types` SHALL additionally carry `Cache-Control: public, max-age=3600` because the catalogue is compiled into the binary and is stable for the binary's lifetime. `GET /v1/graph`, `GET /v1/graph/nodegraph`, and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header: the server cannot tell a client how long a freshly built graph remains "fresh" without re-querying upstream, so cacheability is left to the client / intermediary. Clients revalidate via `If-None-Match`; whether anyone caches the response body for some TTL is a client-side concern, not a server contract.
 
 #### Scenario: 304 Not Modified on repeated request
 

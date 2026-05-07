@@ -427,7 +427,7 @@ paths:
 
                 **Window**: `start`/`end` accept RFC 3339 or Unix seconds. The pair is passed through to upstream PromQL as-is (within `--max-skew` of `now`); each request triggers a fresh fan-out — there is no in-process result cache.
 
-                **Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `pod`.
+                **Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, external).
 
                 **Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
 
@@ -510,13 +510,12 @@ paths:
                         type: string
                     type: array
                   style: form
-                - description: Restrict to pods whose name matches exactly. Repeatable; multi-cluster name collisions return all matches.
+                - description: Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.
                   in: query
-                  name: pod
+                  name: name
                   schema:
                     example:
                         - checkout-7d9f6c8b8-abcde
-                        - payments-5c8b6f9d4-fghij
                     items:
                         example: checkout-7d9f6c8b8-abcde
                         type: string
@@ -672,13 +671,12 @@ paths:
                         type: string
                     type: array
                   style: form
-                - description: Restrict to pods whose name matches exactly. Repeatable.
+                - description: Restrict to nodes whose name matches exactly across every node type. Repeatable.
                   in: query
-                  name: pod
+                  name: name
                   schema:
                     example:
                         - checkout-7d9f6c8b8-abcde
-                        - payments-5c8b6f9d4-fghij
                     items:
                         example: checkout-7d9f6c8b8-abcde
                         type: string

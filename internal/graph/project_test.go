@@ -201,25 +201,95 @@ func multiClusterPodSampleGraph() *Graph {
 	return NewGraph(all, edges, time.Now())
 }
 
-func TestProject_PodNameFilter_NarrowsToMatchingPods(t *testing.T) {
+// crossTypeSampleGraph contains:
+//   - a pod named "worker-0" in cluster-alpha (collision with K8s node name)
+//   - a K8s node named "worker-0" in cluster-alpha and cluster-beta
+//   - a PVC named "checkout-data" in cluster-alpha
+//   - pod-runs-on-node and pod-mounts-pvc edges
+func crossTypeSampleGraph() *Graph {
+	all := []GraphNode{
+		&PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}},
+		&PodNode{IDValue: "cluster-alpha/p2", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}},
+		&K8sNode{IDValue: "cluster-alpha/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha"}},
+		&K8sNode{IDValue: "cluster-beta/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-beta"}},
+		&PVCNode{IDValue: "cluster-alpha/shop/checkout-data", NameValue: "checkout-data", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}},
+	}
+	edges := []*Edge{
+		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p1", "cluster-alpha/worker-0", nil),
+		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p2", "cluster-alpha/worker-0", nil),
+		NewEdge(EdgeTypePodMountsPVC, "cluster-alpha/p1", "cluster-alpha/shop/checkout-data", nil),
+	}
+	return NewGraph(all, edges, time.Now())
+}
+
+func TestProject_NameFilter_MatchesPod(t *testing.T) {
 	g := sampleGraph()
-	v := Project(g, Scope{Pods: map[string]struct{}{"checkout": {}}})
+	v := Project(g, Scope{Names: map[string]struct{}{"checkout": {}}})
 
 	ids := map[string]bool{}
 	for _, n := range v.Nodes {
 		ids[n.ID()] = true
 	}
-	assert.True(t, ids["cluster-alpha/p1"], "checkout pod must be present")
-	assert.False(t, ids["cluster-alpha/p2"], "cart must be excluded")
-	assert.False(t, ids["cluster-beta/p3"], "payments must be excluded")
-	// K8s node re-added because checkout's pod-runs-on-node edge has it as endpoint.
-	assert.True(t, ids["cluster-alpha/worker-0"], "host node re-added via edge endpoint")
-	assert.False(t, ids["cluster-beta/worker-0"], "unrelated K8s node dropped")
+	assert.True(t, ids["cluster-alpha/p1"], "checkout pod must match name")
+	// Endpoints of checkout's incident edges are re-added by the unified rule:
+	// pod-runs-on-node → worker-0; pod-calls-pod → cart (p2); pod-calls-pod
+	// → cross-cluster payments (p3).
+	assert.True(t, ids["cluster-alpha/worker-0"], "host node re-added via pod-runs-on-node")
+	assert.True(t, ids["cluster-alpha/p2"], "cart re-added via pod-calls-pod")
+	assert.True(t, ids["cluster-beta/p3"], "cross-cluster payments re-added via pod-calls-pod")
+	// Endpoints not incident on checkout stay out.
+	assert.False(t, ids["cluster-beta/worker-0"], "unrelated K8s node not incident on checkout must drop")
 }
 
-func TestProject_PodNameFilter_DuplicatesAcrossClusters(t *testing.T) {
+func TestProject_NameFilter_MatchesK8sNode(t *testing.T) {
+	g := sampleGraph()
+	v := Project(g, Scope{Names: map[string]struct{}{"worker-0": {}}})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	// Both worker-0 K8s nodes match by name (cluster-alpha and cluster-beta).
+	assert.True(t, ids["cluster-alpha/worker-0"])
+	assert.True(t, ids["cluster-beta/worker-0"])
+	// Pods running on worker-0 are re-added via pod-runs-on-node edges.
+	assert.True(t, ids["cluster-alpha/p1"], "pod incident on worker-0 must be re-added")
+	assert.True(t, ids["cluster-alpha/p2"], "pod incident on worker-0 must be re-added")
+	assert.True(t, ids["cluster-beta/p3"], "pod incident on cluster-beta worker-0 must be re-added")
+}
+
+func TestProject_NameFilter_MatchesPVC(t *testing.T) {
+	g := crossTypeSampleGraph()
+	v := Project(g, Scope{Names: map[string]struct{}{"checkout-data": {}}})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["cluster-alpha/shop/checkout-data"], "matching PVC must be present")
+	// Pod that mounts the PVC re-added via pod-mounts-pvc edge.
+	assert.True(t, ids["cluster-alpha/p1"], "pod mounting checkout-data must be re-added")
+	assert.False(t, ids["cluster-alpha/p2"], "unrelated pod must NOT be re-added")
+}
+
+func TestProject_NameFilter_AcrossTypes(t *testing.T) {
+	g := crossTypeSampleGraph()
+	// "worker-0" is both a pod name (cluster-alpha/p2) and a K8s node name
+	// (in both clusters). All three matches must surface in the result.
+	v := Project(g, Scope{Names: map[string]struct{}{"worker-0": {}}})
+
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["cluster-alpha/p2"], "pod named worker-0 must match")
+	assert.True(t, ids["cluster-alpha/worker-0"], "K8s node named worker-0 in alpha must match")
+	assert.True(t, ids["cluster-beta/worker-0"], "K8s node named worker-0 in beta must match")
+}
+
+func TestProject_NameFilter_DuplicatesAcrossClusters(t *testing.T) {
 	g := multiClusterPodSampleGraph()
-	v := Project(g, Scope{Pods: map[string]struct{}{"payments": {}}})
+	v := Project(g, Scope{Names: map[string]struct{}{"payments": {}}})
 
 	ids := map[string]bool{}
 	for _, n := range v.Nodes {
@@ -227,13 +297,14 @@ func TestProject_PodNameFilter_DuplicatesAcrossClusters(t *testing.T) {
 	}
 	assert.True(t, ids["cluster-alpha/p4"], "alpha payments must match")
 	assert.True(t, ids["cluster-beta/p3"], "beta payments must match")
-	assert.False(t, ids["cluster-alpha/p1"], "non-matching pod must drop")
+	// p2 (cart) has no incident edge to either payments pod, so it must drop.
+	assert.False(t, ids["cluster-alpha/p2"], "cart not incident on payments must drop")
 }
 
-func TestProject_PodNameFilter_AndedWithCluster(t *testing.T) {
+func TestProject_NameFilter_AndedWithCluster(t *testing.T) {
 	g := multiClusterPodSampleGraph()
 	v := Project(g, Scope{
-		Pods:     map[string]struct{}{"payments": {}},
+		Names:    map[string]struct{}{"payments": {}},
 		Clusters: map[string]struct{}{"cluster-alpha": {}},
 	})
 
@@ -245,28 +316,31 @@ func TestProject_PodNameFilter_AndedWithCluster(t *testing.T) {
 	assert.False(t, ids["cluster-beta/p3"], "beta payments excluded by cluster filter")
 }
 
-func TestProject_PodFilter_SuppressesCrossClusterPartner(t *testing.T) {
+func TestProject_NameFilter_RetainsCrossClusterEdgeWithRehydratedPartner(t *testing.T) {
 	g := sampleGraph()
-	// Pick the cluster-alpha/p1 caller (pod name "checkout"); its outgoing
-	// pod-calls-pod to cluster-beta/p3 must NOT re-add p3 because pod filter
-	// is set.
-	v := Project(g, Scope{Pods: map[string]struct{}{"checkout": {}}})
+	// Anchor on cluster-alpha/p1 (pod name "checkout"); its outgoing
+	// pod-calls-pod to cluster-beta/p3 must retain the edge AND re-add p3
+	// via the unified edge-endpoint partner rule.
+	v := Project(g, Scope{Names: map[string]struct{}{"checkout": {}}})
 
 	ids := map[string]bool{}
 	for _, n := range v.Nodes {
 		ids[n.ID()] = true
 	}
 	assert.True(t, ids["cluster-alpha/p1"])
-	assert.False(t, ids["cluster-beta/p3"], "cross-cluster partner pod must NOT be re-added")
+	assert.True(t, ids["cluster-beta/p3"], "cross-cluster partner pod must be re-added as edge endpoint")
+	var crossEdges int
 	for _, e := range v.Edges {
-		assert.NotEqualf(t, "cluster-beta/p3", e.Target,
-			"cross-cluster pod-calls-pod edge to out-of-scope partner must drop")
+		if e.Type == EdgeTypePodCallsPod && e.Source == "cluster-alpha/p1" && e.Target == "cluster-beta/p3" {
+			crossEdges++
+		}
 	}
+	assert.Equal(t, 1, crossEdges, "cross-cluster pod-calls-pod edge must survive name anchor")
 }
 
-func TestProject_PodNameFilter_UnknownReturnsEmpty(t *testing.T) {
+func TestProject_NameFilter_UnknownReturnsEmpty(t *testing.T) {
 	g := sampleGraph()
-	v := Project(g, Scope{Pods: map[string]struct{}{"does-not-exist": {}}})
+	v := Project(g, Scope{Names: map[string]struct{}{"does-not-exist": {}}})
 	assert.Empty(t, v.Nodes)
 	assert.Empty(t, v.Edges)
 }

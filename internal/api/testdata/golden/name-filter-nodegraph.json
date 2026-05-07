@@ -30,6 +30,12 @@
       "mainStat": "node",
       "subTitle": "cluster-alpha",
       "title": "worker-0"
+    },
+    {
+      "id": "cluster-beta/p2",
+      "mainStat": "pod",
+      "subTitle": "cluster-beta · billing",
+      "title": "payments"
     }
   ],
   "edges_fields": [
@@ -56,6 +62,12 @@
       "mainStat": "pod-runs-on-node",
       "source": "cluster-alpha/p1",
       "target": "cluster-alpha/worker-0"
+    },
+    {
+      "id": "9db88ec6-f174-5bfc-9fba-7f29b361f7dd",
+      "mainStat": "pod-calls-pod",
+      "source": "cluster-alpha/p1",
+      "target": "cluster-beta/p2"
     }
   ]
 }

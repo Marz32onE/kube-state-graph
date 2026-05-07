@@ -24,7 +24,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 		"single-cluster":    buildSingleCluster(),
 		"two-cluster-cross": buildTwoClusterCross(),
 		"with-external":     buildWithExternal(),
-		"pod-name-filter":   buildPodNameFilter(),
+		"name-filter":       buildNameFilter(),
 	}
 
 	for name, view := range scenarios {
@@ -100,12 +100,12 @@ func buildWithExternal() graph.View {
 	return graph.View{Nodes: []graph.GraphNode{pod, ext}, Edges: []*graph.Edge{edge}}
 }
 
-// buildPodNameFilter snapshots the projection of a two-cluster graph through
-// `?pod=checkout`. The matching pod (cluster-alpha/p1) and its host K8s node
-// (re-added via the pod-runs-on-node edge endpoint) survive; the cross-cluster
-// pod-calls-pod partner cluster-beta/p2 is dropped (no partner re-hydration
-// when a pod-side filter is set).
-func buildPodNameFilter() graph.View {
+// buildNameFilter snapshots the projection of a two-cluster graph through
+// `?name=checkout`. The matching pod (cluster-alpha/p1) is the anchor; the
+// host K8s node (cluster-alpha/worker-0) is re-added via pod-runs-on-node;
+// the cross-cluster partner pod (cluster-beta/p2) is re-added via the
+// unified edge-endpoint partner rule on the pod-calls-pod edge.
+func buildNameFilter() graph.View {
 	a := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}}
 	b := &graph.PodNode{IDValue: "cluster-beta/p2", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-beta", "namespace": "billing", "node": "cluster-beta/worker-0"}}
 	nodeA := &graph.K8sNode{IDValue: "cluster-alpha/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha"}}
@@ -116,5 +116,5 @@ func buildPodNameFilter() graph.View {
 		graph.NewEdge(graph.EdgeTypePodCallsPod, a.IDValue, b.IDValue, map[string]string{"cluster": "cluster-alpha"}),
 	}
 	g := graph.NewGraph([]graph.GraphNode{a, b, nodeA, nodeB}, edges, time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC))
-	return graph.Project(g, graph.Scope{Pods: map[string]struct{}{"checkout": {}}})
+	return graph.Project(g, graph.Scope{Names: map[string]struct{}{"checkout": {}}})
 }

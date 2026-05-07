@@ -244,3 +244,47 @@
 - [x] 23.8 Property test in `internal/graph/property_test.go`: when `Pods` is set, every returned pod node satisfies the filter, and no cross-cluster partner pod outside the filter is returned.
 - [x] 23.9 Add or reuse a golden scenario in `internal/api/testdata/golden/` exercising `?pod=...` for one well-known pod name; refresh with `go test ./internal/api/ -update -run Golden`.
 - [x] 23.10 Update `docs/api.md` filter-parameter table with the new param and its semantics (exact match, repeatable, AND/OR rules, no cross-cluster partner preservation).
+
+## 25. Type-agnostic `name` filter (capability: graph-api — modified)
+
+Operators want to anchor a graph view on **any** node — pod, K8s node, PVC, or external endpoint (e.g. `?name=worker-3` to centre the view on a K8s node, `?name=checkout-data` to centre it on a PVC). Section 25 replaces the prior pod-only filter with a single type-agnostic `?name=` filter that matches `n.Name()` across `PodNode`, `K8sNode`, `PVCNode`, and `ExternalNode`. Edge retention rule: an edge survives when at least one resolved endpoint is in scope; the missing endpoint is re-added from `g.NodesByID` provided it passes the non-cluster filters (namespace).
+
+- [x] 25.1 Rename `graph.Scope.Pods` → `graph.Scope.Names map[string]struct{}` (matches `n.Name()` for any node type). Rename `Scope.PodFilterActive` → `Scope.NameFilterActive`. Update `graph.NewScope` signature: replace the `pods []string` parameter with `names []string` (keep the same position so callers update mechanically).
+- [x] 25.2 Rewrite `graph.nodePassesFilters` so the name branch applies uniformly to every node type: when `len(scope.Names) > 0`, drop any node whose `n.Name()` is not in the set. Remove the type-switch that special-cased pods. K8sNode / PVCNode / ExternalNode now match by name directly when the filter is set, and survive into the primary node set without waiting for the edge-endpoint re-add pass.
+- [x] 25.3 Update `graph.filterEdges` so the partner re-add rule is unified:
+  - When an edge has exactly one endpoint in `nodes`, re-add the missing endpoint from `g.NodesByID` if it passes `nodePassesNonClusterFilters` (i.e. namespace check).
+  - Drop the `preservePodFilterPartner` helper — its job (re-adding non-pod endpoints when one side is an in-scope pod) is now subsumed by the unified rule.
+  - Drop the `preserveCrossClusterEdge` helper — the cross-cluster `pod-calls-pod` partner-rehydration case is also subsumed by the unified rule (out-of-scope-cluster partner is re-added because it passes the namespace check).
+  - No name-specific suppression: anchoring on a named node intentionally surfaces incident edges with their partner endpoints; otherwise the rendered graph would have dangling edges.
+- [x] 25.4 In `internal/api/handlers.go` `parseGraphRequest`, replace `q["pod"]` parsing with `q["name"]` parsing on both `/v1/graph` and `/v1/graph/nodegraph`. The `pod` query parameter is no longer recognised; unknown query parameters continue to be ignored silently (existing convention).
+- [x] 25.5 Update swag annotations on both handlers: remove `@Param pod` and add `@Param name` (`query`, `[]string`, `collectionFormat(multi)`, repeatable). Update each handler's `@Description` to describe the new cross-type semantics. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` plus `internal/api/static/openapi/*` so `make check-docs` stays green.
+- [x] 25.6 Replace pod-filter unit tests in `internal/graph/project_test.go`:
+  - Pod match: `?name=checkout` returns the `checkout` PodNode and re-adds K8s-node / PVC / external endpoints of its incident edges.
+  - K8s-node match: `?name=node-a` returns the `K8sNode` named `node-a` and re-adds pods that run on it.
+  - PVC match: `?name=data` returns the matching `PVCNode` and re-adds pods that mount it.
+  - Cross-type match: `?name=worker-1` returns BOTH a pod and a K8s node when both happen to share the name.
+  - Combined filters: `?name=api&cluster=cluster-alpha` only returns the cluster-alpha node(s).
+  - Cross-cluster anchor: `?name=frontend` retains the cross-cluster `pod-calls-pod` edge AND re-hydrates the partner pod in the other cluster (unified edge-endpoint rule).
+  - Unknown name: 200 with empty `nodes` and `edges`.
+- [x] 25.7 Update property test in `internal/graph/property_test.go`: when `Names` is set, every node in the result either has `n.Name() ∈ Names` or is a missing edge endpoint re-added by the unified partner-rehydration rule (and that endpoint is incident on at least one retained edge whose other end matches the name set).
+- [x] 25.8 Update integration coverage in `internal/integration/graph_e2e_test.go`: replace the `?pod=` test cases with `?name=` cases that exercise pod, K8s-node, and PVC anchors. Drop fixtures that only exist to test pod-only narrowing.
+- [x] 25.9 Refresh golden scenarios under `internal/api/testdata/golden/`: rename `pod=...` cases to `name=...`; add at least one new case where the anchor is a K8s node. Refresh via `go test ./internal/api/ -update -run Golden`.
+- [x] 25.10 Update `docs/api.md` filter-parameter table: remove the `pod` row, add a `name` row describing the cross-type match (exact equality on `n.Name()`, repeatable, OR within param / AND across params, no cross-cluster partner preservation when set, edge endpoints of in-scope nodes re-added subject to namespace).
+- [x] 25.11 Update `docs/api.zh-tw.md` (if present) and the OpenSpec zh-tw mirrors (`design.zh-tw.md`, `proposal.zh-tw.md`) to reflect the rename.
+- [x] 25.12 Run `openspec validate "add-k8s-pod-graph-api"` and confirm the modified spec parses; run `make test` + `make check-docs` after the code change.
+
+## 26. ETag wording refactor (capability: graph-api — modified)
+
+Operators reviewing the docs flagged that v1 framing of ETag as "HTTP-layer caching" is misleading: ETag is a **response validator** (RFC 9110 §8.8.3) used for **conditional GET / revalidation** (RFC 9110 §13.1), not a cache. v1 ships no server-side cache; the ETag's purpose is to let intermediaries and clients revalidate cheaply with `If-None-Match` and receive `304 Not Modified` when the response body would be byte-identical. Whether any party caches the response body is a client / intermediary policy, not a server feature. Section 26 retitles and rewords the affected sections so the contract reads correctly.
+
+- [x] 26.1 In `openspec/changes/add-k8s-pod-graph-api/design.md` D6, retitle "HTTP-layer caching only (ETag); no in-process result cache" → "Conditional GET via response validator (ETag); no in-process result cache". Reword the body to:
+  - State that the server emits an `ETag` strong validator computed as `sha256(body)`.
+  - Frame `If-None-Match` → `304 Not Modified` as **revalidation**, not cache hit.
+  - Note that fixed-TTL `Cache-Control` headers on `/v1/edge-types`, `/openapi.*`, `/docs`, and `/docs/assets/*` are independent of the validator — they apply because those resources have stable, long-lived content, not because v1 ships a build cache.
+  - Keep the existing determinism prerequisites and "no singleflight" / "future cache mechanism" subsections unchanged.
+- [x] 26.2 In `openspec/changes/add-k8s-pod-graph-api/specs/graph-api/spec.md`, audit any requirement / scenario that calls ETag a "cache". Where applicable, restate the contract as a **conditional GET / response validator** (e.g. "the server SHALL emit an `ETag` strong validator…", "clients MAY revalidate via `If-None-Match`…"). The byte-identity determinism contract stays as-is; only the surrounding wording changes.
+- [x] 26.3 Update `docs/api.md` Headers section for `/v1/graph`:
+  - Replace "save bandwidth via revalidation" with explicit framing: ETag is a strong validator on the response body; clients use it for HTTP conditional GET; `304 Not Modified` is returned when the validator matches. Whether anyone caches the body is a client / intermediary concern, not a server feature.
+  - Restate why no `Cache-Control` is emitted on `/v1/graph` and `/v1/graph/nodegraph`: the server has no view of how long a freshly built graph is "fresh" without re-querying upstream, so it leaves cacheability decisions to the client.
+- [x] 26.4 Mirror the same wording adjustments into `design.zh-tw.md` D6 and the zh-tw mirror (if present) of `docs/api.md`.
+- [x] 26.5 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on ETag determinism only if the wording references "caching" — keep the byte-identity invariant verbatim.

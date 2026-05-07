@@ -83,14 +83,14 @@ serialiseCytoscape / serialiseGrafanaNodeGraph
 ETag = sha256(body); If-None-Match honoured for 304
 ```
 
-v1 has **no in-process result cache** and **no singleflight**. Each request runs a fresh upstream fan-out. ETag-based revalidation is the only caching layer. A future iteration is expected to add a horizontally scalable cache mechanism for distributed deployment (Redis L2, background materialiser, or graph DB) — tracked as a separate change.
+v1 has **no in-process result cache** and **no singleflight**. Each request runs a fresh upstream fan-out and recomputes the body. ETag is a **response validator** (RFC 9110 §8.8.3) used for **conditional GET / revalidation** (§13.1) — not a cache. The 304 path saves response-body bytes but does not save upstream PromQL evaluation. A future iteration is expected to add a horizontally scalable cache mechanism for distributed deployment (Redis L2, background materialiser, or graph DB) — tracked as a separate change.
 
 ### Load-bearing design rules
 
 These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 (D1–D19) before changing any of them.
 
-- **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `pod`, traversal) are applied at response time as a projection over the freshly built `*Graph`. ETag (sha256(body)) is the only caching layer — revisit when the future cache mechanism (D6) lands.
+- **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at response time as a projection over the freshly built `*Graph`. ETag (sha256(body)) is a response validator for HTTP conditional GET, not a cache — revisit when the future cache mechanism (D6) lands.
 - **No time-window alignment.** `start` and `end` are passed through to upstream PromQL verbatim (after `--max-window` / `--max-skew` validation). The previous 60 s `floor`/`ceil` grid was removed alongside the in-process cache it was bucketing for. Response body is `{apiVersion, clusters, elements}` — no time fields are echoed.
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,

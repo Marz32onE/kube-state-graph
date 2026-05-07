@@ -42,7 +42,7 @@ Returns the multi-cluster graph for `[start, end]` in Cytoscape.js shape.
 | `cluster`    | no       | yes        | Restrict to clusters whose label matches. |
 | `namespace`  | no       | yes        | Restrict pods/PVCs by namespace. |
 | `edge_type`  | no       | yes        | Restrict edges by type. One of `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`. Unknown types ⇒ silently empty. |
-| `pod`        | no       | yes        | Restrict to pods whose name matches (exact). Pod names are not unique across clusters; all matches are returned. Combine with `cluster` / `namespace` to disambiguate. |
+| `name`       | no       | yes        | Restrict to nodes whose name matches exactly **across every node type** (pod, K8s node, PVC, external). Use it to anchor the view on any single node. Names are not globally unique (pods and K8s nodes can share a name; PVCs can repeat across namespaces); all matches are returned. Combine with `cluster` / `namespace` to disambiguate. |
 | `root`       | no       | no         | Cluster-scoped node ID to anchor a traversal. |
 | `depth`      | no       | no         | Traversal depth (0..6, default 2 when `root` is set). |
 | `direction`  | no       | no         | `in | out | both` (default `both`). |
@@ -50,13 +50,14 @@ Returns the multi-cluster graph for `[start, end]` in Cytoscape.js shape.
 Multiple values for the same parameter are OR-combined; different parameters
 are AND-combined. Unknown values yield 200 + empty result, never an error.
 
-When `pod` is set, non-pod node types (`node`, `pvc`, `external`) survive only
-as edge endpoints of an in-scope pod (so `pod-runs-on-node`, `pod-mounts-pvc`,
-and external `pod-calls-pod` edges remain visible). The cross-cluster
-partner-rehydration rule that re-adds the out-of-scope endpoint of a
-`pod-calls-pod` edge under a `cluster` filter is **suppressed** when `pod` is
-set — the caller has named an exact pod set, so partner pods outside that set
-are not auto-included.
+**Edge retention (unified across all filters).** An edge is retained when at
+least one resolved endpoint is in scope after node filtering. When exactly one
+endpoint is in scope, the missing endpoint is re-added from the freshly built
+graph's node index provided it passes the namespace filter (types without a
+namespace label pass through). This single rule covers (a) anchoring on a
+named node and rendering its incident edges with their partner endpoints,
+and (b) cross-cluster `pod-calls-pod` edges where only `cluster` narrows
+scope and the partner pod lives in an out-of-scope cluster.
 
 ### Response shape
 
@@ -81,10 +82,27 @@ future typed struct field (see the design doc, D9).
 
 ### Headers
 
-- `ETag: "<sha256-of-body>"`.
-- `If-None-Match` ⇒ `304 Not Modified`.
+- `ETag: "<sha256-of-body>"` — strong validator (RFC 9110 §8.8.3) computed over the response body.
+- `If-None-Match` ⇒ `304 Not Modified` — conditional GET / revalidation (RFC 9110 §13.1).
 
-`/v1/graph` and `/v1/graph/nodegraph` do **not** emit `Cache-Control` in v1 — there is no in-process result cache to advertise. Repeated identical requests return the same `ETag`, so clients save bandwidth via `If-None-Match` revalidation. A future cache mechanism for distributed deployment will reintroduce stronger caching headers.
+ETag here is a **response validator**, not a cache. v1 ships no in-process
+result cache: every request runs a fresh upstream PromQL fan-out and
+recomputes the body. On a conditional GET the server still runs the full
+build pipeline, recomputes `sha256(body)`, and compares it against the
+client-supplied `If-None-Match`; identical ⇒ 304 with empty body, otherwise
+200 with the new body and the new ETag. The 304 path saves response-body
+bytes-on-the-wire (and the client's deserialisation cost) but does **not**
+save the upstream PromQL evaluation.
+
+`/v1/graph` and `/v1/graph/nodegraph` do not emit `Cache-Control`: the server
+has no view of how long a freshly built graph remains "fresh" without
+re-querying upstream, so cacheability decisions are left to the client /
+intermediary. Whether any party caches the response body for some TTL is a
+client-side concern, not a server contract. Routes whose content is stable
+for the binary's lifetime (`/v1/edge-types`, `/openapi.{yaml,json}`,
+`/docs`, `/docs/assets/*`) emit explicit `Cache-Control` because their
+content stability is server-known; this is independent of the ETag
+validator on graph endpoints.
 
 ### Status codes / `reason`
 

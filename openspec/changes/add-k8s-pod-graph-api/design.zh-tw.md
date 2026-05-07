@@ -137,16 +137,18 @@ Edge 分類為 typed category：
   - Filter／format 進 cache key（v1 不存在 cache key，無此議題）。
 - 已捨棄的緩解（仍適用）：可選 `--clusters-allowlist` 在所有 PromQL 注入 `cluster=~"a|b|c"`，無論 VM 內有多少 cluster 都可限制 upstream 成本。
 
-### D6. HTTP-layer caching only（ETag）；無 in-process result cache
+### D6. 以 response validator（ETag）做 conditional GET；無 in-process result cache
 
-v1 **僅**保留 HTTP 層 `ETag`。先前設計的三層堆疊（Ristretto + singleflight + ETag）已被移除。沒有 in-process result cache、沒有請求合併（singleflight）、沒有 `/admin/cache` 路由。每次請求都重新對 upstream fan-out。
+v1 在每個 graph 回應上發出 HTTP `ETag` **strong validator**。ETag 是 RFC 9110 §8.8.3 的 response identity 機制，用於 §13.1 的 **conditional GET / revalidation**——它**不是 cache**。先前設計的三層堆疊（Ristretto + singleflight + server-side cache）已被移除。沒有 in-process result cache、沒有請求合併（singleflight）、沒有 `/admin/cache` 路由。每次請求都重新對 upstream fan-out 並重算 body。
 
 每個請求的處理流程：
 
 1. 經 `errgroup.WithContext` 對 centralised VictoriaMetrics parallel 執行所需 PromQL，在記憶體內 join 各 cluster 結果集，得到全新 `*Graph`。
-2. 對該 `*Graph` 套用 filter spec（`cluster`、`namespace`、`node`、`edge_type`）與 traversal pruning（`root`、`depth`、`direction`）。Filter+prune 回傳輕量 view，非複本。
+2. 對該 `*Graph` 套用 filter spec（`cluster`、`namespace`、`name`、`edge_type`）與 traversal pruning（`root`、`depth`、`direction`）。Filter+prune 回傳輕量 view，非複本。
 3. 將 view 序列成請求的 `format`（Cytoscape.js 或 Grafana Node Graph）。
-4. 由序列化 body 計算 `ETag = sha256(body)` 並寫回應。呼叫端帶 `If-None-Match: "<etag>"` 重訪同視窗時，server 仍跑完 build／序列化，但比對 ETag 後回 `304 Not Modified` 並省去 body 傳輸。
+4. 由序列化 body 計算 `ETag = sha256(body)` 並寫回應。呼叫端帶 `If-None-Match: "<etag>"` 重訪同視窗時，server 仍跑完 build／序列化，但比對 freshly computed sha256 後若一致即回 `304 Not Modified`，省去 body 傳輸與 client 端反序列化成本——但**不**省 upstream PromQL 評估，這是 v1 不附 server-side cache 的代價。Validator 為 content-addressed，server 端不需保留 request 之間的狀態。
+
+是否有任何 party（瀏覽器、reverse proxy、下游服務）為 response body cache 一段 TTL，是 client / intermediary 政策，與 server 無關。
 
 **ETag 決定論為合約一部分。** `sha256(body)` 對相同 `(window, filters, upstream-data)` 必須穩定；序列化器必須對 node／edge slice 排序（`graph.SortNodes` / `SortEdges`），`Graph.ClusterNames()` 必須排序，回應 body shape 固定為 `{apiVersion, clusters, elements}`，不得加入 time-varying 或 echo-of-input 欄位。`internal/integration/` 的 `TestRepeatedRequestsReturnSameETag` 守住此性質。
 
@@ -164,11 +166,15 @@ v1 **僅**保留 HTTP 層 `ETag`。先前設計的三層堆疊（Ristretto + sin
 
 `GET /v1/graph` 除必填 `start` / `end` 外接受：
 
-- `?cluster=<name>`——可重複；僅保留 `cluster` 在集合內的 node。對 **跨叢集 `pod-calls-pod`**（源端 pod 與目的端 pod 解析後落在不同 cluster），若僅一端之叢集落在 filter 內，實作會**保留該邊並把缺漏的另一端 pod 節點拉回 view**（仍受 `namespace`／`node` filter 約束）；遠端 K8s node 不因「僅作為跨叢集邊的伴點」而自動保留。跨叢集語意由消費端比對 source/target node 之 `labels.cluster` 推得（edge 自身僅帶 `labels.cluster`＝trace 來源／client 端 cluster）。`cluster` 設成未知值不算錯誤——該名稱僅得到空結果。
+- `?cluster=<name>`——可重複；僅保留 `cluster` 在集合內的 node。對 **跨叢集 `pod-calls-pod`**（源端 pod 與目的端 pod 解析後落在不同 cluster），若僅一端之叢集落在 filter 內，實作會**保留該邊並把缺漏的另一端 pod 節點拉回 view**（仍受 `namespace` filter 約束）；遠端 K8s node 不因「僅作為跨叢集邊的伴點」而自動保留。跨叢集語意由消費端比對 source/target node 之 `labels.cluster` 推得（edge 自身僅帶 `labels.cluster`＝trace 來源／client 端 cluster）。`cluster` 設成未知值不算錯誤——該名稱僅得到空結果。
 - `?namespace=<ns>`——可重複；限制 pod / PVC node 的 `namespace` 在集合內。namespace 值可跨 cluster 比對；與 `?cluster=` 併用可縮到單一 cluster 的 namespace。
-- `?node=<node-name>`——可重複；限制 K8s node 名。若名稱跨 cluster 不唯一，請與 `?cluster=` 併用。
+- `?name=<value>`——可重複；對 `n.Name()` 做精確字串比對，**跨所有 node 型別**（`PodNode`、`K8sNode`、`PVCNode`、`ExternalNode`）。可拿來把 view 錨定到任意一個 node——pod、host node、PVC、或 external endpoint，呼叫端不需要先知道型別。Names 並非全域唯一（pod 與 K8s node 可同名，PVC 名稱可跨 namespace 重複）；所有命中皆回傳。與 `?cluster=` / `?namespace=` 併用可消歧。
 - `?edge_type=<type>`——可重複；僅保留該 edge types。若某型別在目前 `Graph` 無 edge，靜默略過（無錯誤、僅空）。
 - `?root=<id>&depth=<n>&direction=in|out|both`——partial-graph traversal：自複合 ID（`<cluster>/<pod-uid>` 或 `<cluster>/<node-name>`）做 BFS，以 `depth` 為界（預設 2，最大 6）。
+
+**Edge 端點 re-add 統一規則（跨所有 filter 一致）**：edge 在至少一端在 scope 內時保留；恰好一端在 scope 內時，由 `g.NodesByID` 將缺漏端拉回 view，前提是該端點通過非 cluster 類 filter（namespace）。此規則同時涵蓋僅以 `cluster` 縮 scope 的跨叢集伴點 re-hydration、`pod-runs-on-node` / `pod-mounts-pvc` 邊在 in-scope pod 上的非 pod 端點回補，與以 `name` 錨定 node 後渲染其關聯邊與伴點的需求。`name` 過濾**不**附加額外抑制——錨定到具名 node 的本意就是要呈現它與鄰域之間的邊，否則 graph 會有懸空端點。
+
+`pod_uid` filter 經評估後否決：pod UID 為內部 opaque 識別碼，呼叫端必須先發 `/v1/graph` 才能取得，違反「filter 應為使用者可獨立構造」的設計原則。改以 `cluster` + `name` 縮 scope，並接受 names 並非全域唯一的事實。
 
 Filtering **在回應階段**對新建的 `*Graph` 套用，不重查 upstream。PromQL 永遠抓取範圍內所有 cluster 的完整視窗（受 `--clusters-allowlist` 限制）；該 build 的 `*Graph` 為所有 filter view 的共用基底。
 

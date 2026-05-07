@@ -26,7 +26,7 @@ import (
 //	@Description
 //	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. The pair is passed through to upstream PromQL as-is (within `--max-skew` of `now`); each request triggers a fresh fan-out — there is no in-process result cache.
 //	@Description
-//	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `pod`.
+//	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, external).
 //	@Description
 //	@Description	**Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
 //	@Description
@@ -61,7 +61,7 @@ import (
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined). Names match the upstream `cluster` label."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed Kubernetes namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
-//	@Param			pod			query		[]string	false	"Restrict to pods whose name matches exactly. Repeatable; multi-cluster name collisions return all matches."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
+//	@Param			name		query		[]string	false	"Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
 //	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, externals `external/<value>`."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
 //	@Param			depth		query		int			false	"BFS traversal depth in hops. Range `0..6`. Defaults to `2` when `root` is set, ignored otherwise."	minimum(0)	maximum(6)	default(2)	example(2)
 //	@Param			direction	query		string		false	"Traversal direction relative to `root`. `out` = downstream edges, `in` = upstream edges, `both` = undirected. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
@@ -134,7 +134,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined)."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
-//	@Param			pod			query		[]string	false	"Restrict to pods whose name matches exactly. Repeatable."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
+//	@Param			name		query		[]string	false	"Restrict to nodes whose name matches exactly across every node type. Repeatable."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
 //	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. See /v1/graph for ID formats per type."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
 //	@Param			depth		query		int			false	"BFS traversal depth `0..6`. Defaults to `2` when `root` is set."	minimum(0)	maximum(6)	default(2)	example(2)
 //	@Param			direction	query		string		false	"Traversal direction. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
@@ -438,7 +438,7 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 		q["cluster"],
 		q["namespace"],
 		q["edge_type"],
-		q["pod"],
+		q["name"],
 		q.Get("root"),
 		depth,
 		q.Get("direction"),

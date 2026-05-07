@@ -154,41 +154,47 @@ func TestProperty_CrossClusterEdgesHaveDistinctClusterEndpoints(t *testing.T) {
 	}
 }
 
-func TestProperty_PodFilterResultsAllMatchAndNoOutOfScopePartner(t *testing.T) {
+func TestProperty_NameFilterEveryNodeMatchesOrIsRehydratedPartner(t *testing.T) {
 	for seed := int64(1); seed <= 25; seed++ {
 		g := genGraph(seed, 3, 5, 12)
 		// Pick the first pod's name as the in-scope set. Random but deterministic.
-		var podName string
+		var anchor string
 		for _, n := range g.NodesByID {
 			if n.Type() == NodeTypePod {
-				podName = n.Name()
+				anchor = n.Name()
 				break
 			}
 		}
-		require.NotEmpty(t, podName)
-		v := Project(g, Scope{Pods: map[string]struct{}{podName: {}}})
+		require.NotEmpty(t, anchor)
+		v := Project(g, Scope{Names: map[string]struct{}{anchor: {}}})
 
-		inScope := map[string]bool{}
+		// Build the set of node IDs whose name matches the filter (the
+		// "named-match" set) and the set of all returned node IDs.
+		named := map[string]bool{}
+		returned := map[string]bool{}
 		for _, n := range v.Nodes {
-			if n.Type() == NodeTypePod {
-				assert.Equalf(t, podName, n.Name(),
-					"seed=%d: pod %s in result but name does not match filter", seed, n.ID())
-				inScope[n.ID()] = true
+			returned[n.ID()] = true
+			if n.Name() == anchor {
+				named[n.ID()] = true
 			}
 		}
-		// No cross-cluster pod-calls-pod edge re-adds an out-of-filter partner.
+		// Every returned node either matches the name OR is incident on at
+		// least one retained edge whose other endpoint matches the name set.
+		incident := map[string]bool{}
 		for _, e := range v.Edges {
-			if e.Type != EdgeTypePodCallsPod {
+			if named[e.Source] {
+				incident[e.Target] = true
+			}
+			if named[e.Target] {
+				incident[e.Source] = true
+			}
+		}
+		for id := range returned {
+			if named[id] {
 				continue
 			}
-			src, srcOK := g.NodesByID[e.Source]
-			tgt, tgtOK := g.NodesByID[e.Target]
-			require.True(t, srcOK)
-			require.True(t, tgtOK)
-			if src.Labels()["cluster"] != tgt.Labels()["cluster"] {
-				assert.Truef(t, inScope[e.Source] && inScope[e.Target],
-					"seed=%d: cross-cluster edge survived with partner outside pod filter", seed)
-			}
+			assert.Truef(t, incident[id],
+				"seed=%d: node %s in result but neither matches name nor is incident on a retained edge to a named match", seed, id)
 		}
 	}
 }
