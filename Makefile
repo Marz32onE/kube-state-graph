@@ -141,7 +141,6 @@ docker-docs: docker-build
 		$(LOCAL_TAG) \
 		--prom-url=http://127.0.0.1:8428 \
 		--listen-addr=:8080 \
-		--enable-debug \
 		--log-level=info
 
 docker-docs-stop:

@@ -5,7 +5,7 @@ All routes are prefixed `/v1/`. Every JSON body carries `apiVersion: "v1"`.
 ## Authentication
 
 When the server is started with API keys configured (`--api-keys-file=<path>`
-or `--api-keys=<csv>`), every request to `/v1/*` and `/debug/*` MUST carry an
+or `--api-keys=<csv>`), every request to `/v1/*` MUST carry an
 `X-API-Key: <key>` header.
 
 ```bash

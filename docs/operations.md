@@ -52,9 +52,9 @@
 
 ## API-key authentication
 
-The server enforces an `X-API-Key` header on `/v1/*` and `/debug/*` whenever
-keys are configured. Health (`/livez`, `/readyz`), Prometheus scrape
-(`/metrics`), and the OpenAPI / Scalar UI routes are exempt.
+The server enforces an `X-API-Key` header on `/v1/*` whenever keys are
+configured. Health (`/livez`, `/readyz`), Prometheus scrape (`/metrics`), and
+the OpenAPI / Scalar UI routes are exempt.
 
 ### Recommended deployment
 
