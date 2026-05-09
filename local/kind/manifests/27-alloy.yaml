@@ -32,37 +32,19 @@ data:
         endpoint = "0.0.0.0:4318"
       }
       output {
-        // Two trace consumers:
-        //  1. servicegraph connector — UNFILTERED so paired client+server
-        //     spans still produce traces_service_graph_request_total
-        //     (drives /v1/graph?edge_type=pod-calls-pod).
-        //  2. filter processor — drops spans whose resource service.name
-        //     belongs to peripheral services (grafana, victoria-metrics,
-        //     kube-state-metrics, etc.) so Tempo only stores
-        //     kube-state-graph traces. Edit `tempo_keep_services` below to
-        //     change which services land in Tempo.
+        // All received traces fan out to:
+        //  1. Alloy's servicegraph connector — produces
+        //     traces_service_graph_request_total written to VM. With Beyla
+        //     removed, the only span source is kube-state-graph itself
+        //     (otelgin server spans + manual build spans + otelhttp client
+        //     spans against VM). Paired client+server pods are now scarce,
+        //     so this metric will be sparse.
+        //  2. Tempo OTLP exporter — full trace storage for Grafana Explore.
         traces = [
           otelcol.connector.servicegraph.sg.input,
-          otelcol.processor.filter.tempo_keep.input,
+          otelcol.exporter.otlp.tempo.input,
         ]
         logs = [otelcol.exporter.debug.logs.input]
-      }
-    }
-
-    // Span-level filter: keep only spans whose resource service.name is in
-    // the allowlist; drop everything else. Uses OTTL — OpenTelemetry's
-    // expression language. To also see grafana/VM spans in Tempo, append
-    // the service name (or just remove this processor and wire the
-    // receiver directly to otelcol.exporter.otlp.tempo).
-    otelcol.processor.filter "tempo_keep" {
-      error_mode = "ignore"
-      traces {
-        span = [
-          "not (resource.attributes[\"service.name\"] == \"kube-state-graph\")",
-        ]
-      }
-      output {
-        traces = [otelcol.exporter.otlp.tempo.input]
       }
     }
 
