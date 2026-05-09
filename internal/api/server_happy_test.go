@@ -12,8 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/marz32one/kube-state-graph/internal/config"
 )
 
 // promFixturePodInfo returns one kube_pod_info sample so Builder.Build emits a
@@ -149,30 +147,6 @@ func TestGraphEndpoint_UpstreamError_Returns502(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
-func TestGraphEndpoint_ClusterTooLarge_Returns503(t *testing.T) {
-	// count(kube_pod_info) returns a scalar that exceeds MaxPods.
-	mock := promMock(t, map[string]string{
-		"count(kube_pod_info": `{"status":"success","data":{"resultType":"vector","result":[
-		  {"metric":{},"value":[1714515600,"999999"]}
-		]}}`,
-	})
-	s := newTestServer(t, mock, func(cfg *config.Config) { cfg.MaxPods = 100 })
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-
-	end := time.Now().UTC()
-	start := end.Add(-15 * time.Minute)
-	resp, err := http.Get(graphURL(srv.URL+"/v1/graph", start, end))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-
-	var body map[string]any
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	errField, _ := body["error"].(map[string]any)
-	assert.Equal(t, "cluster_too_large", errField["reason"])
-}
-
 // --- /v1/clusters --------------------------------------------------------
 
 // countingProm wraps promMock-style fixtures and counts Instant invocations
@@ -226,25 +200,6 @@ func TestClustersEndpoint_SortedOutput(t *testing.T) {
 	assert.Equal(t, "prod-east", body.Clusters[0].Name)
 	assert.Equal(t, "prod-west", body.Clusters[1].Name)
 	assert.Equal(t, "stg", body.Clusters[2].Name)
-}
-
-func TestClustersEndpoint_AllowlistFilter(t *testing.T) {
-	mock := promMock(t, map[string]string{"group by (cluster)": promFixtureClusters})
-	s := newTestServer(t, mock, func(cfg *config.Config) {
-		cfg.ClustersAllowlist = []string{"prod-east"}
-	})
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-
-	resp, err := http.Get(srv.URL + "/v1/clusters")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var body clustersBody
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	require.Len(t, body.Clusters, 1)
-	assert.Equal(t, "prod-east", body.Clusters[0].Name)
 }
 
 func TestClustersEndpoint_HitsUpstreamPerRequest(t *testing.T) {

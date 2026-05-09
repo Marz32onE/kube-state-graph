@@ -46,12 +46,9 @@
 
 ## Capacity planning
 
-- v1 ceiling: ≤ 5 k pods total in scope (across all clusters in
-  `--clusters-allowlist`). Lower if profile shows build duration approaching
-  `--build-timeout`.
+- Bounded query cost is delegated to upstream VictoriaMetrics search limits (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, `-search.maxSamplesPerQuery`). Tune these on VM, not on KSG.
 - v1 ships **no in-process result cache**. Upstream PromQL load scales linearly with HTTP traffic; ETag-based revalidation is the only client-side amortisation. A future cache mechanism for distributed deployment is anticipated — until it lands, plan capacity around `requests/s × build_cost`.
-- Recommended Pod resource limits: CPU 500m / Memory 512Mi for clusters under
-  the v1 ceiling. Scale up if profiling shows GC pressure.
+- Concurrency is delegated to HPA + Pod resource limits. Recommended starting point: CPU 500m / Memory 512Mi per replica; HPA target on CPU 60% or p95 build latency. Scale up if profiling shows GC pressure or upstream contention.
 
 ## API-key authentication
 
@@ -127,10 +124,6 @@ keys are configured. Health (`/livez`, `/readyz`), Prometheus scrape
 
 ## Tuning notes
 
-- Increase `--build-concurrency` if `kube_state_graph_build_rejected_total{reason="capacity"}`
-  ticks during normal traffic.
-- Increase `--build-timeout` only if upstream PromQL is slow; the default 15 s
-  is generous for ≤ 5 k pods.
-- Set `--clusters-allowlist` whenever the centralised VictoriaMetrics holds
-  more clusters than this server should expose; allowlist injection bounds
-  the upstream scan cost regardless of caller filters.
+- Increase `--build-timeout` only if upstream PromQL is slow; the default 15 s is generous for ≤ 5 k pods.
+- Increase `--api-timeout` only if `/v1/clusters` discovery or `/readyz` probe is observed to time out under healthy upstream conditions; default 5 s is generous for both.
+- Tune VictoriaMetrics search limits (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, `-search.maxSamplesPerQuery`) when the upstream holds large multi-cluster fleets — KSG does not bound query cost itself.

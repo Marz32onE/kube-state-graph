@@ -62,11 +62,9 @@ Both should return one row per cluster (the second query returns one row per
 trace-source / client-side cluster — server-side cluster does not appear as a
 metric label and is recovered at build time by the API server).
 
-## Allowlisting
+## Caller-side scoping
 
-`--clusters-allowlist=prod-east,prod-west` limits the API server to a subset
-even if VictoriaMetrics holds more cluster labels. The flag is injected into
-every PromQL query and into the discovery query.
+Every build loads every cluster present in upstream VictoriaMetrics. Callers narrow scope per request via the `?cluster=` query parameter on `/v1/graph` (repeatable, OR-combined). Server-side scope narrowing is not available — bounded query cost is delegated to upstream VictoriaMetrics search limits.
 
 ## Cluster name discipline
 

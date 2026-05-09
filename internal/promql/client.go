@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	promapi "github.com/prometheus/client_golang/api"
@@ -72,27 +71,3 @@ func FormatDuration(d time.Duration) string {
 	}
 }
 
-// AllowlistRegex builds a PromQL regex fragment "a|b|c" from the configured
-// list. Returns "" when the list is empty (i.e., no filtering).
-func AllowlistRegex(values []string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	escaped := make([]string, len(values))
-	for i, v := range values {
-		escaped[i] = regexEscape(v)
-	}
-	return strings.Join(escaped, "|")
-}
-
-func regexEscape(s string) string {
-	const meta = `\.+*?()|[]{}^$`
-	var b strings.Builder
-	for _, r := range s {
-		if strings.ContainsRune(meta, r) {
-			b.WriteByte('\\')
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}

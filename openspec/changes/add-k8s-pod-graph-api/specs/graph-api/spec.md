@@ -38,19 +38,9 @@ The server SHALL expose `GET /v1/graph` that returns a multi-cluster pod / node 
 - **WHEN** a client sends `GET /v1/graph?start=2026-05-01T12:05:00Z&end=2026-05-01T12:00:00Z`
 - **THEN** the server returns 400 Bad Request with `reason: "invalid_range"`
 
-#### Scenario: Window exceeds maximum
-
-- **WHEN** a client requests a window longer than `--max-window`
-- **THEN** the server returns 400 Bad Request with `reason: "window_too_large"`
-
-#### Scenario: end is too far in the future
-
-- **WHEN** a client supplies `end > now + --max-skew`
-- **THEN** the server returns 400 Bad Request with `reason: "end_in_future"`
-
 ### Requirement: Time-window passthrough
 
-The server SHALL pass caller-supplied `start` and `end` through to upstream PromQL verbatim, after enforcing `end > start`, `end - start <= --max-window`, and `end <= now + --max-skew`. There is no server-side bucketing, alignment, or grid; the response body SHALL NOT echo `start`, `end`, or any derived timestamp.
+The server SHALL pass caller-supplied `start` and `end` through to upstream PromQL verbatim, after enforcing `end > start`. There is no server-side bucketing, alignment, grid, window cap, or future-time guard; the response body SHALL NOT echo `start`, `end`, or any derived timestamp. Operators relying on bounded query cost SHALL configure upstream VictoriaMetrics search limits (e.g. `-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`).
 
 #### Scenario: Caller timestamps drive PromQL
 
@@ -229,17 +219,12 @@ The `name` parameter SHALL match `n.Name()` by exact string equality across **ev
 
 ### Requirement: Cluster discovery endpoint
 
-The server SHALL expose `GET /v1/clusters` that returns the list of clusters with data in centralised VictoriaMetrics over the discovery lookback window (default 1 hour). The response SHALL be derived live from a single `group by (cluster) (kube_node_info)` query on every request — there is no in-process discovery cache in v1; clients revalidate via the response `ETag`. When `--clusters-allowlist` is set, the result SHALL be intersected with the allowlist before being returned.
+The server SHALL expose `GET /v1/clusters` that returns the list of clusters with data in centralised VictoriaMetrics over a fixed 1-hour lookback. The response SHALL be derived live from a single `group by (cluster) (last_over_time(kube_node_info[1h]))` query on every request — there is no in-process discovery cache in v1; clients revalidate via the response `ETag`.
 
 #### Scenario: Live discovery
 
 - **WHEN** centralised VictoriaMetrics holds `kube_node_info` series with `cluster="cluster-alpha"` and `cluster="cluster-beta"` in the last hour
 - **THEN** `GET /v1/clusters` returns 200 with a `clusters` array containing both names
-
-#### Scenario: Allowlist applied
-
-- **WHEN** the server is started with `--clusters-allowlist cluster-alpha` and centralised VictoriaMetrics also has data for `cluster-beta`
-- **THEN** `GET /v1/clusters` returns only `cluster-alpha`
 
 ### Requirement: Edge-type discovery endpoint
 
@@ -352,7 +337,7 @@ The server SHALL expose `GET /livez` that returns 200 while the process is runni
 
 ### Requirement: Self-metrics endpoint
 
-The server SHALL expose `GET /metrics` in Prometheus exposition format including at least: `kube_state_graph_build_duration_seconds`, `kube_state_graph_project_duration_seconds`, `kube_state_graph_serialise_duration_seconds`, `kube_state_graph_build_concurrency`, `kube_state_graph_build_rejected_total`, `kube_state_graph_graph_node_count`, `kube_state_graph_graph_edge_count`, `kube_state_graph_clusters_observed`, `kube_state_graph_upstream_query_duration_seconds`, `kube_state_graph_upstream_query_failures_total`, `kube_state_graph_http_requests_total`, and `kube_state_graph_auth_rejected_total`.
+The server SHALL expose `GET /metrics` in Prometheus exposition format including at least: `kube_state_graph_build_duration_seconds`, `kube_state_graph_project_duration_seconds`, `kube_state_graph_serialise_duration_seconds`, `kube_state_graph_build_rejected_total`, `kube_state_graph_graph_node_count`, `kube_state_graph_graph_edge_count`, `kube_state_graph_clusters_observed`, `kube_state_graph_upstream_query_duration_seconds`, `kube_state_graph_upstream_query_failures_total`, `kube_state_graph_http_requests_total`, and `kube_state_graph_auth_rejected_total`.
 
 #### Scenario: Metrics exposition
 
@@ -364,32 +349,23 @@ The server SHALL expose `GET /metrics` in Prometheus exposition format including
 - **WHEN** a build has produced a multi-cluster graph
 - **THEN** `kube_state_graph_graph_node_count` series include a `cluster` label and `kube_state_graph_graph_edge_count` series include a `cross_cluster` label
 
-### Requirement: Concurrency cap
+### Requirement: Per-build timeout (graph endpoints)
 
-The server SHALL cap the number of concurrent in-flight graph builds to a configurable limit (default 8). Requests that would exceed the cap SHALL receive `503 Service Unavailable` with a `Retry-After: 1` header and a JSON body containing `reason: "capacity"`.
+For `GET /v1/graph` and `GET /v1/graph/nodegraph`, the server SHALL apply a configurable per-build `context.WithTimeout` derived from `--build-timeout` (default 15 seconds). On `context.DeadlineExceeded`, the build SHALL be aborted, the `kube_state_graph_build_rejected_total{reason="timeout"}` counter SHALL be incremented, and the request SHALL receive `504 Gateway Timeout` with `reason: "timeout"` (RFC 9110 §15.6.5: gateway did not receive a timely response from an upstream server it needed to access in order to complete the request).
 
-#### Scenario: Build over capacity
+#### Scenario: Upstream stalls beyond build timeout
 
-- **WHEN** the configured cap is 1 and two concurrent build requests arrive
-- **THEN** the second request returns 503 with `reason: "capacity"` and `Retry-After: 1`
+- **WHEN** centralised VictoriaMetrics fails to respond to a `/v1/graph` build within `--build-timeout`
+- **THEN** the request returns 504 with `reason: "timeout"`
 
-### Requirement: Per-build timeout
+### Requirement: Per-request timeout (non-graph endpoints)
 
-The server SHALL apply a configurable per-build context timeout (default 15 seconds). On timeout, the build SHALL be aborted, the `kube_state_graph_build_rejected_total{reason="timeout"}` counter SHALL be incremented, and the request SHALL receive `503 Service Unavailable` with `reason: "timeout"`.
+For non-graph endpoints that perform upstream calls (`GET /v1/clusters` discovery query, `GET /readyz` `up{}` probe), the server SHALL apply a `context.WithTimeout` derived from `--api-timeout` (default 5 seconds) to the upstream call. On `context.DeadlineExceeded`, the request SHALL receive `504 Gateway Timeout` with `reason: "timeout"`. Endpoints that do not perform upstream calls (`GET /v1/edge-types`, `GET /livez`, `GET /metrics`, `GET /openapi.*`, `GET /docs*`) are not subject to this timeout.
 
-#### Scenario: Upstream stalls beyond timeout
+#### Scenario: Cluster discovery stalls beyond api timeout
 
-- **WHEN** centralised VictoriaMetrics fails to respond within the configured timeout
-- **THEN** the request returns 503 with `reason: "timeout"` and `Retry-After: 1`
-
-### Requirement: Cluster-size ceiling
-
-When a probe `count(kube_pod_info)` for the current scope exceeds `--max-pods` (default 5000), the server SHALL fail the build fast and return `503 Service Unavailable` with `reason: "cluster_too_large"`.
-
-#### Scenario: Cluster too large
-
-- **WHEN** centralised VictoriaMetrics reports more than `--max-pods` pods in scope and a client sends `GET /v1/graph?start=...&end=...`
-- **THEN** the response is 503 with `reason: "cluster_too_large"`
+- **WHEN** centralised VictoriaMetrics fails to respond to the `/v1/clusters` discovery query within `--api-timeout`
+- **THEN** the request returns 504 with `reason: "timeout"`
 
 ### Requirement: Outside-retention error
 
@@ -399,15 +375,6 @@ When a topology query for the requested window returns zero rows but the upstrea
 
 - **WHEN** a client requests a window older than upstream `kube_pod_info` retention but `up{}` returns 1
 - **THEN** the response is 400 with `reason: "outside_retention"`
-
-### Requirement: Operator endpoints
-
-Behind a `--enable-debug` flag the server SHALL expose `GET /debug/last-queries` that returns the raw upstream query strings and a redacted summary (counts and labels, not values) of the most recent build. v1 does NOT expose a cache-flush endpoint because it has no in-process result cache.
-
-#### Scenario: Debug endpoint disabled by default
-
-- **WHEN** the server is started without `--enable-debug` and a client sends `GET /debug/last-queries`
-- **THEN** the response is 404 Not Found
 
 ### Requirement: Structured request logging
 
@@ -461,7 +428,7 @@ The server SHALL serve the Scalar API Reference UI at `GET /docs`, rendering the
 The repository SHALL include a Go test that parses the embedded OpenAPI spec and asserts that:
 
 - Every `(method, path)` pair declared in the spec corresponds to a registered Gin route in `Server.Handler()`.
-- Every Gin route registered in `Server.Handler()` corresponds to a `(method, path)` pair declared in the spec, modulo an explicit allowlist of infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/debug/last-queries`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*`).
+- Every Gin route registered in `Server.Handler()` corresponds to a `(method, path)` pair declared in the spec, modulo an explicit allowlist of infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*`).
 
 The test SHALL run on every PR via `go test ./...` and SHALL fail when annotations and routes drift.
 

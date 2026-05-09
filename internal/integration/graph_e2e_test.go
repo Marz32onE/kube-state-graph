@@ -99,7 +99,7 @@ func (s *GraphSuite) httpGet(rawURL string) *http.Response {
 
 func (s *GraphSuite) TestSingleClusterGraph() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
-		cfg.MaxSkew = 365 * 24 * time.Hour
+		
 	})
 	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
@@ -128,7 +128,7 @@ func (s *GraphSuite) TestSingleClusterGraph() {
 }
 
 func (s *GraphSuite) TestCrossClusterEdgePresent() {
-	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	srv := s.StartAPIServer(func(cfg *config.Config) {  })
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
@@ -146,7 +146,7 @@ func (s *GraphSuite) TestCrossClusterEdgePresent() {
 }
 
 func (s *GraphSuite) TestNameFilter_PodAnchor() {
-	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	srv := s.StartAPIServer(func(cfg *config.Config) {  })
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("name", "checkout") }))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
@@ -161,7 +161,7 @@ func (s *GraphSuite) TestNameFilter_PodAnchor() {
 }
 
 func (s *GraphSuite) TestNameFilter_UnknownReturnsEmpty() {
-	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	srv := s.StartAPIServer(func(cfg *config.Config) {  })
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("name", "does-not-exist") }))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
@@ -174,7 +174,7 @@ func (s *GraphSuite) TestNameFilter_UnknownReturnsEmpty() {
 func (s *GraphSuite) TestExternalNodeProducedByPattern() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
 		cfg.ExternalNamePattern = "://"
-		cfg.MaxSkew = 365 * 24 * time.Hour
+		
 	})
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
 	defer func() { _ = resp.Body.Close() }()
@@ -184,7 +184,7 @@ func (s *GraphSuite) TestExternalNodeProducedByPattern() {
 }
 
 func (s *GraphSuite) TestETagRoundTrip304() {
-	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	srv := s.StartAPIServer(func(cfg *config.Config) {  })
 	first := s.httpGet(s.graphURL(srv.URL, nil))
 	etag := first.Header.Get("ETag")
 	_ = first.Body.Close()
@@ -200,7 +200,7 @@ func (s *GraphSuite) TestETagRoundTrip304() {
 }
 
 func (s *GraphSuite) TestRepeatedRequestsReturnSameETag() {
-	srv := s.StartAPIServer(func(cfg *config.Config) { cfg.MaxSkew = 365 * 24 * time.Hour })
+	srv := s.StartAPIServer(func(cfg *config.Config) {  })
 	first := s.httpGet(s.graphURL(srv.URL, nil))
 	etag1 := first.Header.Get("ETag")
 	_ = first.Body.Close()
@@ -214,10 +214,10 @@ func (s *GraphSuite) TestRepeatedRequestsReturnSameETag() {
 
 func (s *GraphSuite) TestClustersDiscovery() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
-		cfg.MaxSkew = 365 * 24 * time.Hour
+		
 		// Discovery handler always queries at time.Now(), so the lookback
 		// must reach back far enough to cover fixedNow's static fixtures.
-		cfg.ClusterDiscoveryLookback = 365 * 24 * time.Hour
+		
 	})
 	resp := s.httpGet(srv.URL + "/v1/clusters")
 	defer func() { _ = resp.Body.Close() }()
@@ -238,7 +238,7 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 
 func (s *GraphSuite) TestAPIKey_FileBacked_Enforced() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
-		cfg.MaxSkew = 365 * 24 * time.Hour
+		
 		cfg.APIKeys = "secret-test-key-1,secret-test-key-2"
 	})
 

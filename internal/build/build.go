@@ -3,9 +3,7 @@ package build
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/marz32one/kube-state-graph/internal/config"
@@ -30,15 +28,7 @@ func New(q *promql.Client, cfg config.Config, m *observability.Metrics) *Builder
 // Build runs all upstream queries for [end - window, end] and returns the
 // joined multi-cluster Graph.
 func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time) (*graph.Graph, error) {
-	allowlistRegex := promql.AllowlistRegex(b.cfg.ClustersAllowlist)
-
-	// Cluster-too-large probe at the requested window's end, NOT time.Now() —
-	// historical requests must be evaluated against historical cluster size.
-	if err := b.probeClusterSize(ctx, allowlistRegex, end); err != nil {
-		return nil, err
-	}
-
-	topology, err := ReadTopology(ctx, b.q, window, end, allowlistRegex)
+	topology, err := ReadTopology(ctx, b.q, window, end)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, NewError(ReasonTimeout, "build timeout", err)
@@ -53,7 +43,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 		}
 	}
 
-	sg, err := ReadServiceGraph(ctx, b.q, window, end, allowlistRegex, b.cfg.ExternalNamePattern, topology)
+	sg, err := ReadServiceGraph(ctx, b.q, window, end, b.cfg.ExternalNamePattern, topology)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, NewError(ReasonTimeout, "build timeout", err)
@@ -132,30 +122,11 @@ func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*g
 	return nodes, edges
 }
 
-func (b *Builder) probeClusterSize(ctx context.Context, allowlistRegex string, ts time.Time) error {
-	vec, err := b.q.Instant(ctx, string(promql.QClusterSizeProbe),
-		promql.Render(promql.QClusterSizeProbe, 0, allowlistRegex), ts.UTC())
-	if err != nil {
-		return NewError(ReasonUpstream, "cluster-size probe failed", err)
-	}
-	if len(vec) == 0 {
-		return nil
-	}
-	count := int(vec[0].Value)
-	if count > b.cfg.MaxPods {
-		return NewError(ReasonClusterTooLarge,
-			fmt.Sprintf("scope contains %s pods, exceeds --max-pods=%d",
-				strconv.Itoa(count), b.cfg.MaxPods),
-			nil)
-	}
-	return nil
-}
-
 func (b *Builder) upProbe(ctx context.Context) (bool, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, b.cfg.APITimeout)
 	defer cancel()
 	vec, err := b.q.Instant(probeCtx, string(promql.QUpProbe),
-		promql.Render(promql.QUpProbe, 0, ""), time.Now().UTC())
+		promql.Render(promql.QUpProbe, 0), time.Now().UTC())
 	if err != nil {
 		return false, err
 	}

@@ -288,3 +288,73 @@ Operators reviewing the docs flagged that v1 framing of ETag as "HTTP-layer cach
   - Restate why no `Cache-Control` is emitted on `/v1/graph` and `/v1/graph/nodegraph`: the server has no view of how long a freshly built graph is "fresh" without re-querying upstream, so it leaves cacheability decisions to the client.
 - [x] 26.4 Mirror the same wording adjustments into `design.zh-tw.md` D6 and the zh-tw mirror (if present) of `docs/api.md`.
 - [x] 26.5 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on ETag determinism only if the wording references "caching" — keep the byte-identity invariant verbatim.
+
+## 27. Configuration surface simplification (capability: graph-api — modified, cluster-topology-source — modified)
+
+The configuration surface accumulated knobs whose value did not justify the cost of carrying them: `--max-window` / `--max-skew` duplicate guards already provided by upstream VictoriaMetrics search limits and trivially-handled empty results; `--max-pods` requires an extra probe round-trip whose only signal is bounded again by the same VM-side limits; `--cluster-discovery-lookback` has no observed reason to deviate from `1h`; `--enable-debug` toggles a debug endpoint that was only ever a 501 stub; `--build-concurrency` is a per-instance semaphore whose tuning duplicates HPA's signal at finer granularity but worse observability. Section 27 removes all of them, adds `--api-timeout` as a peer to `--build-timeout` for non-graph upstream calls, and realigns timeout / upstream-failure responses to the RFC 9110 conventions (`504 Gateway Timeout`, `502 Bad Gateway`).
+
+- [ ] 27.1 Remove `--max-window` flag, `KSG_MAX_WINDOW` env var, `Config.MaxWindow` field, default, and `Validate()` rule. Drop the `end - start > MaxWindow` guard in `parseGraphRequest` (`internal/api/handlers.go`). Drop `window_too_large` from `internal/api/errors.go` and any error-mapping table. Drop the corresponding scenario / requirement in spec / design / docs. Bounded query cost is delegated to upstream VictoriaMetrics search limits.
+- [ ] 27.2 Remove `--max-skew` flag, `KSG_MAX_SKEW` env var, `Config.MaxSkew` field, default, and `Validate()` rule. Drop the `end > now + MaxSkew` guard in `parseGraphRequest`. Drop `end_in_future` from `internal/api/errors.go`. Future-time queries return empty PromQL results which the caller surfaces as an empty graph; no KSG-side guard is necessary.
+- [ ] 27.3 Remove `--max-pods` flag, `KSG_MAX_PODS` env var, `Config.MaxPods` field, default, and `Validate()` rule. Remove the `count(kube_pod_info)` probe call site (`probeClusterSize` in `internal/build/builder.go` or equivalent), the `QClusterSizeProbe` query template in `internal/promql/queries.go`, and the `ReasonClusterTooLarge` build error / `cluster_too_large` HTTP reason in `internal/build/errors.go` + `internal/api/errors.go`. Remove the corresponding spec scenario in `cluster-topology-source/spec.md` and `graph-api/spec.md`.
+- [ ] 27.4 Remove `--cluster-discovery-lookback` flag, `KSG_CLUSTER_DISCOVERY_LOOKBACK` env var, `Config.ClusterDiscoveryLookback` field, default, and `Validate()` rule. In `internal/api/handlers.go::discoverClusters`, replace `s.cfg.ClusterDiscoveryLookback` with a package-level constant `clusterDiscoveryLookback = time.Hour`. Update the design / spec text to state the lookback is fixed at `1h`.
+- [ ] 27.5 Remove `--enable-debug` flag, `KSG_ENABLE_DEBUG` env var, `Config.EnableDebug` field, default, and `Validate()` rule. Remove the `/debug/last-queries` Gin route registration (`internal/api/server.go` / `routes.go`) and its handler (`internal/api/debug.go` if present). Update `internal/api/auth_middleware.go` to remove `/debug/*` from any exempt-path list (no-op once routes are gone).
+- [ ] 27.6 Update `cmd/kube-state-graph/main.go` HTTP server `WriteTimeout` derivation (`cfg.BuildTimeout + 5*time.Second`) — keep as-is; it does not depend on any removed field.
+- [ ] 27.7 Update unit tests in `internal/config/config_test.go`: remove cases asserting parsing / validation of removed fields. Update the round-trip "all flags" test to drop the removed flags.
+- [ ] 27.8 Update component tests in `internal/api/server_test.go`: drop `TestParseRequest_WindowTooLarge`, `TestParseRequest_EndInFuture`, `TestClusterTooLarge`, and any `/debug/last-queries` test. Adjust any test that wires `Config{ MaxWindow, MaxSkew, MaxPods, ClusterDiscoveryLookback, EnableDebug }` to drop those fields.
+- [ ] 27.9 Update integration tests in `internal/integration/graph_e2e_test.go`: drop the `cfg.ClusterDiscoveryLookback = 365 * 24 * time.Hour` override on the test rig (the constant now applies). Drop any `MaxWindow` / `MaxSkew` / `MaxPods` tweaks. Keep tests that exercise `?cluster=`, `?name=`, etc.
+- [ ] 27.10 Update Swag annotations on `/v1/graph` and `/v1/graph/nodegraph`: remove `--max-window` / `--max-skew` references from `@Description` and `@Param end "..."`. Remove the `/debug/last-queries` route annotations entirely. Remove `400 window_too_large`, `400 end_in_future`, `503 cluster_too_large` from `@Failure` blocks. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` plus `internal/api/static/openapi/*`.
+- [ ] 27.11 Update `docs/api.md`: drop `--max-window` / `--max-skew` from the `end` parameter description, drop the `window_too_large` / `end_in_future` / `cluster_too_large` rows from the status-code table, drop the `--cluster-discovery-lookback` mention from `/v1/clusters` (replace with "fixed `1h` lookback"), drop the entire `/debug/last-queries` section.
+- [ ] 27.12 Update `CLAUDE.md` "Request lifecycle" diagram and "Load-bearing design rules" bullets to drop `--max-window` / `--max-skew` validation lines and any `/debug/*` references. Mention upstream VictoriaMetrics search limits as the bounded-cost mechanism.
+- [ ] 27.13 Update `local/kind/manifests/30-api-server.yaml` and any other manifests / `Makefile` snippets that set the removed env vars.
+- [ ] 27.14 Run `openspec validate "add-k8s-pod-graph-api"` (must stay green); run `make test` + `make check-docs`; run `go vet ./...` + `golangci-lint run` (when available locally) to catch dead code (`probeClusterSize`, `QClusterSizeProbe`, `ReasonClusterTooLarge`, `validateWindow`, `validateSkew`, debug handler).
+
+### 27.A Add `--api-timeout` (graph-api — modified)
+
+- [ ] 27.A.1 Add `Config.APITimeout time.Duration` (default `5 * time.Second`). Wire `--api-timeout` flag and `KSG_API_TIMEOUT` env in `internal/config/config.go`. `Validate()` SHALL require `APITimeout > 0`.
+- [ ] 27.A.2 In `internal/api/handlers.go::discoverClusters`, replace the implicit timeout (currently inherited from the request context) with an explicit `ctx, cancel := context.WithTimeout(c.Request.Context(), s.cfg.APITimeout); defer cancel()` wrapping the upstream PromQL `Instant` call. On `errors.Is(err, context.DeadlineExceeded)` return `504 Gateway Timeout` with `reason: "timeout"`.
+- [ ] 27.A.3 In `/readyz` handler, replace the hardcoded `time.Second` probe timeout with `s.cfg.APITimeout`. Behaviour on probe failure stays `503 Service Unavailable` (k8s convention; not a gateway-timeout case).
+- [ ] 27.A.4 Update Swag annotations on `/v1/clusters` to include `@Failure 504 {object} errorBody "Upstream timeout"`. Run `make docs` and commit regenerated artefacts.
+- [ ] 27.A.5 Unit test `internal/config/config_test.go`: parses `--api-timeout` flag and `KSG_API_TIMEOUT` env; rejects zero / negative.
+- [ ] 27.A.6 Component test `internal/api/server_test.go`: stalled discovery upstream → 504 with `reason: "timeout"`.
+- [ ] 27.A.7 Update `docs/api.md` to describe `--api-timeout` semantics (which endpoints honour it; default `5s`); update README env table.
+
+### 27.B Remove `--build-concurrency` and the `503 capacity` reason (graph-api — modified)
+
+- [ ] 27.B.1 Remove `Config.BuildConcurrency` field, `--build-concurrency` flag, `KSG_BUILD_CONCURRENCY` env, default, and `Validate()` rule from `internal/config/config.go`.
+- [ ] 27.B.2 Delete `internal/build/orchestrator.go` (the `Orchestrator` type with its semaphore + per-build context-timeout wrapper). Move the per-build `context.WithTimeout(ctx, cfg.BuildTimeout)` wrapping directly into `internal/api/handlers.go::handleGraph` and `handleNodeGraph`, immediately around `s.builder.Build(...)`.
+- [ ] 27.B.3 Update `internal/api/server.go::New` (and the test factory in `internal/integration/...`) to drop the `NewOrchestrator(...)` call and pass the `*Builder` directly into the `Server` struct (or whatever the handler uses).
+- [ ] 27.B.4 Remove `kube_state_graph_build_concurrency` gauge and `kube_state_graph_build_rejected_total{reason="capacity"}` counter labels from `internal/observability/metrics.go`. Keep `build_rejected_total{reason="timeout"}` (still load-bearing for graph endpoints).
+- [ ] 27.B.5 Remove `ReasonCapacity` constant (and the `503 capacity` mapping in `internal/api/errors.go`); collapse `ReasonTimeout` mapping target from `503` to `504`. Update `mapBuildError` accordingly.
+- [ ] 27.B.6 Update `internal/build/errors.go` `Reason` enum: drop `ReasonCapacity`; keep `ReasonTimeout` and `ReasonUpstream`. Update all call sites and switch / mapping tables.
+- [ ] 27.B.7 Drop the spec scenario `Scenario: Build over capacity` (already removed in this section's spec edits) and the prior `Scenario: Upstream stalls beyond timeout` `Retry-After: 1` assertion text (no `Retry-After` header on 504 — clients should not retry-spin a gateway-timeout fault without backoff).
+- [ ] 27.B.8 Update integration tests in `internal/integration/graph_e2e_test.go`: drop any `cfg.BuildConcurrency = N` overrides; drop `TestBuild_Capacity` and `TestRetryAfterHeader_Capacity` if present.
+- [ ] 27.B.9 Update component tests `internal/api/server_test.go`: rename `TestBuild_Timeout` assertions from `503 timeout` to `504 timeout`; drop `TestBuild_Capacity`. Add a regression test that two concurrent build requests both succeed when the upstream is responsive (no semaphore = no serialisation).
+- [ ] 27.B.10 Update Swag annotations on `/v1/graph` and `/v1/graph/nodegraph`: replace `@Failure 503 {object} errorBody "Build concurrency exhausted"` with `@Failure 504 {object} errorBody "Build timeout"`. Drop the `Retry-After` mention from the timeout description. Run `make docs` and commit regenerated artefacts.
+- [ ] 27.B.11 Update `docs/operations.md` capacity-planning section to recommend HPA tuning (CPU + p95 latency targets) instead of `--build-concurrency`.
+- [ ] 27.B.12 Update `local/kind/manifests/30-api-server.yaml` to drop the `KSG_BUILD_CONCURRENCY` env. Add a `resources:` block with sensible defaults (request 100 m / 128 Mi, limit 500 m / 512 Mi) to make the HPA-driven model concrete in the local rig.
+
+### 27.C RFC-9110 status realignment for upstream errors (graph-api — modified)
+
+- [ ] 27.C.1 In `internal/api/errors.go::mapBuildError`, map `ReasonTimeout → 504 Gateway Timeout` and `ReasonUpstream → 502 Bad Gateway`. Document the choice in a comment referencing RFC 9110 §15.6.3 (502) and §15.6.5 (504).
+- [ ] 27.C.2 Audit every `writeError(c, http.StatusServiceUnavailable, ...)` site in `internal/api/`. Keep `503` only for `/readyz` (probe failed) and any genuine "service is going away / not yet ready" cases. Build / upstream paths SHALL NOT use 503.
+- [ ] 27.C.3 Audit every `errors.Is(err, context.DeadlineExceeded)` (and the equivalent for the prom client's wrapped errors) and ensure the matching error reason maps to `504 timeout` not `503`.
+- [ ] 27.C.4 Update `docs/api.md` status-code table to reflect the new mappings (already edited in this section's docs pass).
+- [ ] 27.C.5 Update component tests asserting `503 timeout` / `503 capacity` → adjust to `504 timeout` / removal respectively. Update integration tests `internal/integration/graph_e2e_test.go::TestBuild_*` similarly.
+- [ ] 27.C.6 `openspec validate "add-k8s-pod-graph-api"` and `make check-docs` after 27.A / 27.B / 27.C.
+
+## 28. Drop the cluster allowlist (capability: graph-api — modified, cluster-topology-source — modified, pod-service-graph — modified)
+
+Cluster scoping is a caller-side concern via the `?cluster=` filter on `/v1/graph`. Bounded upstream cost is delegated entirely to upstream VictoriaMetrics search limits.
+
+- [ ] 28.1 Remove `Config.ClustersAllowlist`, the `--clusters-allowlist` flag, and the `KSG_CLUSTERS_ALLOWLIST` env from `internal/config/config.go`.
+- [ ] 28.2 Remove `promql.AllowlistRegex` (and its tests) from `internal/promql/`. Drop the `allowlistRegex` parameter from `promql.Render`; collapse the `clusterSel` injection so PromQL templates emit `kube_pod_info[<window>]` etc. unconditionally.
+- [ ] 28.3 Drop the `allowlistRegex string` parameter from `ReadTopology`, `ReadServiceGraph`, and any helper they delegate to in `internal/build/`.
+- [ ] 28.4 Update `internal/build/build.go::Build` to call `ReadTopology` / `ReadServiceGraph` without the allowlist argument.
+- [ ] 28.5 Update `internal/api/handlers.go::discoverClusters` to render the discovery query without an allowlist arg and drop the `allowSet` intersection. Remove `stringSliceToSet` if it has no other callers.
+- [ ] 28.6 Update `cmd/kube-state-graph/main.go` startup log to drop the `clusters_allowlist` field.
+- [ ] 28.7 Update unit / component tests: drop `TestAllowlistRegex_*`, drop any `cfg.ClustersAllowlist = …` overrides in `internal/api/server_happy_test.go` and `internal/integration/graph_e2e_test.go`. Adjust assertions that expected `cluster=~"..."` selectors in mocked PromQL strings.
+- [ ] 28.8 Update Swag annotations on `/v1/clusters` to drop the `--clusters-allowlist` mention; run `make docs` and commit regenerated artefacts.
+- [ ] 28.9 Update `docs/api.md` and `README.md` (+ zh-tw mirror) to drop the allowlist row from env / flag tables.
+- [ ] 28.10 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on allowlist injection — replace with the simpler statement that the server loads every cluster present in upstream VM and that caller-side scoping uses `?cluster=`.
+- [ ] 28.11 Update `local/kind/manifests/30-api-server.yaml` (and any other manifest) to drop `KSG_CLUSTERS_ALLOWLIST` env if present.
+- [ ] 28.12 Run `openspec validate "add-k8s-pod-graph-api"` and `make test` + `make check-docs`; `go vet ./...` for dead imports.

@@ -64,17 +64,15 @@ Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`)
 HTTP /v1/graph?start=&end=&...
    │
    ▼
-parseGraphRequest        ── validates start/end (RFC 3339 or Unix seconds) and enforces --max-window / --max-skew
+parseGraphRequest        ── validates start/end (RFC 3339 or Unix seconds); only `end > start` is enforced
    │
    ▼
-Orchestrator.Resolve(ctx, end - start, end)
-   ├─ semaphore.TryAcquire   ── overflow → 503 capacity
-   ├─ context.WithTimeout    ── exceeded → 503 timeout
+context.WithTimeout(ctx, --build-timeout)   ── graph endpoints only; deadline exceeded → 504 timeout
    └─ Builder.Build(ctx, window, end)
-         ├─ probeClusterSize        ── overflow → 503 cluster_too_large
          ├─ ReadTopology  (errgroup of 5 PromQL queries in parallel)
          ├─ ReadServiceGraph (1 PromQL, joined with topology)
          └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
+   (no in-process concurrency cap; HPA + Pod resource limits handle load shedding)
    ▼
 graph.Project(g, scope)            ── filters + traversal applied here, NOT during build
    ▼
@@ -91,7 +89,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 (D1–D19) before changing any of them.
 
 - **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at response time as a projection over the freshly built `*Graph`. ETag (sha256(body)) is a response validator for HTTP conditional GET, not a cache — revisit when the future cache mechanism (D6) lands.
-- **No time-window alignment.** `start` and `end` are passed through to upstream PromQL verbatim (after `--max-window` / `--max-skew` validation). The previous 60 s `floor`/`ceil` grid was removed alongside the in-process cache it was bucketing for. Response body is `{apiVersion, clusters, elements}` — no time fields are echoed.
+- **No time-window alignment, no window cap, no future-time guard.** `start` and `end` are passed through to upstream PromQL verbatim; only `end > start` is enforced. The previous 60 s `floor`/`ceil` grid was removed alongside the in-process cache it was bucketing for. Bounded query cost is delegated to upstream VictoriaMetrics search limits (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, `-search.maxSamplesPerQuery`). Response body is `{apiVersion, clusters, elements}` — no time fields are echoed.
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,
   `error_rate`) and boolean flags (`cross_cluster`, `ghost`) are **deferred to a
@@ -118,12 +116,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   by looking up `server_k8s_pod_uid` against this index, since K8s pod UIDs
   are unique cross-cluster in practice. Missing UIDs become synth pods with
   `cluster=""` (server-side cluster unknown).
-- **Allowlist injection** is the only filter pushed to PromQL. `--clusters-allowlist`
-  injects `{cluster=~"a|b|c"}` into every query, including service-graph
-  queries (server-side cluster filtering is not pushed to PromQL because the
-  metric does not carry server-side cluster; cross-cluster edges whose target
-  pod lives in a non-allowlisted cluster drop silently when the target
-  topology is not loaded). All caller-supplied filters are projection-time only.
+- **No filters pushed to PromQL.** Each build loads every cluster present in upstream VictoriaMetrics. Caller-supplied filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at projection time over the freshly built `*Graph`. Bounded query cost is delegated to upstream VictoriaMetrics search limits.
 - **`/v1/edge-types` reads from `graph.EdgeTypes` only** — a single in-code
   registry shared with the builder. Adding an edge type = update both the
   builder and the registry in the same change; the API can never list a type

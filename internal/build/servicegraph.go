@@ -27,13 +27,12 @@ func ReadServiceGraph(
 	q *promql.Client,
 	window time.Duration,
 	end time.Time,
-	allowlistRegex string,
 	externalPattern string,
 	topology Topology,
 ) (ServiceGraphResult, error) {
 	vec, err := q.Instant(ctx,
 		string(promql.QServiceGraphTotal),
-		promql.Render(promql.QServiceGraphTotal, window, allowlistRegex),
+		promql.Render(promql.QServiceGraphTotal, window),
 		end,
 	)
 	if err != nil {

@@ -111,28 +111,3 @@ func TestAuth_GraphRoute_RequiresKey(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
-func TestAuth_DebugRoute_RequiresKeyWhenEnabled(t *testing.T) {
-	mock := promMock(t, nil)
-	cfg := func(c *struct{}) {} // unused; setup via override below
-	_ = cfg
-	// Reuse newTestServer override path to flip EnableDebug.
-	mockSrv := mock
-	s := newTestServerWithKeys(t, mockSrv, []string{"k1"})
-	s.cfg.EnableDebug = true
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-
-	// Without key.
-	resp, err := http.Get(srv.URL + "/debug/last-queries")
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-
-	// With key.
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/debug/last-queries", nil)
-	req.Header.Set(APIKeyHeader, "k1")
-	resp2, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	_ = resp2.Body.Close()
-	assert.NotEqual(t, http.StatusUnauthorized, resp2.StatusCode)
-}

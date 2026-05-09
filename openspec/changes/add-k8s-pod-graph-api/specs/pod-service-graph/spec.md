@@ -115,20 +115,6 @@ In both cases, `name="<pod-uid>"`, `type="pod"`, and `labels` SHALL contain `nam
 - **WHEN** a service-graph series has `cluster="cluster-alpha"` and `server_k8s_pod_uid="missing-uid"` but no pod with `uid="missing-uid"` exists in the topology global pod-UID index
 - **THEN** the resulting graph contains a synthesised pod node with `id: "/missing-uid"`, `name: "missing-uid"`, `type: "pod"`, `labels.cluster: ""` (server-side cluster is unknown), no `labels.ghost` key, and the edge is emitted with this node as `target`
 
-### Requirement: Allowlist enforcement on service-graph queries
-
-When the server is configured with `--clusters-allowlist`, every service-graph query SHALL inject the allowlist regex on the single `cluster=~"..."` label so series whose client-side (trace-source) cluster is outside the allowlist are not fetched. Server-side cluster filtering happens at resolution time: an edge whose server pod resolves (via the global UID index) to a pod outside the allowlist's topology scope is dropped because that topology was not loaded; a cross-cluster edge originating in an in-scope cluster but targeting a non-allowlisted cluster's pod has no resolvable target and is dropped silently. Cross-cluster edges between two in-scope clusters resolve normally.
-
-#### Scenario: Trace source cluster inside allowlist
-
-- **WHEN** the allowlist is `{cluster-alpha, cluster-beta}` and a series has `cluster="cluster-alpha"` whose client and server pod UIDs both resolve to topology pods (regardless of which of the two clusters the server pod lives in)
-- **THEN** the edge is fetched, joined, and emitted
-
-#### Scenario: Trace source cluster outside allowlist
-
-- **WHEN** the allowlist is `{cluster-alpha}` and a series has `cluster="cluster-gamma"`
-- **THEN** the issued PromQL excludes this series via the allowlist regex on `cluster` and no edge is emitted
-
 ### Requirement: Edge identity is a deterministic UUID
 
 Edge IDs SHALL be RFC 4122 UUIDs in canonical lowercase string form. They SHALL be deterministic UUIDv5 values derived from a fixed namespace UUID compiled into the binary and the canonical input string `"<type>|<source>|<target>"` (where `<source>` and `<target>` are the cluster-scoped node IDs). Two builds that produce the same logical edge SHALL produce byte-identical edge IDs.

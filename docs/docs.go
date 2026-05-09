@@ -298,7 +298,7 @@ const docTemplate = `{
         },
         "securitySchemes": {
             "ApiKeyAuth": {
-                "description": "API key presented in the ` + "`" + `X-API-Key` + "`" + ` header. Required on ` + "`" + `/v1/*` + "`" + ` and ` + "`" + `/debug/*` + "`" + ` when the server is started with keys configured. Health, metrics, and docs routes are exempt.",
+                "description": "API key presented in the ` + "`" + `X-API-Key` + "`" + ` header. Required on ` + "`" + `/v1/*` + "`" + ` when the server is started with keys configured. Health, metrics, and docs routes are exempt.",
                 "in": "header",
                 "name": "X-API-Key",
                 "type": "apiKey"
@@ -319,51 +319,6 @@ const docTemplate = `{
         "url": ""
     },
     "paths": {
-        "/debug/last-queries": {
-            "get": {
-                "parameters": [
-                    {
-                        "description": "API key. Required when the server is started with API keys configured.",
-                        "in": "header",
-                        "name": "X-API-Key",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "401": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/internal_api.errorBody"
-                                }
-                            }
-                        },
-                        "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
-                    },
-                    "501": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/internal_api.errorBody"
-                                }
-                            }
-                        },
-                        "description": "Not implemented in v1"
-                    }
-                },
-                "security": [
-                    {
-                        "ApiKeyAuth": []
-                    }
-                ],
-                "summary": "Debug: last upstream queries",
-                "tags": [
-                    "debug"
-                ]
-            }
-        },
         "/docs": {
             "get": {
                 "responses": {
@@ -487,7 +442,7 @@ const docTemplate = `{
         },
         "/readyz": {
             "get": {
-                "description": "Returns 200 only when a 1 s ` + "`" + `up{}` + "`" + ` probe against the configured upstream succeeds.",
+                "description": "Returns 200 only when an ` + "`" + `up{}` + "`" + ` probe against the configured upstream succeeds within --api-timeout.",
                 "responses": {
                     "200": {
                         "content": {
@@ -518,7 +473,7 @@ const docTemplate = `{
         },
         "/v1/clusters": {
             "get": {
-                "description": "Returns the set of clusters observed in ` + "`" + `kube_node_info` + "`" + ` over the configured discovery lookback (default 1 h). Intersected with ` + "`" + `--clusters-allowlist` + "`" + ` when set. Each request hits VictoriaMetrics directly. The response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + `.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\n{ \"name\": \"prod-eu\" },\n{ \"name\": \"prod-us\" },\n{ \"name\": \"stage-eu\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Returns the set of clusters observed in ` + "`" + `kube_node_info` + "`" + ` over a fixed 1 h lookback. Each request hits VictoriaMetrics directly under ` + "`" + `--api-timeout` + "`" + `. The response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + `.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\n{ \"name\": \"prod-eu\" },\n{ \"name\": \"prod-us\" },\n{ \"name\": \"stage-eu\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
                         "description": "API key. Required when the server is started with API keys configured.",
@@ -558,7 +513,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Upstream VictoriaMetrics unavailable"
+                        "description": "Upstream VictoriaMetrics returned an error"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Discovery query exceeded --api-timeout"
                     }
                 },
                 "security": [
@@ -620,7 +585,7 @@ const docTemplate = `{
         },
         "/v1/graph": {
             "get": {
-                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. The pair is passed through to upstream PromQL as-is (within ` + "`" + `--max-skew` + "`" + ` of ` + "`" + `now` + "`" + `); each request triggers a fresh fan-out — there is no in-process result cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `name` + "`" + `. The ` + "`" + `name` + "`" + ` filter matches ` + "`" + `n.Name()` + "`" + ` exactly across every node type (pod, K8s node, PVC, external).\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Caching**: response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + ` and receive ` + "`" + `304 Not Modified` + "`" + ` when the body would be unchanged. No ` + "`" + `Cache-Control` + "`" + ` is emitted.\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. Only ` + "`" + `end \u003e start` + "`" + ` is enforced; the pair is passed through to upstream PromQL verbatim. Bounded query cost is delegated to upstream VictoriaMetrics search limits. Each request triggers a fresh fan-out — there is no in-process result cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `name` + "`" + `. The ` + "`" + `name` + "`" + ` filter matches ` + "`" + `n.Name()` + "`" + ` exactly across every node type (pod, K8s node, PVC, external).\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Caching**: response carries a content-addressed ` + "`" + `ETag` + "`" + ` so callers may revalidate via ` + "`" + `If-None-Match` + "`" + ` and receive ` + "`" + `304 Not Modified` + "`" + ` when the body would be unchanged. No ` + "`" + `Cache-Control` + "`" + ` is emitted.\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
                         "description": "Window start. RFC 3339 (` + "`" + `2026-05-05T11:00:00Z` + "`" + `) or Unix seconds (` + "`" + `1746442800` + "`" + `).",
@@ -633,7 +598,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Window end. RFC 3339 or Unix seconds. Must be \u003e start, within --max-window, and within --max-skew of now.",
+                        "description": "Window end. RFC 3339 or Unix seconds. Must be \u003e start.",
                         "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",
@@ -763,7 +728,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Invalid parameters (missing/invalid start|end, window_too_large, end_in_future, depth_too_large, invalid_scope)"
+                        "description": "Invalid parameters (missing/invalid start|end, invalid_range, depth_too_large, invalid_scope, outside_retention)"
                     },
                     "401": {
                         "content": {
@@ -775,7 +740,7 @@ const docTemplate = `{
                         },
                         "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
                     },
-                    "503": {
+                    "502": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -783,7 +748,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Capacity / timeout / cluster_too_large or upstream unavailable"
+                        "description": "Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Build exceeded --build-timeout (RFC 9110 §15.6.5)"
                     }
                 },
                 "security": [
@@ -812,7 +787,7 @@ const docTemplate = `{
                         }
                     },
                     {
-                        "description": "Window end. RFC 3339 or Unix seconds. Must be \u003e start, within --max-window, and within --max-skew of now.",
+                        "description": "Window end. RFC 3339 or Unix seconds. Must be \u003e start.",
                         "example": "2026-05-05T12:00:00Z",
                         "in": "query",
                         "name": "end",
@@ -954,7 +929,7 @@ const docTemplate = `{
                         },
                         "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
                     },
-                    "503": {
+                    "502": {
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -962,7 +937,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Capacity / timeout / upstream unavailable"
+                        "description": "Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/internal_api.errorBody"
+                                }
+                            }
+                        },
+                        "description": "Build exceeded --build-timeout (RFC 9110 §15.6.5)"
                     }
                 },
                 "security": [
@@ -989,7 +974,7 @@ const docTemplate = `{
 var SwaggerInfo = &swag.Spec{
 	Version:          "v1",
 	Title:            "kube-state-graph API",
-	Description:      "Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.\n\n**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` and `/debug/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.",
+	Description:      "Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.\n\n**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

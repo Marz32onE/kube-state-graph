@@ -58,32 +58,32 @@ type Topology struct {
 
 // ReadTopology runs the five topology queries in parallel and assembles the
 // result.
-func ReadTopology(ctx context.Context, q *promql.Client, window time.Duration, end time.Time, allowlistRegex string) (Topology, error) {
+func ReadTopology(ctx context.Context, q *promql.Client, window time.Duration, end time.Time) (Topology, error) {
 	var podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QPodInfo), promql.Render(promql.QPodInfo, window, allowlistRegex), end)
+		v, err := q.Instant(ctx, string(promql.QPodInfo), promql.Render(promql.QPodInfo, window), end)
 		podVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeInfo), promql.Render(promql.QNodeInfo, window, allowlistRegex), end)
+		v, err := q.Instant(ctx, string(promql.QNodeInfo), promql.Render(promql.QNodeInfo, window), end)
 		nodeVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeAddresses), promql.Render(promql.QNodeAddresses, window, allowlistRegex), end)
+		v, err := q.Instant(ctx, string(promql.QNodeAddresses), promql.Render(promql.QNodeAddresses, window), end)
 		addrVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QPVCBindings), promql.Render(promql.QPVCBindings, window, allowlistRegex), end)
+		v, err := q.Instant(ctx, string(promql.QPVCBindings), promql.Render(promql.QPVCBindings, window), end)
 		pvcVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeLabels), promql.Render(promql.QNodeLabels, window, allowlistRegex), end)
+		v, err := q.Instant(ctx, string(promql.QNodeLabels), promql.Render(promql.QNodeLabels, window), end)
 		labelVec = v
 		return err
 	})

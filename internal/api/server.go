@@ -24,21 +24,18 @@ const APIVersion = "v1"
 type Server struct {
 	cfg     config.Config
 	builder *build.Builder
-	orch    *build.Orchestrator
 	prom    *promql.Client
 	metrics *observability.Metrics
 	logger  *slog.Logger
 	keys    *auth.KeySet
 }
 
-// New wires up a Server. The Orchestrator is constructed from cfg. keys may
-// be nil or empty to run with API-key authentication disabled.
+// New wires up a Server. keys may be nil or empty to run with API-key
+// authentication disabled.
 func New(cfg config.Config, builder *build.Builder, prom *promql.Client, m *observability.Metrics, logger *slog.Logger, keys *auth.KeySet) *Server {
-	orch := build.NewOrchestrator(builder, cfg.BuildConcurrency, cfg.BuildTimeout, m)
 	return &Server{
 		cfg:     cfg,
 		builder: builder,
-		orch:    orch,
 		prom:    prom,
 		metrics: m,
 		logger:  logger,
@@ -67,9 +64,6 @@ func (s *Server) Handler() http.Handler {
 	r.GET("/docs", s.handleDocs)
 	r.GET("/docs/assets/*path", s.handleDocsAsset)
 
-	if s.cfg.EnableDebug {
-		r.GET("/debug/last-queries", s.handleDebugLastQueries)
-	}
 	return r
 }
 

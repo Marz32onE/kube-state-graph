@@ -67,12 +67,11 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析（pod UID 已知，或符合設定的 `KSG_EXTERNAL_NAME_PATTERN` 而替換成 `external` 節點）時才輸出邊。
 
-### 探針 — 用於建圖准入，不屬於圖資料
+### 探針 — 診斷用，不屬於圖資料
 
 | PromQL | 用途 |
 |---|---|
-| `count(kube_pod_info{<allowlist>})` 在 **`end` 時刻**求值 | 叢集過大閘道（`--max-pods`）；超過則 503 |
-| `group by (cluster) (last_over_time(kube_node_info[<lookback>]))` | 驅動 `GET /v1/clusters` |
+| `group by (cluster) (last_over_time(kube_node_info[1h]))` | 驅動 `GET /v1/clusters` |
 | `up` | 區分「視窗內無資料」（`outside_retention`）與「上游正常但視窗為空」 |
 
 ### 邊類型 ↔ 指標
@@ -93,18 +92,12 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 |---|---|---|---|
 | `--prom-url` | `KSG_PROM_URL` | `http://localhost:8428` | VictoriaMetrics Prometheus 相容 endpoint。 |
 | `--listen-addr` | `KSG_LISTEN_ADDR` | `:8080` | HTTP 監聽位址。 |
-| `--max-window` | `KSG_MAX_WINDOW` | `24h` | 允許的 `end - start` 上限。 |
-| `--max-skew` | `KSG_MAX_SKEW` | `1m` | 允許的 `end - now` 超前量。 |
-| `--max-pods` | `KSG_MAX_PODS` | `5000` | 叢集 pod 數上限（過大回 503）。 |
-| `--build-timeout` | `KSG_BUILD_TIMEOUT` | `15s` | 單次建圖 context 逾時。 |
-| `--build-concurrency` | `KSG_BUILD_CONCURRENCY` | `8` | 同時建圖上限。 |
-| `--cluster-discovery-lookback` | `KSG_CLUSTER_DISCOVERY_LOOKBACK` | `1h` | 叢集探索回溯視窗。 |
-| `--clusters-allowlist` | `KSG_CLUSTERS_ALLOWLIST` | （空） | 逗號分隔 allowlist。 |
+| `--build-timeout` | `KSG_BUILD_TIMEOUT` | `15s` | `/v1/graph` 與 `/v1/graph/nodegraph` 的單次建圖 context 逾時。 |
+| `--api-timeout` | `KSG_API_TIMEOUT` | `5s` | 非 graph 端點的 upstream 呼叫逾時（`/v1/clusters`、`/readyz`）。 |
 | `--external-name-pattern` | `KSG_EXTERNAL_NAME_PATTERN` | （空） | 子字串；`client`／`server` 符合時該端成 `external` 節點。 |
 | `--api-keys-file` | `KSG_API_KEYS_FILE` | （空） | 接受的 API key 檔案路徑（每行一個，`#` 為註解）。為 K8s `Secret` 掛載而設計，會週期性重新讀取。 |
 | `--api-keys` | `KSG_API_KEYS` | （空） | 逗號分隔字面 key；僅 dev 用途，設了 `--api-keys-file` 即忽略。 |
 | `--api-keys-reload-interval` | `KSG_API_KEYS_RELOAD_INTERVAL` | `30s` | `--api-keys-file` 重新讀取頻率；`0` 關閉熱重載。 |
-| `--enable-debug` | `KSG_ENABLE_DEBUG` | `false` | 啟用 `/debug/*`（目前 `/debug/last-queries` 為 501 未實作回應）。 |
 | `--log-level` | `KSG_LOG_LEVEL` | `info` | `debug \| info \| warn \| error`。 |
 
 ## 文件

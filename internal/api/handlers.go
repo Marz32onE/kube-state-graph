@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/marz32one/kube-state-graph/internal/build"
 	"github.com/marz32one/kube-state-graph/internal/graph"
 	"github.com/marz32one/kube-state-graph/internal/promql"
 )
@@ -24,7 +26,7 @@ import (
 //	@Summary		Get multi-cluster graph (Cytoscape.js)
 //	@Description	Returns the joined multi-cluster pod / node / PVC graph for the supplied `[start, end]` window in Cytoscape.js JSON shape (`{ elements: { nodes:[…], edges:[…] } }`).
 //	@Description
-//	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. The pair is passed through to upstream PromQL as-is (within `--max-skew` of `now`); each request triggers a fresh fan-out — there is no in-process result cache.
+//	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. Only `end > start` is enforced; the pair is passed through to upstream PromQL verbatim. Bounded query cost is delegated to upstream VictoriaMetrics search limits. Each request triggers a fresh fan-out — there is no in-process result cache.
 //	@Description
 //	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, external).
 //	@Description
@@ -57,7 +59,7 @@ import (
 //	@Tags			graph
 //	@Produce		json
 //	@Param			start		query		string		true	"Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds (`1746442800`)."	example(2026-05-05T11:00:00Z)
-//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start, within --max-window, and within --max-skew of now."	example(2026-05-05T12:00:00Z)
+//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined). Names match the upstream `cluster` label."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed Kubernetes namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
@@ -67,9 +69,10 @@ import (
 //	@Param			direction	query		string		false	"Traversal direction relative to `root`. `out` = downstream edges, `in` = upstream edges, `both` = undirected. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
 //	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200			{object}	cytoscapeBody
-//	@Failure		400			{object}	errorBody	"Invalid parameters (missing/invalid start|end, window_too_large, end_in_future, depth_too_large, invalid_scope)"
+//	@Failure		400			{object}	errorBody	"Invalid parameters (missing/invalid start|end, invalid_range, depth_too_large, invalid_scope, outside_retention)"
 //	@Failure		401			{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
-//	@Failure		503			{object}	errorBody	"Capacity / timeout / cluster_too_large or upstream unavailable"
+//	@Failure		502			{object}	errorBody	"Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
+//	@Failure		504			{object}	errorBody	"Build exceeded --build-timeout (RFC 9110 §15.6.5)"
 //	@Security		ApiKeyAuth
 //	@Router			/v1/graph [get]
 func (s *Server) handleGraph(c *gin.Context) {
@@ -77,7 +80,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 	if errBody != nil {
 		return
 	}
-	g, err := s.orch.Resolve(c.Request.Context(), req.end.Sub(req.start), req.end)
+	g, err := s.runBuild(c.Request.Context(), req)
 	if err != nil {
 		mapBuildError(c, err)
 		return
@@ -130,7 +133,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Tags			graph
 //	@Produce		json
 //	@Param			start		query		string		true	"Window start. RFC 3339 or Unix seconds."	example(2026-05-05T11:00:00Z)
-//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start, within --max-window, and within --max-skew of now."	example(2026-05-05T12:00:00Z)
+//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined)."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
 //	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod)	example(pod-calls-pod)
@@ -142,7 +145,8 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Success		200			{object}	grafanaBody
 //	@Failure		400			{object}	errorBody	"Invalid parameters"
 //	@Failure		401			{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
-//	@Failure		503			{object}	errorBody	"Capacity / timeout / upstream unavailable"
+//	@Failure		502			{object}	errorBody	"Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
+//	@Failure		504			{object}	errorBody	"Build exceeded --build-timeout (RFC 9110 §15.6.5)"
 //	@Security		ApiKeyAuth
 //	@Router			/v1/graph/nodegraph [get]
 func (s *Server) handleNodeGraph(c *gin.Context) {
@@ -150,7 +154,7 @@ func (s *Server) handleNodeGraph(c *gin.Context) {
 	if errBody != nil {
 		return
 	}
-	g, err := s.orch.Resolve(c.Request.Context(), req.end.Sub(req.start), req.end)
+	g, err := s.runBuild(c.Request.Context(), req)
 	if err != nil {
 		mapBuildError(c, err)
 		return
@@ -161,6 +165,26 @@ func (s *Server) handleNodeGraph(c *gin.Context) {
 	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
 	body := serialiseGrafanaNodeGraph(view)
 	s.writeJSON(c, body, "nodegraph")
+}
+
+// runBuild wraps Builder.Build in a per-request build-timeout context. On
+// context.DeadlineExceeded the error is normalised to ReasonTimeout (504) so
+// the handler-side mapBuildError surfaces the RFC 9110 §15.6.5 status.
+func (s *Server) runBuild(ctx context.Context, req graphRequest) (*graph.Graph, error) {
+	buildCtx, cancel := context.WithTimeout(ctx, s.cfg.BuildTimeout)
+	defer cancel()
+
+	start := time.Now()
+	g, err := s.builder.Build(buildCtx, req.end.Sub(req.start), req.end)
+	s.metrics.BuildDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.metrics.BuildRejected.WithLabelValues("timeout").Inc()
+			return nil, build.NewError(build.ReasonTimeout, "build timeout", err)
+		}
+		return nil, err
+	}
+	return g, nil
 }
 
 // clustersBody is the response shape of GET /v1/clusters.
@@ -177,15 +201,6 @@ type edgeTypesBody struct {
 	EdgeTypes  []graph.EdgeTypeDefinition `json:"edge_types"`
 }
 
-// debugLastQueriesBody is the response shape of GET /debug/last-queries.
-//
-//nolint:unused // referenced via swag @Success annotation
-type debugLastQueriesBody struct {
-	APIVersion string   `json:"apiVersion"`
-	Queries    []string `json:"queries"`
-	Note       string   `json:"note"`
-}
-
 // ----- /v1/clusters ---------------------------------------------------------
 
 // ClusterInfo is one entry in /v1/clusters.
@@ -194,10 +209,10 @@ type ClusterInfo struct {
 }
 
 // handleClusters returns the list of clusters with data in centralised
-// VictoriaMetrics over the discovery lookback.
+// VictoriaMetrics over a fixed 1 h discovery lookback.
 //
 //	@Summary		List clusters
-//	@Description	Returns the set of clusters observed in `kube_node_info` over the configured discovery lookback (default 1 h). Intersected with `--clusters-allowlist` when set. Each request hits VictoriaMetrics directly. The response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match`.
+//	@Description	Returns the set of clusters observed in `kube_node_info` over a fixed 1 h lookback. Each request hits VictoriaMetrics directly under `--api-timeout`. The response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match`.
 //	@Description
 //	@Description	<details><summary><b>Sample response</b></summary>
 //	@Description
@@ -218,12 +233,20 @@ type ClusterInfo struct {
 //	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200	{object}	clustersBody
 //	@Failure		401	{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
-//	@Failure		502	{object}	errorBody	"Upstream VictoriaMetrics unavailable"
+//	@Failure		502	{object}	errorBody	"Upstream VictoriaMetrics returned an error"
+//	@Failure		504	{object}	errorBody	"Discovery query exceeded --api-timeout"
 //	@Security		ApiKeyAuth
 //	@Router			/v1/clusters [get]
 func (s *Server) handleClusters(c *gin.Context) {
-	clusters, err := s.discoverClusters(c.Request.Context())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), s.cfg.APITimeout)
+	defer cancel()
+
+	clusters, err := s.discoverClusters(ctx)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(c, http.StatusGatewayTimeout, "timeout", err.Error())
+			return
+		}
 		writeError(c, http.StatusBadGateway, "upstream", err.Error())
 		return
 	}
@@ -242,8 +265,7 @@ func (s *Server) handleClusters(c *gin.Context) {
 }
 
 func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
-	allowlist := promql.AllowlistRegex(s.cfg.ClustersAllowlist)
-	q := promql.Render(promql.QClusterDiscovery, s.cfg.ClusterDiscoveryLookback, allowlist)
+	q := promql.Render(promql.QClusterDiscovery, promql.ClusterDiscoveryLookback)
 	vec, err := s.prom.Instant(ctx, string(promql.QClusterDiscovery), q, time.Now().UTC())
 	if err != nil {
 		return nil, err
@@ -256,29 +278,12 @@ func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 		}
 		seen[c] = struct{}{}
 	}
-	allowSet := stringSliceToSet(s.cfg.ClustersAllowlist)
 	out := make([]ClusterInfo, 0, len(seen))
 	for c := range seen {
-		if len(allowSet) > 0 {
-			if _, ok := allowSet[c]; !ok {
-				continue
-			}
-		}
 		out = append(out, ClusterInfo{Name: c})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
-}
-
-func stringSliceToSet(values []string) map[string]struct{} {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(values))
-	for _, v := range values {
-		out[v] = struct{}{}
-	}
-	return out
 }
 
 // ----- /v1/edge-types -------------------------------------------------------
@@ -334,46 +339,25 @@ func (s *Server) handleLivez(c *gin.Context) {
 	c.String(http.StatusOK, "ok")
 }
 
-// handleReadyz is the readiness probe — issues a 1 s upstream `up{}` query.
+// handleReadyz is the readiness probe — issues an upstream `up{}` query under
+// --api-timeout. Probe failure → 503 Service Unavailable (k8s probe convention).
 //
 //	@Summary	Readiness
-//	@Description	Returns 200 only when a 1 s `up{}` probe against the configured upstream succeeds.
+//	@Description	Returns 200 only when an `up{}` probe against the configured upstream succeeds within --api-timeout.
 //	@Tags		health
 //	@Produce	plain
 //	@Success	200	{string}	string	"ok"
 //	@Failure	503	{object}	errorBody
 //	@Router		/readyz [get]
 func (s *Server) handleReadyz(c *gin.Context) {
-	probeCtx, cancel := context.WithTimeout(c.Request.Context(), time.Second)
+	probeCtx, cancel := context.WithTimeout(c.Request.Context(), s.cfg.APITimeout)
 	defer cancel()
-	_, err := s.prom.Instant(probeCtx, string(promql.QUpProbe), promql.Render(promql.QUpProbe, 0, ""), time.Now().UTC())
+	_, err := s.prom.Instant(probeCtx, string(promql.QUpProbe), promql.Render(promql.QUpProbe, 0), time.Now().UTC())
 	if err != nil {
 		writeError(c, http.StatusServiceUnavailable, "upstream_unreachable", err.Error())
 		return
 	}
 	c.String(http.StatusOK, "ok")
-}
-
-// ----- /debug/last-queries --------------------------------------------------
-
-// handleDebugLastQueries returns the raw upstream query strings of the most
-// recent build (only available with --enable-debug).
-//
-// Currently unimplemented: returns 501 so clients can distinguish "feature not
-// built" from "no recent queries". A future iteration will wire a ring buffer
-// in promql.Client and return the captured set here.
-//
-//	@Summary	Debug: last upstream queries
-//	@Tags		debug
-//	@Produce	json
-//	@Param		X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
-//	@Success	501	{object}	errorBody	"Not implemented in v1"
-//	@Failure	401	{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
-//	@Security	ApiKeyAuth
-//	@Router		/debug/last-queries [get]
-func (s *Server) handleDebugLastQueries(c *gin.Context) {
-	writeError(c, http.StatusNotImplemented, "not_implemented",
-		"/debug/last-queries is registered but not yet implemented; tracked for a future iteration")
 }
 
 // ----- request parsing ------------------------------------------------------
@@ -410,15 +394,6 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 	if !end.After(start) {
 		writeError(c, http.StatusBadRequest, "invalid_range", "end must be after start")
 		return graphRequest{}, fmt.Errorf("invalid_range")
-	}
-	if end.Sub(start) > s.cfg.MaxWindow {
-		writeError(c, http.StatusBadRequest, "window_too_large", "window exceeds --max-window")
-		return graphRequest{}, fmt.Errorf("window_too_large")
-	}
-	now := time.Now().UTC()
-	if end.After(now.Add(s.cfg.MaxSkew)) {
-		writeError(c, http.StatusBadRequest, "end_in_future", "end is too far in the future")
-		return graphRequest{}, fmt.Errorf("end_in_future")
 	}
 
 	depth := 0

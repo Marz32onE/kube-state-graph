@@ -33,7 +33,7 @@ func TestError_StringFormat(t *testing.T) {
 		want string
 	}{
 		{"with cause", &Error{Reason: ReasonTimeout, Message: "ignored", Err: errors.New("ctx")}, "timeout: ctx"},
-		{"without cause", &Error{Reason: ReasonClusterTooLarge, Message: "too big"}, "cluster_too_large: too big"},
+		{"without cause", &Error{Reason: ReasonOutsideRetention, Message: "no rows"}, "outside_retention: no rows"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,10 +47,10 @@ func TestError_StringFormat(t *testing.T) {
 
 func TestAsReason_ExtractsThroughWrap(t *testing.T) {
 	t.Parallel()
-	inner := NewError(ReasonCapacity, "full", nil)
-	wrapped := fmt.Errorf("orchestrator: %w", inner)
-	if got := AsReason(wrapped); got != ReasonCapacity {
-		t.Errorf("AsReason wrapped=%q want capacity", got)
+	inner := NewError(ReasonTimeout, "deadline", nil)
+	wrapped := fmt.Errorf("handler: %w", inner)
+	if got := AsReason(wrapped); got != ReasonTimeout {
+		t.Errorf("AsReason wrapped=%q want timeout", got)
 	}
 }
 

@@ -28,17 +28,13 @@ func writeError(c *gin.Context, status int, reason, message string) {
 	})
 }
 
+// mapBuildError translates a typed build error into a REST-conventional HTTP
+// status (RFC 9110 §15.6.3 Bad Gateway, §15.6.5 Gateway Timeout).
 func mapBuildError(c *gin.Context, err error) {
 	reason := build.AsReason(err)
 	switch reason {
-	case build.ReasonCapacity:
-		c.Header("Retry-After", "1")
-		writeError(c, http.StatusServiceUnavailable, "capacity", err.Error())
 	case build.ReasonTimeout:
-		c.Header("Retry-After", "1")
-		writeError(c, http.StatusServiceUnavailable, "timeout", err.Error())
-	case build.ReasonClusterTooLarge:
-		writeError(c, http.StatusServiceUnavailable, "cluster_too_large", err.Error())
+		writeError(c, http.StatusGatewayTimeout, "timeout", err.Error())
 	case build.ReasonOutsideRetention:
 		writeError(c, http.StatusBadRequest, "outside_retention", err.Error())
 	case build.ReasonUpstream:

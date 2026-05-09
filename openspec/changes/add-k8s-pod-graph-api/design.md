@@ -77,10 +77,10 @@ Multi-cluster discrimination is by **label**: every series carries `cluster=<nam
 
 Every request to `GET /v1/graph?start=...&end=...` triggers a fresh build of the multi-cluster graph for the supplied window:
 
-1. Resolve and validate `start` / `end`; align them onto the 60 s grid (D5).
-2. Acquire one slot from the build semaphore (concurrency cap; D11). Excess returns `503 capacity`.
-3. Run all required PromQL queries against centralised VictoriaMetrics in parallel via `errgroup.WithContext` under a per-build context timeout, join the result sets across clusters in memory, and produce the global multi-cluster `Graph`.
-4. Apply filters (`cluster`, `namespace`, `node`, `edge_type`, `pod`) and traversal pruning (`root`, `depth`, `direction`) over the freshly built `Graph` as a projection, then serialise to the requested format (Cytoscape.js or Grafana Node Graph), compute `ETag = sha256(body)`, honour `If-None-Match` if present, and return.
+1. Resolve and validate `start` / `end` (only `end > start`; D5).
+2. Run all required PromQL queries against centralised VictoriaMetrics in parallel via `errgroup.WithContext` under a per-build `context.WithTimeout(ctx, --build-timeout)`. On `context.DeadlineExceeded`, abort and return `504 Gateway Timeout` with `reason: "timeout"`. Concurrency limiting is delegated to horizontal scaling (HPA) and Pod resource limits — there is no in-process semaphore.
+3. Join the result sets across clusters in memory and produce the global multi-cluster `Graph`.
+4. Apply filters (`cluster`, `namespace`, `edge_type`, `name`) and traversal pruning (`root`, `depth`, `direction`) over the freshly built `Graph` as a projection, then serialise to the requested format (Cytoscape.js or Grafana Node Graph), compute `ETag = sha256(body)`, honour `If-None-Match` if present, and return.
 
 There is no in-process result cache, no singleflight, no background `Snapshotter`, no `atomic.Pointer[Graph]`, no fixed refresh interval, and no `POST /admin/refresh`.
 
@@ -121,16 +121,12 @@ Each edge carries `type`, `source`, `target`, plus type-specific `attrs` (see D9
 
 ### D5. Time-range passthrough
 
-`start` and `end` are mandatory query parameters in either RFC 3339 or Unix seconds form. The server enforces:
+`start` and `end` are mandatory query parameters in either RFC 3339 or Unix seconds form. The only server-side validation is `end > start`. Beyond that check, the timestamps are passed through to upstream PromQL verbatim (`<window> = end - start`, `<end>` is the caller-supplied `end`). There is no server-side bucketing, alignment, grid, max-window cap, or future-time guard.
 
-- `end > start`.
-- `end - start <= --max-window` (default `24h`).
-- `end <= now + --max-skew` (default `1m`).
-
-Beyond those checks, the timestamps are passed through to upstream PromQL verbatim (`<window> = end - start`, `<end>` is the caller-supplied `end`). There is no server-side bucketing, alignment, or grid; the previous 60 s `floor`/`ceil` logic was removed alongside the in-process cache it was bucketing for.
-
+- Why no window cap: bounded query cost is delegated to upstream VictoriaMetrics search limits (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, `-search.maxSamplesPerQuery`). Duplicating these in KSG adds a configuration knob with weak business value and a confusing layered failure mode.
+- Why no skew guard: NTP drift is a deployment concern; future-time queries against PromQL return empty results, which the caller sees as an empty graph. A dedicated KSG-side check provided marginal diagnostic value at the cost of a config knob.
 - Why pass-through: with no cache, alignment provides no hit-rate benefit; `last_over_time` / `rate` lookbacks span minutes, so sub-second `@end` drift is not load-bearing for upstream evaluation. Removing alignment also removes a Go package, a `Window` struct in handler signatures, and several rounds of doc/spec coordination.
-- Mitigation for unbounded cluster count: an optional `--clusters-allowlist` flag injects a `cluster=~"a|b|c"` selector into all PromQL queries and bounds upstream cost regardless of how many clusters exist in VM.
+- Bounded query cost is delegated entirely to upstream VictoriaMetrics search limits.
 - Alternatives considered:
   - 60 s `floor`/`ceil` grid (removed in this change — was originally a cache-key bucket; ETag stability argument was post-hoc and weak in practice since real callers don't refresh sub-second).
   - Per-class TTL ladder (deferred — would only matter once a server-side cache returns; revisit in the future cache mechanism).
@@ -172,7 +168,7 @@ Whichever shape ships will need to revisit D5 (time-class TTL ladder), D11 (cach
 - `?name=<value>` — repeatable; matches `n.Name()` by exact equality across **every** node type (`PodNode`, `K8sNode`, `PVCNode`, `ExternalNode`). Use it to anchor the view on any single node — a pod, a host node, a PVC, or an external endpoint — without the caller having to encode the type. Names are not globally unique (a pod and a K8s node can share a name; a PVC name can repeat across namespaces); all matches are returned. Combine with `?cluster=` / `?namespace=` to disambiguate.
 - `?root=<id>&depth=<n>&direction=in|out|both` — partial-graph traversal: BFS from the given composite ID (`<cluster>/<pod-uid>` or `<cluster>/<node-name>`), bounded by `depth` (default 2, max 6).
 
-Filtering is applied **at response time over the freshly built `*Graph` value**, not by re-querying upstream. PromQL queries always fetch the full window across all clusters in scope (subject to `--clusters-allowlist`); the in-memory `*Graph` is the shared base from which all filtered views are projected.
+Filtering is applied **at response time over the freshly built `*Graph` value**, not by re-querying upstream. PromQL queries always fetch the full window across every cluster present in upstream VictoriaMetrics; the in-memory `*Graph` is the shared base from which all filtered views are projected.
 
 - Why: filter+serialise is microseconds for typical v1 graph sizes (≤ 5 k pods × ≤ 10 clusters); pushing filters to PromQL would re-evaluate per filter combination at upstream cost. When the future cache mechanism lands, the same projection-over-graph contract preserves filter shareability across cache entries.
 - Empty filter ⇒ full multi-cluster graph for the time range.
@@ -312,13 +308,14 @@ One additional log line per build: `slog.Info("graph built", "duration_ms", ...,
 These are mandatory for the v1 implementation:
 
 - **Sealed graph node types**: Go interface `GraphNode` with concrete `PodNode`, `NodeNode`, `PVCNode`. Each implementation surfaces the canonical fields (`ID()`, `Name()`, `Type()`, `Labels()`) consumed by the serialisers in D9. The `cluster` value lives inside `Labels()["cluster"]` rather than as a separate first-class field on the wire.
-- **Pure join layer**: `Build(topology Topology, edges []ServiceGraphEdge, clustersAllowlist []string) *Graph` is a pure function over typed Go structs and produces the full, unfiltered multi-cluster graph for the time window. All HTTP- and Prometheus-free unit tests target this function. Cross-cluster edges are produced when the resolved source-pod cluster differs from the resolved target-pod cluster (server-side cluster comes from the topology pod-UID index lookup, not from a metric label).
+- **Pure join layer**: `Build(topology Topology, edges []ServiceGraphEdge) *Graph` is a pure function over typed Go structs and produces the full, unfiltered multi-cluster graph for the time window. All HTTP- and Prometheus-free unit tests target this function. Cross-cluster edges are produced when the resolved source-pod cluster differs from the resolved target-pod cluster (server-side cluster comes from the topology pod-UID index lookup, not from a metric label).
 - **Pure projection layer**: `Project(g *Graph, scope Scope) GraphView` applies cluster / namespace / node / edge_type filters and traversal over an immutable `*Graph` and returns a read-only view. No allocations of new node/edge structs, just slices of pointers.
-- **Query registry**: PromQL strings as named constants in one file, parameterised on `<window>`, `<end>`, and an optional `<clusters_allowlist>` fragment (`{cluster=~"a|b|c"}`). Paired with a parser that maps Prometheus `model.Vector` results into typed Go structs.
-- **One PromQL instant query per metric family**, evaluated at the bucketed `end` with `last_over_time` / `rate` over the window. Queries do **not** include filter-derived selectors; they include only the static `--clusters-allowlist` if configured. Parse Vector client-side.
+- **Query registry**: PromQL strings as named constants in one file, parameterised on `<window>` and `<end>`. Paired with a parser that maps Prometheus `model.Vector` results into typed Go structs.
+- **One PromQL instant query per metric family**, evaluated at the bucketed `end` with `last_over_time` / `rate` over the window. Queries do **not** include filter-derived selectors. Parse Vector client-side.
 - **Parallel upstream fan-out** via `errgroup.WithContext`. Wall-clock latency = O(slowest query), not O(sum of queries).
-- **Per-build context timeout**, default 15 s, configurable. On any sub-query failure, the whole build is aborted, the failure counter increments, and the request returns `503` with `Retry-After: 1`.
-- **Concurrency cap** via `golang.org/x/sync/semaphore` — default 8 concurrent builds. Excess returns `503 Service Unavailable`.
+- **Per-build context timeout**: graph endpoints (`/v1/graph`, `/v1/graph/nodegraph`) wrap the build in `context.WithTimeout(ctx, --build-timeout)` (default `15s`). On `context.DeadlineExceeded`, the build is aborted, the failure counter increments, and the request returns `504 Gateway Timeout` with `reason: "timeout"`.
+- **Per-request timeout for non-graph endpoints**: `/v1/clusters` (live discovery query) and `/readyz` (`up{}` probe) wrap their upstream call in `context.WithTimeout(ctx, --api-timeout)` (default `5s`). On `context.DeadlineExceeded`, the request returns `504 Gateway Timeout` with `reason: "timeout"`. Endpoints with no upstream call (`/v1/edge-types`, `/livez`, `/metrics`, `/openapi.*`, `/docs*`) are not subject to this timeout.
+- **No in-process concurrency cap.** Concurrency limiting is delegated to horizontal scaling (HPA) and Pod resource limits. The previous `golang.org/x/sync/semaphore`-based per-instance cap and the `503 capacity` error reason were removed: HPA reacts to CPU / latency signals at instance granularity and is the operator's primary lever; an in-process semaphore added a config knob whose tuning required the same load data HPA already uses, while making per-instance load shedding less observable than queue-time-based metrics.
 - **Adjacency maps**: forward and reverse `map[NodeID][]*Edge` built once inside `Build()`; reused for traversal pruning during `Project()`. Built on the immutable `*Graph` so concurrent projections within the same request share them safely.
 
 ### D12. Self-metrics and operability
@@ -328,8 +325,7 @@ The server exposes its own `/metrics` endpoint (Prometheus exposition) with at l
 - `kube_state_graph_build_duration_seconds` (histogram — wall-clock build time per request).
 - `kube_state_graph_project_duration_seconds` (histogram — filter + traversal pruning).
 - `kube_state_graph_serialise_duration_seconds{format}` (histogram — JSON encode + ETag computation).
-- `kube_state_graph_build_concurrency` (gauge).
-- `kube_state_graph_build_rejected_total{reason="capacity|timeout"}` (counter).
+- `kube_state_graph_build_rejected_total{reason="timeout"}` (counter).
 - `kube_state_graph_graph_node_count{cluster,kind}` (gauge — last build only, observational; bounded by configured cluster count).
 - `kube_state_graph_graph_edge_count{type,cross_cluster}` (gauge — `cross_cluster` ∈ `{"true","false"}`).
 - `kube_state_graph_clusters_observed` (gauge — unique `cluster` values seen in the last build).
@@ -340,11 +336,9 @@ The server exposes its own `/metrics` endpoint (Prometheus exposition) with at l
 Health endpoints:
 
 - `GET /livez` — always 200 while the process is up.
-- `GET /readyz` — 200 iff a cheap upstream probe (`up{}` instant query, 1 s timeout) succeeds. 503 otherwise.
+- `GET /readyz` — 200 iff a cheap upstream probe (`up{}` instant query, wrapped in `context.WithTimeout(ctx, --api-timeout)`) succeeds. `503 Service Unavailable` if the probe fails (semantically: not ready to serve traffic — the standard Kubernetes liveness/readiness convention).
 
-Operator endpoints:
-
-- `GET /debug/last-queries` — returns the raw upstream query strings and a redacted summary of the last build's responses (counts and labels, not values). Behind a `--enable-debug` flag.
+Operator endpoints: none in v1. Diagnostics rely on `kube_state_graph_*` metrics and structured request logs.
 
 ### D13. Testing layers
 
@@ -353,7 +347,7 @@ The test stack has six layers, all CI-runnable except the last; each MUST exist 
 | Layer | CI? | Scope | Tool |
 |------|-----|------|------|
 | Unit | yes | Pure join / parse / project functions on hand-crafted multi-cluster `model.Vector` and `model.Matrix` inputs (intra-cluster, cross-cluster, and mixed) | `go test` |
-| Component | yes | Build pipeline end-to-end against an `httptest.Server` mocking the Prometheus query API; covers concurrency cap, timeout, time-window alignment, and `--clusters-allowlist` injection | `go test` |
+| Component | yes | Build pipeline end-to-end against an `httptest.Server` mocking the Prometheus query API; covers per-build timeout, parameter validation, and serialiser output | `go test` |
 | Golden | yes | Canned scenarios (single-cluster, two-cluster with cross-cluster edge, three-cluster with traversal pruning) → `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types` JSON compared to checked-in `.golden.json` | `go test` |
 | Property | yes | Random topology + edge inputs across N synthetic clusters + random filters → invariants (no orphan edges, no duplicate IDs, every endpoint resolves, filtered ⊆ unfiltered, traversal stays within `depth`, cross-cluster edges have distinct cluster endpoints) | `testing/quick` or `gopter` |
 | **Container integration** (capability `container-integration`) | yes | Per-package VictoriaMetrics container started via testcontainers-go; series injected via VM's `/api/v1/import/prometheus`; in-process API server pointed at the container; assertions over real PromQL evaluation and real ETag flow | `go test` + Docker |
@@ -443,9 +437,9 @@ Both options were considered and rejected for v1:
 - `GET /v1/graph?start=...&end=...&cluster=<name>&cluster=<name>...`
 - `GET /v1/graph/nodegraph?...`
 
-`cluster` is repeatable; absent ⇒ all clusters in the freshly built graph (subject to `--clusters-allowlist`). Path-based per-cluster URLs were considered and rejected: cross-cluster edges naturally span more than one cluster, so a single-cluster path implies a scope smaller than the data — leading either to lossy responses (drop cross-cluster edges) or surprising responses (include endpoints outside the path). Query-param multi-select avoids this entirely.
+`cluster` is repeatable; absent ⇒ all clusters in the freshly built graph. Path-based per-cluster URLs were considered and rejected: cross-cluster edges naturally span more than one cluster, so a single-cluster path implies a scope smaller than the data — leading either to lossy responses (drop cross-cluster edges) or surprising responses (include endpoints outside the path). Query-param multi-select avoids this entirely.
 
-**Discovery.** `GET /v1/clusters` returns the list of clusters that have data in centralised VictoriaMetrics, derived live from `group by (cluster) (kube_node_info)` over a configurable lookback (`--cluster-discovery-lookback`, default `1h`). Each request hits VictoriaMetrics directly — there is no in-process discovery cache in v1. The response carries an `ETag` so callers may revalidate cheaply via `If-None-Match`. If `--clusters-allowlist` is set, the discovery result is intersected with the allowlist before being returned.
+**Discovery.** `GET /v1/clusters` returns the list of clusters that have data in centralised VictoriaMetrics, derived live from `group by (cluster) (last_over_time(kube_node_info[1h]))`. The lookback is fixed at `1h` (sufficient to absorb transient KSM scrape gaps; not configurable). Each request hits VictoriaMetrics directly — there is no in-process discovery cache in v1. The response carries an `ETag` so callers may revalidate cheaply via `If-None-Match`.
 
 **Cross-cluster edges.** `pod-calls-pod` edges where the resolved source and target pods live in different clusters are emitted as ordinary edges with both endpoint nodes present in the freshly built graph (since each build holds the global multi-cluster graph). When a request scopes to a subset of clusters, cross-cluster edges that touch the selected set are kept along with both endpoint nodes — the remote node's `labels.cluster` makes the cross-cluster context obvious to renderers. The edge carries `labels.cluster` set to the trace-source cluster (i.e. the client-side pod's cluster); consumers detect cross-cluster status by comparing the source-node and target-node `labels.cluster` (a boolean shortcut field is deferred to the future typed struct described in D9).
 
@@ -496,14 +490,9 @@ Empty pattern (`KSG_EXTERNAL_NAME_PATTERN` unset or `""`) disables the rule enti
   - Always introspect the value (URL parser, hostname extraction) (rejected — heuristic, brittle, language-specific).
   - Multiple patterns OR'd (rejected — over-engineered for v1; one pattern covers the typical case).
 
-### D19. Allowlist and bounded upstream cost
+### D19. Bounded upstream cost
 
-Two flags bound the worst-case upstream load when many clusters share the centralised VictoriaMetrics:
-
-- `--clusters-allowlist <comma-separated-names>` — when set, the API server injects `{cluster=~"a|b|c"}` into all PromQL queries and into the discovery query. Clusters outside the allowlist are invisible to this server, regardless of what the caller passes in `?cluster=`.
-- `--max-pods <n>` — fail fast (`503` with `reason: "cluster_too_large"`) when the count of distinct `kube_pod_info` series in scope exceeds the configured ceiling (default `5000`).
-
-Together these keep the v1 design within its stated cluster-size budget without surprising operators when their VictoriaMetrics grows.
+Bounded query cost (per-query duration, samples, points) is delegated entirely to upstream VictoriaMetrics search limits — KSG does not duplicate them. Operators running large fleets SHALL configure `-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, and `-search.maxSamplesPerQuery` on VM and rely on `502 Bad Gateway` (with `reason: "upstream"`, mapped from VM 5xx) for overflow signalling. Per-cluster scope narrowing is a caller-side concern via the `?cluster=` query parameter on `/v1/graph`; the server itself loads every cluster present in upstream VM on each build.
 
 ### D20. Container integration via testcontainers-go
 
@@ -622,7 +611,7 @@ The vendored bundle version is pinned (e.g., `@scalar/api-reference@1.x.y`) and 
 
 **Drift gate**: a `make check-docs` target re-runs `swag init` and exits non-zero if the working tree changes. The same step runs in CI; PRs that touch `internal/api/*.go` without regenerating `docs/swagger.{json,yaml,go}` fail.
 
-**Route ↔ spec contract test** (Go-side): the test parses `docs/swagger.json` via `kin-openapi`, walks Gin's `engine.Routes()` after `Server.Handler()`, and asserts bidirectional `(method, path)` set-equality modulo a small allowlist for infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/debug/last-queries`, `/openapi.yaml`, `/openapi.json`, `/docs/*`). Any divergence — handler added without an annotation, annotation pointing at a removed route — fails the test.
+**Route ↔ spec contract test** (Go-side): the test parses `docs/swagger.json` via `kin-openapi`, walks Gin's `engine.Routes()` after `Server.Handler()`, and asserts bidirectional `(method, path)` set-equality modulo a small allowlist for infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs/*`). Any divergence — handler added without an annotation, annotation pointing at a removed route — fails the test.
 
 - Why swag v2: lowest churn for an existing Gin codebase. Annotations live next to the handlers that implement the documented behaviour. Generated artefacts double as input to the drift gate and to the contract test.
 - Why Scalar over Swagger UI: better default UX, smaller payload, native dark-mode, modern aesthetic. Drop-in replacement — both consume the same OpenAPI 3.0 spec.
@@ -649,7 +638,7 @@ When neither is set the keyset is **empty** and the middleware is a no-op (auth 
 | Open (no key) | Protected (`X-API-Key` required) |
 |---|---|
 | `/livez`, `/readyz` (kubelet probes) | `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types` |
-| `/metrics` (Prometheus scrape; gate via NetworkPolicy or a separate listen address in production) | `/debug/last-queries` (when enabled) |
+| `/metrics` (Prometheus scrape; gate via NetworkPolicy or a separate listen address in production) | |
 | `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*` (UI must load) | |
 
 **Validation.** `crypto/subtle.ConstantTimeCompare` per stored key, with a same-length filler comparison for stored keys whose length differs from the presented value. The full key set is iterated on every call so neither match latency nor early exit leaks the key count or the matching position.
@@ -692,10 +681,10 @@ When neither is set the keyset is **empty** and the middleware is a no-op (auth 
 
 ## Risks / Trade-offs
 
-- [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-concurrency` bounds in-flight builds (`503 capacity`) and `--build-timeout` bounds tail latency (`503 timeout`). A future cache mechanism is expected to absorb this cost; until then, ETag-based revalidation is the only amortisation lever.
+- [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost; until then, ETag-based revalidation is the only amortisation lever.
 - [Pod UID churn on restart pollutes long lookback windows] → For windows where `last_over_time(kube_pod_info)` returns multiple UIDs for the same `(cluster, namespace, name)` tuple within the window, keep ONLY the latest UID and discard the prior. There is no reliable way to link a deleted pod's UID to its replacement once kubelet stops reporting the deleted UID (the `kube-state-metrics` series simply stops; the controller assigns a fresh UUID for the new pod with no back-reference). The earlier idea of emitting a `pod-replaced-by` synthetic edge was rejected for this reason — it would have implied an identity mapping that the source data does not support. Document in the spec.
 - [Service-graph metrics absent or sparse] → Topology-only graph is still valid; missing service-graph series produce zero `pod-calls-pod` edges instead of a build failure.
-- [PromQL fan-out large with many clusters] → `--clusters-allowlist` bounds the upstream cost; `--max-pods` triggers `503` with reason `cluster_too_large` when exceeded.
+- [PromQL fan-out large with many clusters] → Per-query cost (duration, samples, points) is bounded by upstream VictoriaMetrics search limits; KSG surfaces VM 5xx as `502 Bad Gateway` with `reason: "upstream"`.
 - [Inconsistent `cluster` external label across scrape pipelines] → Series missing the `cluster` label are bucketed under `cluster="unknown"` and surfaced via `kube_state_graph_clusters_observed`; document that operators must set the label uniformly.
 - [Cross-cluster edge with one endpoint missing topology data] → If the producer emits a `traces_service_graph_request_total` series whose `client_k8s_pod_uid` or `server_k8s_pod_uid` does not appear in any cluster's `kube_pod_info` for the window, the missing endpoint is rendered as a synthetic ghost pod node (`attrs.ghost=true`) carrying only its `cluster` and `pod_uid`, instead of dropping the edge.
 - [`kube-state-metrics` retention in VictoriaMetrics shorter than requested window] → `last_over_time` returns empty; respond `400 Bad Request` with `reason: "outside retention"` when zero topology rows are returned for a window covered by upstream `up{}` data.
@@ -711,7 +700,6 @@ Greenfield repository — no migration. Rollback is `git revert` of the merge co
 ## Open Questions
 
 - Final list of edge types beyond the three in D4 (e.g., `pod-shares-node`, `pod-shares-namespace`) — resolve during spec drafting; whichever ship in v1 must appear in both `Build()` and the static `/v1/edge-types` registry. v1 ships exactly the three: `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`.
-- Default value of `--max-window` (current proposal `24h`).
 - Alignment-grid policy across DST or leap seconds — likely "always UTC, no DST adjustment", confirm during spec.
 - Shape of the future cache mechanism for distributed deployment (Redis L2 vs background materialiser vs graph DB). Tracked as a separate change once the deployment topology firms up.
 - Whether `/v1/edge-types` should ever support time-window filtering — defer to v1.1.

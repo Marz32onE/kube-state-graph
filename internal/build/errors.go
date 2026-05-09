@@ -6,9 +6,7 @@ import "errors"
 type Reason string
 
 const (
-	ReasonCapacity         Reason = "capacity"
 	ReasonTimeout          Reason = "timeout"
-	ReasonClusterTooLarge  Reason = "cluster_too_large"
 	ReasonOutsideRetention Reason = "outside_retention"
 	ReasonUpstream         Reason = "upstream"
 )

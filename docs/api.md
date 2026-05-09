@@ -38,7 +38,7 @@ Returns the multi-cluster graph for `[start, end]` in Cytoscape.js shape.
 | Param        | Required | Repeatable | Description |
 |--------------|----------|------------|-------------|
 | `start`      | yes      | no         | RFC 3339 or Unix seconds. |
-| `end`        | yes      | no         | Same. Must be `> start` and `<= now + --max-skew`. |
+| `end`        | yes      | no         | Same. Must be `> start`. |
 | `cluster`    | no       | yes        | Restrict to clusters whose label matches. |
 | `namespace`  | no       | yes        | Restrict pods/PVCs by namespace. |
 | `edge_type`  | no       | yes        | Restrict edges by type. One of `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`. Unknown types ⇒ silently empty. |
@@ -73,9 +73,12 @@ scope and the partner pod lives in an out-of-scope cluster.
 ```
 
 The body carries only `apiVersion`, `clusters`, and `elements`. Caller-supplied
-`start` / `end` are passed through to upstream PromQL verbatim (after
-`--max-window` / `--max-skew` validation); there is no server-side bucketing or
-alignment, and the body does not echo any timestamp.
+`start` / `end` are passed through to upstream PromQL verbatim (only `end > start`
+is validated); there is no server-side bucketing, alignment, window cap, or
+future-time guard, and the body does not echo any timestamp. Bounded query
+cost is delegated to upstream VictoriaMetrics search limits
+(`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`,
+`-search.maxSamplesPerQuery`).
 
 `labels` is strictly `map[string]string`. Numeric metrics are deferred to a
 future typed struct field (see the design doc, D9).
@@ -112,15 +115,11 @@ validator on graph endpoints.
 | 400    | `missing_end`           | `end` missing. |
 | 400    | `invalid_start`/`invalid_end` | Failed to parse timestamp. |
 | 400    | `invalid_range`         | `end <= start`. |
-| 400    | `window_too_large`      | `end - start > --max-window`. |
-| 400    | `end_in_future`         | `end > now + --max-skew`. |
 | 400    | `depth_too_large`       | `depth > 6`. |
 | 400    | `outside_retention`     | Empty topology and healthy upstream. |
 | 401    | `unauthorized`          | Missing or invalid `X-API-Key` (only when API key auth is configured). |
-| 503    | `capacity`              | Build concurrency exhausted (`Retry-After: 1`). |
-| 503    | `timeout`               | Build exceeded `--build-timeout`. |
-| 503    | `cluster_too_large`     | `count(kube_pod_info) > --max-pods`. |
-| 502    | `upstream`              | Generic upstream failure. |
+| 502    | `upstream`              | Upstream VictoriaMetrics returned a non-2xx response or otherwise failed (RFC 9110 §15.6.3). |
+| 504    | `timeout`               | Build (`/v1/graph`, `/v1/graph/nodegraph`) exceeded `--build-timeout`, or non-graph upstream call exceeded `--api-timeout` (RFC 9110 §15.6.5). |
 
 ## `GET /v1/graph/nodegraph`
 
@@ -135,8 +134,9 @@ arrays. The serialiser maps:
 
 ## `GET /v1/clusters`
 
-Returns the list of clusters seen in `kube_node_info` over
-`--cluster-discovery-lookback`. Each request hits VictoriaMetrics directly; clients revalidate via the response `ETag`. Intersected with `--clusters-allowlist` when configured.
+Returns the list of clusters seen in `kube_node_info` over a fixed `1h`
+lookback. Each request hits VictoriaMetrics directly; clients revalidate via
+the response `ETag`.
 
 ## `GET /v1/edge-types`
 
@@ -151,7 +151,3 @@ Static catalogue. Long `Cache-Control: max-age=3600` and registry-hash
 ## `GET /metrics`
 
 Prometheus exposition with `kube_state_graph_*` self-metrics.
-
-## `GET /debug/last-queries`
-
-Debug endpoint behind `--enable-debug`. Returns the raw upstream query strings of the most recent build. v1 does not expose a cache-flush endpoint because there is no result cache.

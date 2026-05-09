@@ -4,7 +4,7 @@
 //	@version		v1
 //	@description	Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.
 //	@description
-//	@description	**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` and `/debug/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.
+//	@description	**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.
 //	@license.name	Apache 2.0
 //	@license.url	https://www.apache.org/licenses/LICENSE-2.0.html
 //	@BasePath		/
@@ -13,7 +13,7 @@
 //	@securityDefinitions.apikey	ApiKeyAuth
 //	@in							header
 //	@name						X-API-Key
-//	@description				API key presented in the `X-API-Key` header. Required on `/v1/*` and `/debug/*` when the server is started with keys configured. Health, metrics, and docs routes are exempt.
+//	@description				API key presented in the `X-API-Key` header. Required on `/v1/*` when the server is started with keys configured. Health, metrics, and docs routes are exempt.
 package main
 
 import (
@@ -52,9 +52,8 @@ func run() error {
 	logger.Info("starting kube-state-graph",
 		"prom_url", cfg.PromURL,
 		"listen_addr", cfg.ListenAddr,
-		"max_window", cfg.MaxWindow,
-		"max_pods", cfg.MaxPods,
-		"clusters_allowlist", cfg.ClustersAllowlist,
+		"build_timeout", cfg.BuildTimeout,
+		"api_timeout", cfg.APITimeout,
 		"external_name_pattern_set", cfg.ExternalNamePattern != "",
 	)
 

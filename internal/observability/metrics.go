@@ -11,7 +11,6 @@ type Metrics struct {
 	BuildDuration     prometheus.Histogram
 	ProjectDuration   prometheus.Histogram
 	SerialiseDuration *prometheus.HistogramVec
-	BuildConcurrency  prometheus.Gauge
 	BuildRejected     *prometheus.CounterVec
 	GraphNodeCount    *prometheus.GaugeVec
 	GraphEdgeCount    *prometheus.GaugeVec
@@ -42,10 +41,6 @@ func NewMetrics() *Metrics {
 			Help:    "Time spent encoding the response and computing the ETag.",
 			Buckets: []float64{0.0001, 0.001, 0.01, 0.1, 1},
 		}, []string{"format"}),
-		BuildConcurrency: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "kube_state_graph_build_concurrency",
-			Help: "Number of in-flight builds.",
-		}),
 		BuildRejected: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "kube_state_graph_build_rejected_total",
 			Help: "Builds rejected by reason.",
@@ -85,7 +80,6 @@ func NewMetrics() *Metrics {
 		m.BuildDuration,
 		m.ProjectDuration,
 		m.SerialiseDuration,
-		m.BuildConcurrency,
 		m.BuildRejected,
 		m.GraphNodeCount,
 		m.GraphEdgeCount,

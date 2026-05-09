@@ -106,12 +106,11 @@ so the lookup is unambiguous. Edges are only emitted when both endpoints
 resolve (to a known pod UID, or to an `external` node when the upstream
 `client`/`server` label matches `KSG_EXTERNAL_NAME_PATTERN`).
 
-### Probes — required for build admission, not graph data
+### Probes — diagnostics, not graph data
 
 | PromQL | Purpose |
 |---|---|
-| `count(kube_pod_info{<allowlist>})` evaluated at `end` | Cluster-too-large gate (`--max-pods`); 503 if exceeded |
-| `group by (cluster) (last_over_time(kube_node_info[<lookback>]))` | Powers `GET /v1/clusters` discovery |
+| `group by (cluster) (last_over_time(kube_node_info[1h]))` | Powers `GET /v1/clusters` discovery |
 | `up` | Distinguishes "no data in window" (`outside_retention`) from "upstream healthy but window empty" |
 
 ### Edge → metric mapping
@@ -146,18 +145,12 @@ container.
 |---------------------------------|----------------------------------|----------------------|-------|
 | `--prom-url`                    | `KSG_PROM_URL`                   | `http://localhost:8428` | VictoriaMetrics Prometheus-compatible endpoint. |
 | `--listen-addr`                 | `KSG_LISTEN_ADDR`                | `:8080`              | HTTP listen address. |
-| `--max-window`                  | `KSG_MAX_WINDOW`                 | `24h`                | Maximum allowed `end - start`. |
-| `--max-skew`                    | `KSG_MAX_SKEW`                   | `1m`                 | Maximum `end - now`. |
-| `--max-pods`                    | `KSG_MAX_PODS`                   | `5000`               | Cluster-too-large ceiling. |
-| `--build-timeout`               | `KSG_BUILD_TIMEOUT`              | `15s`                | Per-build context timeout. |
-| `--build-concurrency`           | `KSG_BUILD_CONCURRENCY`          | `8`                  | Max in-flight builds. |
-| `--cluster-discovery-lookback`  | `KSG_CLUSTER_DISCOVERY_LOOKBACK` | `1h`                 | Cluster discovery lookback. |
-| `--clusters-allowlist`          | `KSG_CLUSTERS_ALLOWLIST`         | (empty)              | Comma-separated allowlist. |
+| `--build-timeout`               | `KSG_BUILD_TIMEOUT`              | `15s`                | Per-build context timeout for `/v1/graph` + `/v1/graph/nodegraph`. |
+| `--api-timeout`                 | `KSG_API_TIMEOUT`                | `5s`                 | Per-request timeout for non-graph endpoints with upstream calls (`/v1/clusters`, `/readyz`). |
 | `--external-name-pattern`       | `KSG_EXTERNAL_NAME_PATTERN`      | (empty)              | Substring; when matched on `client`/`server`, that endpoint becomes an `external` node. |
 | `--api-keys-file`               | `KSG_API_KEYS_FILE`              | (empty)              | Path to a file holding accepted API keys (one per line, `#` comments allowed). Designed for K8s `Secret` mounts. Reloaded periodically. |
 | `--api-keys`                    | `KSG_API_KEYS`                   | (empty)              | Comma-separated literal keys. Dev only; ignored when `--api-keys-file` is set. |
 | `--api-keys-reload-interval`    | `KSG_API_KEYS_RELOAD_INTERVAL`   | `30s`                | How often `--api-keys-file` is re-read. Set to `0` to disable hot reload. |
-| `--enable-debug`                | `KSG_ENABLE_DEBUG`               | `false`              | Enable `/debug/*` endpoints. |
 | `--log-level`                   | `KSG_LOG_LEVEL`                  | `info`               | `debug | info | warn | error`. |
 
 ## Documentation

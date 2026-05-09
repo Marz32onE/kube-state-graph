@@ -126,24 +126,6 @@ A topology series that is missing the `cluster` label SHALL be bucketed under `c
 - **WHEN** a `kube_pod_info` series has no `cluster` label
 - **THEN** the resulting pod entity has `cluster: "unknown"` and contributes to the `unknown` value in the observed-clusters set
 
-### Requirement: Allowlist enforcement
-
-When the server is configured with `--clusters-allowlist`, every topology query SHALL inject `{cluster=~"a|b|c"}` (regex over the allowlist values) so series outside the allowlist are not fetched, parsed, or counted toward the cluster-size ceiling.
-
-#### Scenario: Series outside allowlist excluded
-
-- **WHEN** the server is started with `--clusters-allowlist=cluster-alpha` and centralised VictoriaMetrics also has data for `cluster-beta`
-- **THEN** issued PromQL strings contain `cluster=~"cluster-alpha"` selectors and the resulting topology contains no entities with `cluster="cluster-beta"`
-
-### Requirement: Bounded cluster-size probe
-
-Before issuing the full set of topology queries, the reader SHALL run a single probe query `count(kube_pod_info{<allowlist-selector>}) @ <end>`. If the probe result exceeds `--max-pods` (default 5000), the reader SHALL abort the build with an error tagged `cluster_too_large`.
-
-#### Scenario: Cluster too large
-
-- **WHEN** the probe `count(kube_pod_info)` returns 12000 and `--max-pods` is 5000
-- **THEN** the reader returns an error with code `cluster_too_large` and does not issue the remaining topology queries
-
 ### Requirement: Per-call upstream timeout
 
 Each topology query SHALL be issued with a per-call context timeout (default 10 seconds, configurable). On timeout or non-2xx response, the reader SHALL increment `kube_state_graph_upstream_query_failures_total{query=<name>}` and propagate the error so the build aborts.
