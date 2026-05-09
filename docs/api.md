@@ -2,6 +2,12 @@
 
 All routes are prefixed `/v1/`. Every JSON body carries `apiVersion: "v1"`.
 
+## Tracing
+
+Inbound W3C `traceparent` and `tracestate` headers are honoured on every `/v1/*` request — the server span chains under the caller's trace when tracing is enabled. Outbound PromQL HTTP calls inject `traceparent` automatically.
+
+Response bodies (and therefore `ETag`s) are unaffected by tracing state: enabling or disabling the OTLP pipeline does not change the byte-level response. See `docs/operations.md` ("OpenTelemetry tracing and logging") for the env-var configuration surface and span attribute reference.
+
 ## Authentication
 
 When the server is started with API keys configured (`--api-keys-file=<path>`

@@ -1,4 +1,4 @@
-.PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down local-up local-down local-smoke smoke clean \
+.PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down kind-redeploy kind-restart local-up local-down local-redeploy local-restart local-smoke smoke clean \
         docker-build docker-push docker-buildx docker-load-kind docker-run docker-docs docker-docs-stop
 
 BIN_DIR := bin
@@ -66,6 +66,21 @@ kind-up local-up:
 
 kind-down local-down:
 	./local/kind/teardown.sh
+
+## Re-apply manifests + rebuild image + bounce pods on the existing Kind
+## cluster. Skip cluster create/destroy. Use after editing Go code, manifest
+## YAML, ConfigMaps, Grafana datasources/dashboards, or Alloy/Tempo config.
+kind-redeploy local-redeploy:
+	./local/kind/redeploy.sh
+
+## Bounce kube-state-graph + observability pods only (no rebuild, no
+## manifest re-apply). Use after a ConfigMap edit when you only need pods
+## to pick up fresh config.
+kind-restart local-restart:
+	kubectl -n kube-state-graph rollout restart \
+		deploy/kube-state-graph deploy/grafana deploy/alloy deploy/tempo deploy/victoria-metrics
+	kubectl -n kube-state-graph rollout status \
+		deploy/kube-state-graph deploy/grafana deploy/alloy deploy/tempo deploy/victoria-metrics --timeout=120s
 
 smoke local-smoke:
 	./local/kind/smoke.sh

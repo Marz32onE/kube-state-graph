@@ -6,10 +6,15 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/graph"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/internal/telemetry"
 )
 
 // Builder runs the topology + service-graph readers and assembles a
@@ -28,8 +33,18 @@ func New(q *promql.Client, cfg config.Config, m *observability.Metrics) *Builder
 // Build runs all upstream queries for [end - window, end] and returns the
 // joined multi-cluster Graph.
 func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time) (*graph.Graph, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "kube-state-graph.build",
+		trace.WithAttributes(
+			attribute.Int64("kube_state_graph.window_seconds", int64(window.Seconds())),
+			attribute.Int64("kube_state_graph.end_unix", end.Unix()),
+		),
+	)
+	defer span.End()
+
 	topology, err := ReadTopology(ctx, b.q, window, end)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, NewError(ReasonTimeout, "build timeout", err)
 		}
@@ -39,12 +54,17 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	// Outside-retention check: zero pods + healthy upstream ⇒ retention miss.
 	if len(topology.Pods) == 0 && len(topology.Nodes) == 0 {
 		if up, _ := b.upProbe(ctx); up {
-			return nil, NewError(ReasonOutsideRetention, "no topology rows in window; upstream healthy", nil)
+			err := NewError(ReasonOutsideRetention, "no topology rows in window; upstream healthy", nil)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, string(ReasonOutsideRetention))
+			return nil, err
 		}
 	}
 
 	sg, err := ReadServiceGraph(ctx, b.q, window, end, b.cfg.ExternalNamePattern, topology)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, NewError(ReasonTimeout, "build timeout", err)
 		}
@@ -72,7 +92,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 			crossCluster++
 		}
 	}
-	slog.Info("graph built",
+	slog.InfoContext(ctx, "graph built",
 		"clusters", topology.ClustersObserved,
 		"nodes", len(g.NodesByID),
 		"edges", len(g.Edges),
@@ -91,6 +111,13 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 		b.metrics.GraphEdgeCount.WithLabelValues(k[0], k[1]).Set(float64(count))
 	}
 	b.metrics.ClustersObserved.Set(float64(len(topology.ClustersObserved)))
+
+	span.SetAttributes(
+		attribute.Int("kube_state_graph.cluster_count", len(topology.ClustersObserved)),
+		attribute.Int("graph.node.count", len(g.NodesByID)),
+		attribute.Int("graph.edge.count", len(g.Edges)),
+		attribute.Int("kube_state_graph.cross_cluster_edges", crossCluster),
+	)
 	return g, nil
 }
 

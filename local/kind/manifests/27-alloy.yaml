@@ -11,13 +11,58 @@ metadata:
   namespace: kube-state-graph
 data:
   config.alloy: |
-    // OTLP gRPC receiver for Beyla spans.
+    // OTLP gRPC receiver. Accepts spans from Beyla (auto-instrumented Go/HTTP
+    // pods) AND from kube-state-graph itself (manual spans wrapping Build /
+    // PromQL fan-out / projection / serialise). Spans are fanned out:
+    //   1. servicegraph connector → traces_service_graph_request_total → VM
+    //      (existing pod-calls-pod edge source)
+    //   2. otlp exporter → Tempo (so an operator can browse the trace tree
+    //      in Grafana → Explore → Tempo)
+    //
+    // The receiver also accepts logs so kube-state-graph's slog → OTLP
+    // bridge has a sink. We have no log store in the rig (Loki would be
+    // overkill for manual verification), so logs are routed to the debug
+    // exporter which prints a digest to Alloy's stdout. View via:
+    //   kubectl -n kube-state-graph logs deploy/alloy -f
     otelcol.receiver.otlp "in" {
       grpc {
         endpoint = "0.0.0.0:4317"
       }
+      http {
+        endpoint = "0.0.0.0:4318"
+      }
       output {
-        traces = [otelcol.connector.servicegraph.sg.input]
+        // Two trace consumers:
+        //  1. servicegraph connector — UNFILTERED so paired client+server
+        //     spans still produce traces_service_graph_request_total
+        //     (drives /v1/graph?edge_type=pod-calls-pod).
+        //  2. filter processor — drops spans whose resource service.name
+        //     belongs to peripheral services (grafana, victoria-metrics,
+        //     kube-state-metrics, etc.) so Tempo only stores
+        //     kube-state-graph traces. Edit `tempo_keep_services` below to
+        //     change which services land in Tempo.
+        traces = [
+          otelcol.connector.servicegraph.sg.input,
+          otelcol.processor.filter.tempo_keep.input,
+        ]
+        logs = [otelcol.exporter.debug.logs.input]
+      }
+    }
+
+    // Span-level filter: keep only spans whose resource service.name is in
+    // the allowlist; drop everything else. Uses OTTL — OpenTelemetry's
+    // expression language. To also see grafana/VM spans in Tempo, append
+    // the service name (or just remove this processor and wire the
+    // receiver directly to otelcol.exporter.otlp.tempo).
+    otelcol.processor.filter "tempo_keep" {
+      error_mode = "ignore"
+      traces {
+        span = [
+          "not (resource.attributes[\"service.name\"] == \"kube-state-graph\")",
+        ]
+      }
+      output {
+        traces = [otelcol.exporter.otlp.tempo.input]
       }
     }
 
@@ -31,6 +76,22 @@ data:
       output {
         metrics = [otelcol.exporter.prometheus.toprom.input]
       }
+    }
+
+    // Forward all traces verbatim to Tempo for storage + Grafana exploration.
+    otelcol.exporter.otlp "tempo" {
+      client {
+        endpoint = "tempo.kube-state-graph.svc:4317"
+        tls {
+          insecure = true
+        }
+      }
+    }
+
+    // Discard logs to Alloy stdout. Replace with a Loki exporter when the
+    // rig adds Loki.
+    otelcol.exporter.debug "logs" {
+      verbosity = "basic"
     }
 
     // Bridge OTel metrics into the prometheus.* pipeline.
@@ -78,10 +139,15 @@ spec:
           args:
             - run
             - --server.http.listen-addr=0.0.0.0:12345
+            # otelcol.exporter.debug is "experimental" stability tier in
+            # Alloy 1.16; lower the gate to allow it. The rig is dev-only.
+            - --stability.level=experimental
             - /etc/alloy/config.alloy
           ports:
             - containerPort: 4317
               name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
             - containerPort: 12345
               name: http
           volumeMounts:
@@ -110,6 +176,9 @@ spec:
     - name: otlp-grpc
       port: 4317
       targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
     - name: http
       port: 12345
       targetPort: 12345

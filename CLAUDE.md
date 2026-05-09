@@ -129,6 +129,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   do NOT add early-return optimisations to `auth.KeySet.Validate`. Logs must
   never include the presented key value.
 - **ETag determinism is load-bearing.** sha256(body) is stable iff the body is byte-identical for the same `(window, filters, upstream-data)`. Serialisers MUST sort node/edge slices (`graph.SortNodes`/`SortEdges`), `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Don't add timestamps, random IDs, or unsorted map iteration to the response without re-checking ETag stability.
+- **OTLP tracing/logging is config'd by OTel env vars only** (`OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`). No bespoke `--otlp-*` flags. Telemetry defaults to no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (zero export overhead, no background goroutines). Tracing MUST NOT alter response bodies or ETag determinism — resource attrs and span IDs live on spans, never in JSON. `otelgin` is mounted on `/v1/*` only; `/livez`, `/readyz`, `/metrics`, and `/docs/*` are deliberately untraced. The auth middleware MUST NEVER log or attribute the presented `X-API-Key` value via either the local handler or the OTLP slog bridge.
 
 ### Sealed graph types
 
@@ -184,4 +185,8 @@ When making non-trivial behaviour changes, update the relevant artifact
 - Don't add dependencies casually. Current direct deps: Gin, Prometheus
   client_golang, google/uuid, golang.org/x/sync, testify v1.10.0 (test-only),
   testcontainers-go (integration test-only), swaggo/swag/v2 (codegen tool, not
-  imported at runtime). Adding more requires a design-doc note.
+  imported at runtime), and the OpenTelemetry Go SDK family
+  (`go.opentelemetry.io/otel`, `sdk`, `sdk/log`, OTLP gRPC + HTTP exporters
+  for `otlptrace` and `otlplog`, `semconv/v1.27.0`, `contrib/...otelgin`,
+  `contrib/...otelhttp`, `contrib/bridges/otelslog`). Adding more requires a
+  design-doc note.

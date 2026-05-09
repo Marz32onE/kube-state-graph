@@ -21,6 +21,32 @@ data:
           httpHeaderName1: X-API-Key
         secureJsonData:
           httpHeaderValue1: dev-key-rotate-me-please
+      # Tempo stores spans emitted by kube-state-graph and Beyla via Alloy.
+      # Use Grafana → Explore → Tempo → "Search" to browse build / PromQL /
+      # project / serialise spans, or "TraceQL" with `{ service.name="kube-state-graph" }`.
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo.kube-state-graph.svc:3200
+        jsonData:
+          httpMethod: GET
+          serviceMap:
+            datasourceUid: prometheus
+          tracesToLogsV2:
+            datasourceUid: prometheus
+          nodeGraph:
+            enabled: true
+      # VictoriaMetrics speaks the Prometheus query API. Wired up so Tempo's
+      # Service Graph view (driven by traces_service_graph_request_total) and
+      # any ad-hoc PromQL panels work without an extra config step.
+      - name: prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://victoria-metrics.kube-state-graph.svc:8428
+        jsonData:
+          httpMethod: GET
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -122,6 +122,78 @@ the OpenAPI / Scalar UI routes are exempt.
 - Static keys provide a coarse server-side gate. Per-caller scoping, OAuth2,
   or mTLS are not implemented; layer those at a reverse proxy if needed.
 
+## OpenTelemetry tracing and logging
+
+`kube-state-graph` ships an OpenTelemetry pipeline that emits **traces** and **structured logs** alongside the existing Prometheus self-metrics. The pipeline is **disabled by default** and configured **only** through OTel-standard environment variables — there are no `--otlp-*` CLI flags to keep operator workflow consistent with the rest of an OTel-instrumented fleet.
+
+### Enabling
+
+Set the OTLP endpoint:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc            # or http/protobuf
+OTEL_EXPORTER_OTLP_INSECURE=true            # plain text gRPC; flip for TLS
+OTEL_SERVICE_NAME=kube-state-graph          # default if unset
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment=prod,cluster=prod-eu1
+OTEL_TRACES_SAMPLER=parentbased_traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.05                # 5 % head sampling
+```
+
+When `OTEL_EXPORTER_OTLP_ENDPOINT` (and the per-signal `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` overrides) is unset, the binary installs no-op tracer and logger providers so there is zero export overhead and zero new background goroutines.
+
+### Span topology
+
+Every `/v1/*` request produces this tree (probes, `/metrics`, and `/docs/*` are excluded from tracing on purpose):
+
+```
+GET /v1/graph                               (otelgin server span)
+└─ kube-state-graph.build                   (Builder.Build)
+   ├─ prometheus.query  (kube_pod_info)     (errgroup leg)
+   ├─ prometheus.query  (kube_node_info)
+   ├─ prometheus.query  (kube_node_status_addresses)
+   ├─ prometheus.query  (kube_pod_spec_volumes_persistentvolumeclaims_info)
+   ├─ prometheus.query  (kube_node_labels)
+   └─ prometheus.query  (traces_service_graph_request_total)
+└─ kube-state-graph.project                 (filter / cluster scope / traversal)
+└─ kube-state-graph.serialise               (Cytoscape | nodegraph)
+```
+
+Selected attributes:
+
+| Span | Attributes |
+|------|------------|
+| Server (`GET /v1/...`) | `http.request.method`, `http.route`, `http.response.status_code`, `kube_state_graph.etag` |
+| `kube-state-graph.build` | `kube_state_graph.window_seconds`, `kube_state_graph.end_unix`, `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count`, `kube_state_graph.cross_cluster_edges` |
+| `prometheus.query` | `db.system=prometheus`, `db.statement=<rendered PromQL>`, `kube_state_graph.query_name`, `kube_state_graph.result_series_count` |
+| `kube-state-graph.project` | `graph.node.count`, `graph.edge.count` (post-filter) |
+| `kube-state-graph.serialise` | `kube_state_graph.serialiser` (`cytoscape` or `nodegraph`), `graph.node.count`, `graph.edge.count` |
+
+The W3C `traceparent` header is honoured on inbound requests (the resulting server span chains under the caller's trace) and propagated automatically on every outbound PromQL HTTP call via `otelhttp`.
+
+### Log correlation
+
+Logs use Go's standard `log/slog` and are fanned out to two sinks:
+
+1. **stderr** — the existing JSON / text stream `kubectl logs` consumes; never depends on the collector being up.
+2. **OTLP logs** — when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, every record is mirrored to the configured collector via `otelslog`.
+
+Both sinks include `trace_id` and `span_id` fields on every record emitted from a request-scoped `context.Context` carrying an active span. Records emitted before any span exists (startup banner, shutdown error) omit those fields.
+
+### Secret redaction
+
+The auth middleware **never** logs the value of a presented `X-API-Key`, including via the OTLP bridge. Header attributes auto-collected by `otelgin` are filtered to drop `Authorization` / `X-API-Key`. If your downstream collector applies attribute scrubbing, layer it on top — KSG already does the redaction at the source.
+
+### Graceful shutdown
+
+`SIGTERM` first drains the HTTP server (within the existing 10 s grace deadline), then calls `Shutdown` on the trace and log providers using the same deadline. If exports remain pending past the deadline, the process exits with a non-zero status and an `otlp shutdown timed out` line on stderr — the exporter does **not** extend `terminationGracePeriodSeconds`.
+
+### Cost notes
+
+- `db.statement` carries the full rendered PromQL. If your collector pipeline disallows logging query strings, strip it via a Collector processor or set `OTEL_TRACES_SAMPLER=always_off`.
+- Default sampler is `parentbased_alwayson`; switch to `parentbased_traceidratio` for production fleets where every `/v1/graph` would otherwise emit a full trace.
+- `/livez`, `/readyz`, `/metrics`, and `/docs/*` are intentionally not traced. A 50-replica deployment would otherwise emit hundreds of useless probe spans per second.
+
 ## Tuning notes
 
 - Increase `--build-timeout` only if upstream PromQL is slow; the default 15 s is generous for ≤ 5 k pods.

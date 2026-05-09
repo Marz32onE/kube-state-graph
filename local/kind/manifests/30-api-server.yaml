@@ -38,6 +38,23 @@ spec:
               value: "30s"
             - name: KSG_LOG_LEVEL
               value: "info"
+            # OpenTelemetry exporter — point at the in-cluster Alloy.
+            # Alloy fans traces to Tempo (for Grafana Explore) and through the
+            # servicegraph connector to VictoriaMetrics. Logs land in Alloy's
+            # stdout via the debug exporter. Comment these out to disable
+            # OTLP exports (Init falls back to no-op providers).
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://alloy.kube-state-graph.svc:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+            - name: OTEL_SERVICE_NAME
+              value: "kube-state-graph"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=kind-local,cluster=kind-local"
+            - name: OTEL_TRACES_SAMPLER
+              value: "parentbased_always_on"
           volumeMounts:
             - name: api-keys
               mountPath: /etc/kube-state-graph/api-keys

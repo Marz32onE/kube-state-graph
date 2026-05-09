@@ -7,12 +7,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/internal/telemetry"
 
 	"log/slog"
 )
@@ -44,12 +46,21 @@ func New(cfg config.Config, builder *build.Builder, prom *promql.Client, m *obse
 }
 
 // Handler returns the Gin engine fully configured with routes + middleware.
+//
+// otelgin is installed on the /v1/* route group only so kubelet probes,
+// Prometheus scrapes, and documentation requests do not generate spans.
+// Inbound W3C traceparent is honoured via the global propagator.
 func (s *Server) Handler() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(s.requestIDMiddleware(), s.apiKeyMiddleware(), s.loggingMiddleware())
+	r.Use(s.requestIDMiddleware(), s.loggingMiddleware())
 
 	v1 := r.Group("/" + APIVersion)
+	v1.Use(
+		otelgin.Middleware(telemetry.ServiceName),
+		s.apiKeyMiddleware(),
+		s.spanEnrichMiddleware(),
+	)
 	v1.GET("/graph", s.handleGraph)
 	v1.GET("/graph/nodegraph", s.handleNodeGraph)
 	v1.GET("/clusters", s.handleClusters)
@@ -106,7 +117,7 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 		}
 		clusters := c.Request.URL.Query()["cluster"]
 
-		s.logger.Info("http",
+		s.logger.InfoContext(c.Request.Context(), "http",
 			"method", c.Request.Method,
 			"path", path,
 			"status", status,

@@ -38,10 +38,11 @@ kubectl -n "$NAMESPACE" create configmap grafana-dashboard-nodegraph \
 
 echo "==> Restarting workloads to pick up fresh ConfigMaps"
 kubectl -n "$NAMESPACE" rollout restart \
-  deploy/victoria-metrics deploy/kube-state-graph deploy/grafana
+  deploy/victoria-metrics deploy/kube-state-graph deploy/grafana \
+  deploy/alloy deploy/tempo
 
 echo "==> Waiting for rollouts"
-for d in victoria-metrics kube-state-metrics kube-state-graph grafana alloy pvc-demo; do
+for d in victoria-metrics kube-state-metrics kube-state-graph grafana alloy tempo pvc-demo; do
   kubectl -n "$NAMESPACE" rollout status deploy/$d --timeout=180s
 done
 kubectl -n "$NAMESPACE" rollout status daemonset/beyla --timeout=180s
@@ -69,5 +70,19 @@ cat <<MSG
     traffic generator needed. Cross-cluster scenarios remain covered by
     internal/integration/ (testcontainers-go VictoriaMetrics).
 
-    Open Grafana → folder kube-state-graph → Node Graph dashboard.
+    OTLP traces: kube-state-graph exports its own spans
+    (kube-state-graph.build → prometheus.query → kube-state-graph.project
+    → kube-state-graph.serialise) plus all Beyla traces through Alloy
+    into Tempo. Logs from kube-state-graph land in Alloy stdout via the
+    debug exporter — view with:
+        kubectl -n $NAMESPACE logs deploy/alloy -f
+
+    To browse traces:
+      1. Open Grafana → Explore → datasource "Tempo".
+      2. Either click "Search", filter Service Name="kube-state-graph";
+         or use TraceQL: { resource.service.name = "kube-state-graph" }.
+      3. Drill into a trace to see the build / PromQL / serialise span tree.
+
+    Open Grafana → folder kube-state-graph → Node Graph dashboard for the
+    cytoscape view.
 MSG

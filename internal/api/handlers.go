@@ -13,10 +13,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/marz32one/kube-state-graph/internal/build"
 	"github.com/marz32one/kube-state-graph/internal/graph"
 	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/internal/telemetry"
 )
 
 // ----- /v1/graph (Cytoscape.js) ---------------------------------------------
@@ -86,10 +89,10 @@ func (s *Server) handleGraph(c *gin.Context) {
 		return
 	}
 
-	ptStart := time.Now()
-	view := graph.Project(g, req.scope)
-	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
-	body := serialiseCytoscape(g, view)
+	view := s.projectWithSpan(c.Request.Context(), g, req.scope)
+	body := s.serialiseWithSpan(c.Request.Context(), "cytoscape", func() any {
+		return serialiseCytoscape(g, view)
+	}, view)
 	s.writeJSON(c, body, "cytoscape")
 }
 
@@ -160,11 +163,40 @@ func (s *Server) handleNodeGraph(c *gin.Context) {
 		return
 	}
 
-	ptStart := time.Now()
-	view := graph.Project(g, req.scope)
-	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
-	body := serialiseGrafanaNodeGraph(view)
+	view := s.projectWithSpan(c.Request.Context(), g, req.scope)
+	body := s.serialiseWithSpan(c.Request.Context(), "nodegraph", func() any {
+		return serialiseGrafanaNodeGraph(view)
+	}, view)
 	s.writeJSON(c, body, "nodegraph")
+}
+
+// projectWithSpan wraps graph.Project in a `kube-state-graph.project` span.
+func (s *Server) projectWithSpan(ctx context.Context, g *graph.Graph, scope graph.Scope) graph.View {
+	ctx, span := telemetry.Tracer().Start(ctx, "kube-state-graph.project")
+	defer span.End()
+	ptStart := time.Now()
+	view := graph.Project(g, scope)
+	s.metrics.ProjectDuration.Observe(time.Since(ptStart).Seconds())
+	span.SetAttributes(
+		attribute.Int("graph.node.count", len(view.Nodes)),
+		attribute.Int("graph.edge.count", len(view.Edges)),
+	)
+	_ = trace.SpanFromContext(ctx) // keep ctx referenced for static analysis
+	return view
+}
+
+// serialiseWithSpan wraps a serialiser callback in a `kube-state-graph.serialise`
+// span carrying the chosen format and resulting node/edge counts.
+func (s *Server) serialiseWithSpan(ctx context.Context, format string, fn func() any, view graph.View) any {
+	_, span := telemetry.Tracer().Start(ctx, "kube-state-graph.serialise",
+		trace.WithAttributes(
+			attribute.String("kube_state_graph.serialiser", format),
+			attribute.Int("graph.node.count", len(view.Nodes)),
+			attribute.Int("graph.edge.count", len(view.Edges)),
+		),
+	)
+	defer span.End()
+	return fn()
 }
 
 // runBuild wraps Builder.Build in a per-request build-timeout context. On

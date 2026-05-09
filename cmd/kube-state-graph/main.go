@@ -33,7 +33,12 @@ import (
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/internal/telemetry"
 )
+
+// version is the build-time service version. Override with
+// `go build -ldflags "-X main.version=<v>"` at release time.
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -47,7 +52,18 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	logger := observability.NewLogger(cfg.LogLevel)
+
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	telemetryProviders, telErr := telemetry.Init(bootCtx, version)
+	bootCancel()
+	if telErr != nil {
+		// Telemetry init failure is non-fatal: fall back to local-only logs so
+		// the binary still serves traffic when the OTel collector is missing.
+		fmt.Fprintf(os.Stderr, "telemetry init failed (continuing without OTLP exports): %v\n", telErr)
+	}
+
+	localHandler := observability.NewLogHandler(cfg.LogLevel)
+	logger := slog.New(telemetry.NewSlogHandler(localHandler))
 	slog.SetDefault(logger)
 	logger.Info("starting kube-state-graph",
 		"prom_url", cfg.PromURL,
@@ -55,6 +71,7 @@ func run() error {
 		"build_timeout", cfg.BuildTimeout,
 		"api_timeout", cfg.APITimeout,
 		"external_name_pattern_set", cfg.ExternalNamePattern != "",
+		"otlp_enabled", telemetryProviders.Enabled,
 	)
 
 	metrics := observability.NewMetrics()
@@ -101,6 +118,11 @@ func run() error {
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
+	}
+	if err := telemetryProviders.Shutdown(shutdownCtx); err != nil {
+		// Bypass the slog OTLP bridge — providers are tearing down.
+		fmt.Fprintf(os.Stderr, "otlp shutdown timed out: %v\n", err)
+		return fmt.Errorf("otlp shutdown: %w", err)
 	}
 	return nil
 }

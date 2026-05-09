@@ -110,4 +110,3 @@ func TestAuth_GraphRoute_RequiresKey(t *testing.T) {
 	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
-

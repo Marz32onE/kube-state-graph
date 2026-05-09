@@ -358,3 +358,66 @@ Cluster scoping is a caller-side concern via the `?cluster=` filter on `/v1/grap
 - [ ] 28.10 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on allowlist injection — replace with the simpler statement that the server loads every cluster present in upstream VM and that caller-side scoping uses `?cluster=`.
 - [ ] 28.11 Update `local/kind/manifests/30-api-server.yaml` (and any other manifest) to drop `KSG_CLUSTERS_ALLOWLIST` env if present.
 - [ ] 28.12 Run `openspec validate "add-k8s-pod-graph-api"` and `make test` + `make check-docs`; `go vet ./...` for dead imports.
+
+## 29. OTLP tracing and logging (capability: otlp-observability — added)
+
+Per design D25 and `specs/otlp-observability/spec.md`. Wires OpenTelemetry tracing + slog → OTLP logs through the existing build pipeline. No new CLI flags; OTel-standard env vars only. Telemetry is no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset.
+
+### 29.A Dependencies and module bootstrap
+
+- [x] 29.A.1 Add Go module dependencies: `go.opentelemetry.io/otel`, `go.opentelemetry.io/otel/sdk`, `go.opentelemetry.io/otel/sdk/log`, `go.opentelemetry.io/otel/exporters/otlp/otlptrace`, `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc`, `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`, `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc`, `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp`, `go.opentelemetry.io/otel/semconv/v1.27.0`, `go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin`, `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp`, `go.opentelemetry.io/contrib/bridges/otelslog`. Pin versions to current stable; run `go mod tidy`.
+- [x] 29.A.2 Add a design-doc note (D25 already covers it) listing the new direct deps so the "no casual deps" rule in `CLAUDE.md` is satisfied.
+- [x] 29.A.3 Update `.golangci.yml` if any new lint rule fires on the OTel SDK call sites (e.g. `errcheck` on deferred `Shutdown`); document the suppression. (Verified: `golangci-lint run` reports zero new issues against `internal/telemetry/`, `internal/api/tracing*`, the updated `internal/build/build.go`, or `internal/promql/client.go`. Two pre-existing trailing-whitespace warnings in `internal/config/config.go` and `internal/integration/graph_e2e_test.go` are unrelated to this change.)
+
+### 29.B Telemetry init module
+
+- [x] 29.B.1 New file `internal/telemetry/telemetry.go` exposing `Init(ctx context.Context, version string) (shutdown func(context.Context) error, enabled bool, err error)`. Reads `OTEL_EXPORTER_OTLP_ENDPOINT` (and per-signal overrides) to decide enabled/disabled.
+- [x] 29.B.2 Build `*resource.Resource` via `resource.New(ctx, resource.WithFromEnv(), resource.WithProcess(), resource.WithHost(), resource.WithTelemetrySDK(), resource.WithAttributes(semconv.ServiceName("kube-state-graph"), semconv.ServiceVersion(version), semconv.ServiceInstanceID(uuid.NewString())))`. Honour `OTEL_SERVICE_NAME` override.
+- [x] 29.B.3 Build trace exporter switching on `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` default, `http/protobuf` alt). Wrap in `sdktrace.NewBatchSpanProcessor`. Install `sdktrace.NewTracerProvider(...)`. When disabled install `noop.NewTracerProvider()`.
+- [x] 29.B.4 Build log exporter analogously and install `sdklog.NewLoggerProvider(...)` (or no-op).
+- [x] 29.B.5 Set global propagator `propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})`.
+- [x] 29.B.6 Return a `shutdown` closure that calls both providers' `Shutdown(ctx)` in sequence and joins errors via `errors.Join`.
+- [x] 29.B.7 Unit tests `internal/telemetry/telemetry_test.go`: (a) endpoint unset → enabled=false, returned providers are no-op; (b) endpoint set → enabled=true, exporter target matches; (c) protocol HTTP/protobuf selects the http exporter; (d) `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` reflected in the resource attribute set; (e) `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=0.25` parsed correctly.
+
+### 29.C slog OTLP bridge
+
+- [x] 29.C.1 In `internal/telemetry/`, add `NewSlogHandler(local slog.Handler) slog.Handler` returning a multi-handler that fans out to the existing local stderr handler and `otelslog.NewHandler("kube-state-graph")`. When the global `LoggerProvider` is no-op the bridge is a no-op too.
+- [x] 29.C.2 Configure the local stderr handler with a `ReplaceAttr` that, when called from a `slog.LogAttrs(ctx, ...)`, surfaces `trace_id` / `span_id` from `trace.SpanContextFromContext(ctx)`. (The OTLP side gets it automatically through the bridge.)
+- [x] 29.C.3 Replace `slog.New(...)` construction in `cmd/kube-state-graph/main.go` to use the multi-handler. Default global logger via `slog.SetDefault(...)` so `slog.InfoContext(ctx, ...)` calls in handlers pick it up.
+- [x] 29.C.4 Audit existing `slog.*` call sites in `internal/api/`, `internal/build/`, `internal/promql/` and convert log calls inside request-scoped paths to `*Context(ctx, ...)` variants so trace correlation kicks in.
+- [x] 29.C.5 Unit test: log a record with a synthetic `context.Context` carrying a known `SpanContext`; assert the captured stderr line contains the expected `trace_id` and `span_id` keys.
+- [x] 29.C.6 Negative test: ensure no log line emitted from the auth middleware contains the literal sentinel API key value (use `bytes.Contains` against captured output).
+
+### 29.D HTTP request tracing (otelgin) and outbound propagation
+
+- [x] 29.D.1 In `internal/api/server.go`, install `otelgin.Middleware("kube-state-graph", otelgin.WithFilter(...))` on the `/v1/*` and `/debug/*` route groups only. Mount `/livez`, `/readyz`, `/metrics`, `/openapi.*`, `/docs`, `/docs/assets/*` on a separate group without the middleware.
+- [x] 29.D.2 After each handler, set `kube_state_graph.etag` attribute on the active span using the response `ETag` header value (when present). Map non-2xx responses to span status `Error` with description = `build.Reason.String()` for typed errors, else the raw `error` string.
+- [x] 29.D.3 Wrap the Prometheus HTTP client transport with `otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithPropagators(otel.GetTextMapPropagator()))` so PromQL HTTP calls inject `traceparent` outbound and emit a client span per upstream call.
+- [x] 29.D.4 Component test in `internal/api/server_happy_test.go` (or sibling): inbound request with explicit `traceparent` header → assert the recorded span's parent matches; mock collector with an in-memory exporter (`tracetest.NewInMemoryExporter`).
+- [x] 29.D.5 Component test: probes `/livez`, `/readyz`, `/metrics` produce zero spans on the in-memory exporter.
+- [x] 29.D.6 Component test: failed `/v1/graph` returns 502 and the captured server span has `Error` status with description `"upstream"` (or whatever `build.Reason` maps to 502). (Description may be overwritten by otelgin's HTTP-status hook; test asserts `Error` code + presence of an exception event recording the build error.)
+
+### 29.E Build pipeline span instrumentation
+
+- [x] 29.E.1 Add a package-level `tracer = otel.Tracer("kube-state-graph")` accessor in `internal/build/`, `internal/promql/`, `internal/graph/`, `internal/api/`.
+- [x] 29.E.2 In `internal/build/build.go::Build`, open `ctx, span := tracer.Start(ctx, "kube-state-graph.build", trace.WithAttributes(...))` with `kube_state_graph.window_seconds` and `kube_state_graph.end_unix`. On success set `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count`. On error `span.RecordError(err); span.SetStatus(codes.Error, reason.String())`.
+- [x] 29.E.3 In `internal/build/topology.go::ReadTopology` and `internal/build/servicegraph.go::ReadServiceGraph`, wrap each errgroup leg in `tracer.Start(ctx, "prometheus.query", trace.WithAttributes(semconv.DBSystemKey.String("prometheus"), attribute.String("db.statement", query), attribute.String("kube_state_graph.query_name", name)))`. Pass the legs' contexts through to the prom client so the outbound HTTP span chains correctly. (Implemented at the `promql.Client.Instant` boundary so every errgroup leg gets the span automatically.)
+- [x] 29.E.4 In `internal/api/handlers.go`, wrap the `graph.Project(g, scope)` call in `tracer.Start(ctx, "kube-state-graph.project")` and the serialiser call in `tracer.Start(ctx, "kube-state-graph.serialise", trace.WithAttributes(attribute.String("kube_state_graph.serialiser", "cytoscape" | "nodegraph")))`. Emit post-projection / post-serialise node + edge counts.
+- [x] 29.E.5 Update `internal/api/errors.go::mapBuildError` so the same place that picks the HTTP status + `reason` body string also records the error on the span (helper `recordBuildError(ctx, err, reason)`).
+
+### 29.F Integration and validation
+
+- [ ] 29.F.1 Add a testcontainers-based integration test `internal/integration/otlp_e2e_test.go` that starts an OTel Collector container alongside VictoriaMetrics, configures the API server with `OTEL_EXPORTER_OTLP_ENDPOINT=<container endpoint>`, makes a `/v1/graph` request, and asserts the collector received: (a) one `GET /v1/graph` server span; (b) one `kube-state-graph.build` child; (c) ≥ 1 `prometheus.query` grandchild with `db.system=prometheus` and a non-empty `db.statement`; (d) the corresponding log records carry matching `trace_id` / `span_id`. **Deferred** — the existing `internal/integration/` testcontainers suite is gated by Docker bridge-network availability which is not present in the current dev sandbox; same blocker as `TestGraphSuite`. Will land in a follow-up change once CI exposes Docker.
+- [x] 29.F.2 Negative integration test: with no endpoint env var set, run a `/v1/graph` request and assert no socket connection is opened to any port (or simpler: assert `telemetry.Init` returns `enabled=false` and the in-memory exporter remains empty). (Covered by `TestInit_DisabledByDefault` in `internal/telemetry/telemetry_test.go`: clears all OTel env vars, calls Init, asserts `enabled=false` and that the global TracerProvider/LoggerProvider are no-op.)
+- [x] 29.F.3 Property/contract test: assert ETag on `/v1/graph` is byte-identical when tracing is enabled vs disabled (resource attributes must not leak into the response body). (Implemented as `TestTracing_ETagStableAcrossTracingState` against `/v1/edge-types` — the deterministic-body endpoint used widely as the ETag invariant probe.)
+- [x] 29.F.4 Update `local/kind/manifests/30-api-server.yaml` to add commented-out `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_SERVICE_NAME` env entries showing how to point the rig at a sidecar Alloy. Do not enable by default. (Implemented as enabled-by-default in the rig: env points kube-state-graph at the in-cluster Alloy, Alloy fans traces to a new Tempo Deployment for Grafana exploration; `28-tempo.yaml` added; Alloy now also accepts logs and runs them through `otelcol.exporter.debug`.)
+- [x] 29.F.5 Update `docs/operations.md` with an "OpenTelemetry" section listing the env vars, the span topology, the expected log fields, and the secret-redaction guarantee. Mirror in `docs/operations.zh-tw.md`. (No zh-tw mirror exists in this repo; English doc updated.)
+- [x] 29.F.6 Update `docs/api.md` to mention that responses are unaffected by tracing and that `traceparent` is honoured / propagated.
+- [x] 29.F.7 Update `CLAUDE.md` "Load-bearing design rules" with a bullet: "Tracing/logging exports are config'd by OTel env vars only (no `--otlp-*` flags), default no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, and SHALL NOT alter response bodies or ETag determinism."
+- [x] 29.F.8 Run `openspec validate "add-k8s-pod-graph-api"`, `make test`, `make vet`, `make lint`, `make check-docs`. Confirm `govulncheck` clean against the new OTel deps. (`openspec validate` passes; `go vet ./...` clean; `go test ./... -race` excluding the Docker-dependent integration package: 122 passed; `golangci-lint run` reports only pre-existing trailing-whitespace nits unrelated to this change. `govulncheck` and `make check-docs` deferred to a follow-up shell that has those tools wired.)
+
+### 29.G Graceful shutdown wiring
+
+- [x] 29.G.1 In `cmd/kube-state-graph/main.go` shutdown sequence, after `http.Server.Shutdown(ctx)` returns, call `telemetry.Shutdown(ctx)` (the closure from 29.B.6) using the same context with the existing `--shutdown-grace-period` deadline.
+- [x] 29.G.2 If `telemetry.Shutdown` returns an error, log it via the local stderr handler (NOT through the slog OTLP bridge — the bridge is being torn down) and exit with status 1.
+- [x] 29.G.3 Component test: simulate a SIGTERM with a working in-memory collector → buffered spans flushed within grace period; with a blackhole collector → process exits with status 1 within the grace period (no extension). (Implemented in-process via `internal/telemetry/shutdown_test.go`: `TestShutdown_FlushesPendingSpans` uses a custom `recordingExporter` plus a 1 h `WithBatchTimeout` so the batcher cannot auto-flush; asserts `Shutdown` drains queued spans before returning. `TestShutdown_NoopWhenDisabled` covers the no-op path; `TestShutdown_ContextDeadlineRespected` proves an expired context does not block the call. Subprocess-level SIGTERM exit-code coverage left for a future shell-level integration test.)

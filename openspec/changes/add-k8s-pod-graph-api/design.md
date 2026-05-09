@@ -679,6 +679,100 @@ When neither is set the keyset is **empty** and the middleware is a no-op (auth 
   - Stay on stdlib (rejected — integration tests with testcontainers benefit materially from `suite.Suite` and `require`; the rest of the repo is along for consistency).
   - Adopt `gotest.tools/v3` instead (rejected — testify is the dominant Go ecosystem choice and what `testifylint` polices; staying with the stream).
 
+### D25. OpenTelemetry tracing and logging
+
+**Why now**: D10 (`log/slog`, JSON handler) covers operator logs but ships no distributed-tracing surface. Once KSG sits behind a Grafana Node Graph dashboard, an Alloy / OTel Collector, and a centralised VictoriaMetrics, operators need per-request spans (which cluster, which PromQL leg was slow?) and trace-correlated logs (a single `trace_id` joining HTTP access, build pipeline, PromQL fan-out, projection, serialisation). The same OTel pipeline that already collects `traces_service_graph_*` from the workloads is the natural sink for KSG's own self-traces and self-logs.
+
+**Stack**:
+
+- `go.opentelemetry.io/otel` SDK + `sdktrace` + `sdklog`.
+- `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc` + `otlptracehttp` (HTTP/protobuf).
+- `go.opentelemetry.io/otel/exporters/otlp/otlplogs/otlploggrpc` + `otlploghttp`.
+- `go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin` for inbound HTTP spans.
+- `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` for the outbound PromQL client transport.
+- `go.opentelemetry.io/contrib/bridges/otelslog` for the slog → OTLP-logs bridge.
+- `go.opentelemetry.io/otel/semconv/v1.27.0` for HTTP / RPC / DB attribute keys.
+
+**Configuration surface**: OTel-standard environment variables only. No new CLI flags. No new `KSG_*` variables. Reading list:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_INSECURE` and their per-signal `_TRACES_` / `_LOGS_` variants.
+- `OTEL_SERVICE_NAME` (default `kube-state-graph`), `OTEL_RESOURCE_ATTRIBUTES`.
+- `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`.
+
+The SDK's stock env-var loaders are used (`otlptracegrpc.WithEnv`-style configs) rather than re-implementing parsing. When `OTEL_EXPORTER_OTLP_ENDPOINT` and both per-signal endpoint variables are unset the binary installs `noop.NewTracerProvider()` and a no-op slog handler bridge. This is the **default**; v1 deployments without an OTel collector incur zero export overhead and zero new background goroutines.
+
+**Init sequence** (in `cmd/kube-state-graph/main.go`):
+
+1. Parse flags.
+2. Build resource: `resource.New(ctx, resource.WithFromEnv(), resource.WithProcess(), resource.WithHost(), resource.WithTelemetrySDK(), resource.WithAttributes(serviceName, serviceVersion, serviceInstanceID))`.
+3. If endpoint configured → build OTLP trace exporter, batch span processor, sampler from env, install global `TracerProvider`. Else → install `noop.NewTracerProvider()`.
+4. Same for logs (OTLP log exporter + batch log processor + global `LoggerProvider`, or no-op).
+5. Set global propagator: `propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})`.
+6. Build `*slog.Logger` with `slog.New(slogmulti.Fanout(stderrHandler, otelslog.NewHandler("kube-state-graph")))` (or equivalent multi-handler). Without OTLP enabled, the otelslog handler short-circuits via the global no-op `LoggerProvider`.
+7. Defer `tracerProvider.Shutdown(shutdownCtx)` and `loggerProvider.Shutdown(shutdownCtx)` after the existing HTTP-server graceful shutdown so in-flight exports flush within the existing grace deadline.
+
+**Span topology**:
+
+```
+GET /v1/graph                               (otelgin server span)
+└─ kube-state-graph.build                   (Builder.Build)
+   ├─ prometheus.query (kube_pod_info)      (errgroup leg 1)
+   ├─ prometheus.query (kube_node_info)     (errgroup leg 2)
+   ├─ prometheus.query (kube_node_status_addresses)
+   ├─ prometheus.query (kube_pod_spec_volumes_persistentvolumeclaims_info)
+   ├─ prometheus.query (kube_node_labels)
+   └─ prometheus.query (traces_service_graph_request_total)
+└─ kube-state-graph.project                 (filter / cluster scope / traversal)
+└─ kube-state-graph.serialise               (Cytoscape or NodeGraph)
+```
+
+`prometheus.query` spans are siblings under `kube-state-graph.build` (driven by `errgroup`); they all carry `db.system=prometheus`, `db.statement=<rendered PromQL>`, `kube_state_graph.query_name=<one of the constants>`, and `server.address` / `server.port` derived from `--prom-url`. The PromQL HTTP client is wrapped with `otelhttp.NewTransport(...)` so the `traceparent` header is injected automatically and an additional client-side HTTP span is recorded per upstream call.
+
+**Attribute set**:
+
+| Span | Required attributes |
+|------|---------------------|
+| Server (otelgin) | `http.request.method`, `http.route`, `url.scheme`, `url.path`, `server.address`, `server.port`, `client.address`, `user_agent.original`, `http.response.status_code`, `kube_state_graph.etag` |
+| `kube-state-graph.build` | `kube_state_graph.window_seconds`, `kube_state_graph.end_unix`, on success `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count` |
+| `prometheus.query` | `db.system=prometheus`, `db.statement`, `kube_state_graph.query_name`, `server.address`, `server.port` |
+| `kube-state-graph.project` | `graph.node.count`, `graph.edge.count` (post-filter), `kube_state_graph.filter.cluster`, `kube_state_graph.filter.namespace`, `kube_state_graph.filter.edge_type` |
+| `kube-state-graph.serialise` | `kube_state_graph.serialiser` (`cytoscape` or `nodegraph`), `graph.node.count`, `graph.edge.count` |
+
+`db.statement` carries the raw PromQL — operators with strict policy on logging query strings can opt out by setting `OTEL_TRACES_SAMPLER=always_off` (kills tracing globally) or by stripping the attribute at the Collector via a processor. Document the trade-off; do not redact in-binary because the readable PromQL is the highest-value debugging signal in a slow-build trace.
+
+**Error recording**: any `error` returned to the build pipeline calls `span.RecordError(err)` and `span.SetStatus(codes.Error, reason.String())`, where `reason` is the existing `build.Reason`. The error-mapping helper in `internal/api/errors.go` (`mapBuildError`) is the single place this is wired so HTTP status, response `reason`, log line, and span status stay in lockstep.
+
+**slog bridge**: `otelslog.NewHandler("kube-state-graph")` wraps the existing JSON / text handler in a multi-handler. A logger obtained from `slog.New(...)` is stashed on `*gin.Context` via the otelgin middleware so handlers call `slog.LogAttrs(ctx, ...)` (or the package-level `slog.InfoContext(ctx, ...)`) and receive `trace_id` / `span_id` automatically — both in the local stderr line and in the OTLP log record. The local handler is configured with `HandlerOptions{ ReplaceAttr: ... }` so the `trace.SpanContextFromContext` IDs appear in stderr output even when the otelslog bridge is no-op (i.e. tracing disabled but a span context exists in tests).
+
+**Non-traced routes**: `otelgin` is installed on the `/v1/*` and `/debug/*` route groups only. `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*` are mounted on a separate router group without the middleware. Rationale: kubelet probes hit `/livez` once a second per Pod; a single 50-replica deployment would emit 50 spans/s of pure noise. `/metrics` similarly produces one span per scrape per Prometheus replica. Documentation routes are served without auth and are not interesting in a trace.
+
+**Sampling**: default sampler is `parentbased_alwayson` (the OTel SDK default). Operators control rate via `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=0.05` etc. Because v1 has no in-process result cache and `/v1/graph` is the cost-dominant endpoint, head-based ratio sampling is sufficient; tail sampling is delegated to the Collector if needed.
+
+**Secrets handling**: API-key validation in `auth.KeySet.Validate` MUST NOT log or attribute the presented key. Specifically: the otelgin middleware is configured with `otelgin.WithFilter(...)` to suppress `Authorization` and `X-API-Key` headers from the auto-attribute set, and the auth middleware's slog calls do not include the key value. This rule is enforced by an integration test that fails if any exported span attribute or log record contains the literal sentinel test key.
+
+**Shutdown semantics**: the existing graceful shutdown sequence is:
+
+```
+1. SIGTERM received
+2. http.Server.Shutdown(ctx with grace deadline)  — drains in-flight requests
+3. tracerProvider.Shutdown(same ctx)
+4. loggerProvider.Shutdown(same ctx)
+5. exit
+```
+
+If `tracerProvider.Shutdown` or `loggerProvider.Shutdown` returns context-deadline-exceeded, the local stderr handler logs `otlp shutdown timed out` and the process exits with a non-zero status. The exporter SHALL NOT extend the grace period — operators rely on K8s `terminationGracePeriodSeconds` matching `--shutdown-grace-period`.
+
+- Why no bespoke `--otlp-*` flags: every operator who already runs an OTel-instrumented service is configured by the standard env vars; introducing a parallel CLI surface forks the operator workflow for no benefit.
+- Why no in-process result cache implications: D6 still holds — the build always runs. Tracing only adds visibility; it does not change ETag determinism (resource attributes are not in the response body).
+- Why log to *both* stderr and OTLP: the binary must remain useful in `kubectl logs` even when the OTel collector is down. Fan-out keeps the stderr stream intact.
+- Why bound shutdown by the existing grace period rather than a separate `--otlp-shutdown-timeout`: K8s lifecycle is governed by a single `terminationGracePeriodSeconds`; introducing a second knob forces operators to keep two values in sync.
+- Alternatives considered:
+  - **Replace `log/slog` with a dedicated OTel logger** (rejected — `slog` is stdlib, the project already standardised on it in D10, and the bridge is one line of init).
+  - **Add an exporter selection flag** (rejected — `OTEL_EXPORTER_OTLP_PROTOCOL` already covers gRPC vs HTTP/protobuf).
+  - **Trace `/livez` / `/readyz` and rely on Collector filtering** (rejected — cheap to skip at the source; saves Collector ingestion budget; matches industry guidance).
+  - **Emit a typed numeric span attribute for ETag instead of a string** (rejected — semconv prefers strings for opaque identifiers; ETag is sha256-hex, not numeric).
+  - **Run a parallel async pipeline that captures the build trace into a debug endpoint** (rejected — duplicates OTel functionality; ops teams already have a Collector + Tempo / Jaeger).
+
 ## Risks / Trade-offs
 
 - [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost; until then, ETag-based revalidation is the only amortisation lever.
@@ -692,6 +786,9 @@ When neither is set the keyset is **empty** and the middleware is a no-op (auth 
 - [No auth on the API] → Document that the service is intended to sit behind a reverse proxy.
 - [No result cache → upstream load scales with traffic] → Accepted for v1 in pre-distributed-deployment dev. Future cache mechanism (Redis L2, materialiser tier, or graph DB) is the planned mitigation; the design space is intentionally left open so the chosen shape matches the eventual deployment topology.
 - [Multi-cluster cardinality on self-metrics] → `cluster` label appears only on observational gauges (`graph_node_count`, `graph_edge_count`); document expected `cluster` cardinality range (≤ 20 in v1) and recommend dropping the label at the scrape layer if it grows beyond budget.
+- [OTLP collector outage stalls slog bridge or trace export] → Both exporters use bounded `BatchSpanProcessor` / `BatchLogProcessor` queues; on persistent collector failure, the SDK drops the oldest batches and surfaces the failure via the SDK's internal error handler (logged through stderr, not through the bridge to avoid feedback loops). Local stderr logs remain unaffected.
+- [Trace span explosion on debug endpoints] → `/debug/*` routes are traced; document that operators should avoid scripting curl loops over them in production. Mitigation is at the Collector via tail sampling.
+- [`db.statement` attribute leaks tenant info via PromQL label matchers] → Document; operators with stricter policy disable tracing or strip the attribute at the Collector.
 
 ## Migration Plan
 
