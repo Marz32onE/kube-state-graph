@@ -109,18 +109,55 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 ## 開發
 
+### 第一次設定
+
+clone 後**只跑一次**。下載 modules、安裝 host-level 工具（`golangci-lint`、
+`govulncheck`）。Mockery 由 go.mod 的 `tool` directive（Go 1.24+）追蹤，透過
+`go tool mockery` 呼叫，不需另外安裝。
+
 ```bash
-make build        # 編譯主程式
-make test         # 單元 + 元件 + golden + property + integration
-make lint         # golangci-lint
-make vuln         # govulncheck
-make check-docs   # OpenAPI 與嵌入靜態檔是否與 swag 產出一致（CI 亦跑）
-make local-up     # 本機 Kind + VM + 儀表板腳本（見 local/kind/）
-make local-smoke  # 對已啟動環境跑 smoke
-make local-down   # 拆除
+make init           # go mod download + dev tools
+make doctor         # 檢查工具版本（go、golangci-lint、govulncheck、mockery、docker、kind）
+make init-hooks     # （選用）安裝 pre-commit hook（gofmt + go vet）
 ```
 
-整合測試走 `internal/integration/` + testcontainers-go：直接以 Prometheus 文字曝露格式把 fixture series 推進臨時 VictoriaMetrics 容器（不需單獨的 fixture binary）。本地 Kind rig 走 `local/kind/`，由 kube-state-metrics 直接抓取真實 Kind cluster 產生 topology series。
+需求：Go 1.25+。`go.mod` 中 pin 的 toolchain（目前 `go1.26.3`）會在第一次 build 時自動下載。
+
+### 日常指令
+
+```bash
+make build          # 編譯主程式
+make test           # 單元 + 元件 + golden + property + integration（需 Docker）
+make lint           # golangci-lint
+make vuln           # govulncheck
+make check-docs     # OpenAPI 與嵌入靜態檔是否與 swag 產出一致（CI 亦跑）
+make local-up       # 本機 Kind + VM + 儀表板腳本（見 local/kind/）
+make local-smoke    # 對已啟動環境跑 smoke
+make local-down     # 拆除
+```
+
+### Mocks（mockery）
+
+production-side 依賴透過小介面（`promql.Querier`、`auth.Validator`、`clock.Clock`）暴露，單元測試用 mockery 生成的 mock 注入，**不再用 `httptest.NewServer` 假冒上游服務**。Mock 放在 `internal/<pkg>/mocks/` 並 commit 進 git，CI 不需安裝 mockery。
+
+```bash
+make mocks          # 編輯介面後重新產生 mocks
+make verify-mocks   # CI 風格的 freshness 檢查（regen + git diff）
+```
+
+`.mockery.yaml` 列出所有設定的介面。**新增或修改介面後**請執行 `make mocks` 並 commit；否則 CI 的 `mocks-drift` job 會擋下 merge。
+
+### 測試分層
+
+| 層級 | 位置 | 真實 I/O？ |
+|---|---|---|
+| Unit | `internal/{graph,build,promql,config,clock,auth,telemetry}/*_test.go` | 無 — 純 Go。 |
+| Component | `internal/api/*_test.go` | 無 — 透過介面注入 `MockQuerier`；`httptest.NewServer` 只用於包裹 server-under-test，不假冒上游。 |
+| Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | 無。執行 `-update` 重新生成 snapshot。 |
+| Integration | `internal/integration/*` | **需 Docker。** testcontainers-go 啟動真實 VictoriaMetrics 容器；`SkipIfDockerUnavailable` 在沒有 Docker 的本機自動跳過，CI 跑全套。 |
+| 手動 rig | `local/kind/smoke.sh` | Kind cluster — 只在本機跑，CI 不執行。 |
+
+unit 與 integration 邊界嚴格：**任何透過 TCP socket 連到上游的測試都歸類為 integration**。單元測試必須能在無外部相依下執行。整合測試走 `internal/integration/` + testcontainers-go：直接以 Prometheus 文字曝露格式把 fixture series 推進臨時 VictoriaMetrics 容器。本地 Kind rig 走 `local/kind/`，由 kube-state-metrics 直接抓取真實 Kind cluster 產生 topology series。
 
 ## 授權
 

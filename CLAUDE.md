@@ -30,12 +30,27 @@ testcontainers-go VictoriaMetrics container.
 ## Common commands
 
 ```bash
+# First-time dev env bootstrap (run once after clone). Downloads modules and
+# installs host-level dev tools (golangci-lint, govulncheck). Mockery is
+# tracked via go.mod `tool` directive (Go 1.24+) and invoked through
+# `go tool mockery` — no separate install step.
+make init                                   # one-shot: init-go + init-tools
+make doctor                                 # report toolchain versions / missing pieces
+make init-hooks                             # optional: pre-commit gofmt + go vet hook
+
 # Build / test loop
 make build                                  # ./bin/kube-state-graph
 make test                                   # go test ./... -count=1 -race -shuffle=on
 make vet                                    # go vet
-make lint                                   # golangci-lint (must be installed)
+make lint                                   # golangci-lint (installed by `make init-tools`)
+make vuln                                   # govulncheck
 make cover                                  # go test ./... -coverprofile=coverage.out
+
+# Mocks (regenerate after editing an interface listed in .mockery.yaml).
+# Mocks are committed under internal/<pkg>/mocks/ so CI does not need
+# mockery installed; the `mocks-drift` CI job verifies freshness.
+make mocks                                  # go tool mockery
+make verify-mocks                           # CI-style freshness check (regen + git diff)
 
 # Single test
 go test ./internal/graph/ -run TestProject_ClusterFilter -v
@@ -54,7 +69,7 @@ make kind-down                              # ./local/kind/teardown.sh
 ./bin/kube-state-graph --prom-url=http://localhost:8428 --listen-addr=:8080
 ```
 
-Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`); build toolchain pinned to `go1.26.2` via the `toolchain` directive.
+Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`); build toolchain pinned to `go1.26.3` via the `toolchain` directive.
 
 ## Architecture (the 90 % you need to know)
 
@@ -140,14 +155,27 @@ methods — never through type switches in the serialiser.
 
 ### Test stack layers
 
-| Layer | Where | What it covers |
+Boundary rule: **unit tests must not contact a real upstream service**. Anything
+that needs a TCP socket fronting upstream is integration. Unit tests substitute
+upstream behind small interfaces (`promql.Querier`, `auth.Validator`,
+`clock.Clock`) using mockery-generated mocks under `internal/<pkg>/mocks/`.
+
+| Layer | Where | Real I/O? |
 |---|---|---|
-| Unit | `internal/{graph,build,promql,config}/*_test.go` | Pure functions: parsers, joins, projection, edge IDs. |
-| Component | `internal/api/server_test.go` | Gin handlers against a `httptest.Server` mocking the Prometheus HTTP API. |
-| Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | Wire-format snapshots; run with `-update` to refresh. |
-| Property | `internal/graph/property_test.go` | Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
-| Integration | `internal/integration/*` | testcontainers-go VictoriaMetrics suite; gated `SkipIfDockerUnavailable` — skips locally without Docker, runs full on CI (ubuntu-latest). |
-| Manual rig | `local/kind/smoke.sh` | curl checks against the kind-based local rig (kube-state-metrics + VM + API + Grafana); not executed by CI. |
+| Unit | `internal/{graph,build,promql,config,clock,auth,telemetry}/*_test.go` | None — pure functions: parsers, joins, projection, edge IDs, KeySet, Clock. |
+| Component | `internal/api/*_test.go` | None — gin handlers driven via a `MockQuerier` injected through `promql.Querier`; `httptest.NewServer` only wraps the server-under-test, never fakes upstream. Test helpers in `internal/api/helpers_test.go` (`newServerWithMocks`, `newMockQuerier`, `newErrQuerier`, `vec`). |
+| Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | None. Wire-format snapshots; run with `-update` to refresh. |
+| Property | `internal/graph/property_test.go` | None. Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
+| Integration | `internal/integration/*` | **Docker required.** testcontainers-go VictoriaMetrics suite; gated `SkipIfDockerUnavailable` — skips locally without Docker, runs full on CI (ubuntu-latest). Inject hooks into the in-process API via `StartAPIServer(cfg, WithClock(...))`. |
+| Manual rig | `local/kind/smoke.sh` | Kind cluster + curl checks (kube-state-metrics + VM + API + Grafana); not executed by CI. |
+
+When **adding a unit test that needs to fake upstream PromQL**, use
+`newMockQuerier(t, fixtureSet{...})` — never spin up an `httptest.NewServer`
+to impersonate the Prometheus HTTP API.
+
+When **changing an interface** registered in `.mockery.yaml`
+(`promql.Querier`, `auth.Validator`, `clock.Clock`), run `make mocks` and
+commit the regenerated files. CI's `mocks-drift` job will fail otherwise.
 
 ## OpenSpec workflow
 
@@ -183,10 +211,18 @@ When making non-trivial behaviour changes, update the relevant artifact
   All cluster facts come from VictoriaMetrics. Informers were considered and
   rejected — see D1 / D16. Tests and harness tooling are exempt.
 - Don't add dependencies casually. Current direct deps: Gin, Prometheus
-  client_golang, google/uuid, golang.org/x/sync, testify v1.10.0 (test-only),
-  testcontainers-go (integration test-only), swaggo/swag/v2 (codegen tool, not
-  imported at runtime), and the OpenTelemetry Go SDK family
-  (`go.opentelemetry.io/otel`, `sdk`, `sdk/log`, OTLP gRPC + HTTP exporters
-  for `otlptrace` and `otlplog`, `semconv/v1.27.0`, `contrib/...otelgin`,
-  `contrib/...otelhttp`, `contrib/bridges/otelslog`). Adding more requires a
-  design-doc note.
+  client_golang, google/uuid, golang.org/x/sync, testify v1.11.x (test-only,
+  also drives mockery-generated mocks), testcontainers-go (integration
+  test-only), swaggo/swag/v2 (codegen tool, not imported at runtime),
+  vektra/mockery v2.x (codegen tool tracked via go.mod `tool` directive,
+  not imported at runtime, not linked into the production binary), and the
+  OpenTelemetry Go SDK family (`go.opentelemetry.io/otel`, `sdk`, `sdk/log`,
+  OTLP gRPC + HTTP exporters for `otlptrace` and `otlplog`, `semconv/v1.27.0`,
+  `contrib/...otelgin`, `contrib/...otelhttp`, `contrib/bridges/otelslog`).
+  Adding more requires a design-doc note.
+- Production code MUST NOT carry test-only fields, methods, or constructors.
+  Inject substitutable behaviour via the small interfaces in
+  `internal/{promql,auth,clock}` (`Querier`, `Validator`, `Clock`); tests
+  consume mockery-generated mocks under `internal/<pkg>/mocks/`. If a new
+  hard-to-test dependency appears, add an interface + regenerate mocks rather
+  than a `SetXxxFunc` setter.

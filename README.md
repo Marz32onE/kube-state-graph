@@ -162,14 +162,65 @@ container.
 
 ## Development
 
+### First-time setup
+
+Run **once** after cloning. Bootstraps the dev environment, downloads modules,
+and installs host-level tools (`golangci-lint`, `govulncheck`). Mockery is
+tracked via go.mod's `tool` directive (Go 1.24+) and invoked through
+`go tool mockery` — no separate install step is required.
+
 ```bash
-make build       # compile binary
-make test        # unit + component + golden + property
-make lint        # golangci-lint
-make kind-up     # bootstrap integration cluster
-make smoke       # run smoke test against running harness
-make kind-down   # tear down
+make init           # go mod download + dev tools
+make doctor         # verify toolchain (go, golangci-lint, govulncheck, mockery, docker, kind)
+make init-hooks     # (optional) install pre-commit hook (gofmt + go vet)
 ```
+
+Required: Go 1.25+. The toolchain pinned in `go.mod` (currently `go1.26.3`)
+will be auto-fetched by Go on first build.
+
+### Day-to-day commands
+
+```bash
+make build          # compile binary
+make test           # unit + component + golden + property + integration (Docker required)
+make lint           # golangci-lint
+make vuln           # govulncheck
+make cover          # coverage profile
+make kind-up        # bootstrap integration cluster
+make smoke          # run smoke test against running harness
+make kind-down      # tear down
+```
+
+### Mocks (mockery)
+
+Production-side dependencies are exposed as small interfaces (`promql.Querier`,
+`auth.Validator`, `clock.Clock`) so unit tests can substitute mockery-generated
+mocks instead of fronting real services with `httptest.NewServer`. Mocks live
+under `internal/<pkg>/mocks/` and are committed to git so CI does not need
+mockery installed.
+
+```bash
+make mocks          # regenerate mocks after editing an interface
+make verify-mocks   # CI-style freshness check (regen + git diff)
+```
+
+`.mockery.yaml` lists the configured interfaces. After **adding or editing any
+interface** registered there, run `make mocks` and commit the regenerated
+files — the `mocks-drift` CI job blocks merges otherwise.
+
+### Test layout
+
+| Suite | Where | Real I/O? |
+|---|---|---|
+| Unit | `internal/{graph,build,promql,config,clock,auth,telemetry}/*_test.go` | None — pure Go. |
+| Component | `internal/api/*_test.go` | None — `MockQuerier` injected via interface; `httptest.NewServer` only wraps the server-under-test, never fakes upstream. |
+| Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | None. Run with `-update` to refresh snapshots. |
+| Integration | `internal/integration/*` | **Docker required.** testcontainers-go spins a real VictoriaMetrics container; `SkipIfDockerUnavailable` skips locally without Docker. CI runs the full suite. |
+| Manual rig | `local/kind/smoke.sh` | Kind cluster — local only, never run by CI. |
+
+The boundary between unit and integration is strict: anything that touches a
+TCP socket fronting an upstream service is integration. Unit tests must run
+with no external dependencies.
 
 ## License
 
