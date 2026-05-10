@@ -51,8 +51,8 @@ func newTestServer(t *testing.T, mock *httptest.Server, override func(*config.Co
 	metrics := observability.NewMetrics()
 	prom, err := promql.New(cfg.PromURL, metrics)
 	require.NoError(t, err)
-	builder := build.New(prom, cfg, metrics)
-	return New(cfg, builder, prom, metrics, logger, auth.NewKeySet())
+	builder := build.New(prom, cfg, metrics, nil)
+	return New(cfg, builder, prom, metrics, logger, auth.NewKeySet(), nil)
 }
 
 // newTestServerWithKeys constructs a Server with a populated keyset so tests
@@ -68,8 +68,8 @@ func newTestServerWithKeys(t *testing.T, mock *httptest.Server, keys []string) *
 	require.NoError(t, err)
 	ks := auth.NewKeySet()
 	ks.LoadCSV(strings.Join(keys, ","))
-	builder := build.New(prom, cfg, metrics)
-	return New(cfg, builder, prom, metrics, logger, ks)
+	builder := build.New(prom, cfg, metrics, nil)
+	return New(cfg, builder, prom, metrics, logger, ks, nil)
 }
 
 // TestDebugLastQueries_RouteNotRegistered confirms removal of the debug route.

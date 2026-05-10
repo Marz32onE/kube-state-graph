@@ -85,8 +85,8 @@ func run() error {
 		return fmt.Errorf("api keys: %w", err)
 	}
 
-	builder := build.New(promClient, cfg, metrics)
-	server := api.New(cfg, builder, promClient, metrics, logger, keys)
+	builder := build.New(promClient, cfg, metrics, nil)
+	server := api.New(cfg, builder, promClient, metrics, logger, keys, nil)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,

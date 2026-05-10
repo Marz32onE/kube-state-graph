@@ -11,6 +11,7 @@ import (
 
 	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
+	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
@@ -26,16 +27,22 @@ const APIVersion = "v1"
 type Server struct {
 	cfg     config.Config
 	builder *build.Builder
-	prom    *promql.Client
+	prom    promql.Querier
 	metrics *observability.Metrics
 	logger  *slog.Logger
-	keys    *auth.KeySet
-	nowFunc func() time.Time
+	keys    auth.Validator
+	clk     clock.Clock
 }
 
-// New wires up a Server. keys may be nil or empty to run with API-key
-// authentication disabled.
-func New(cfg config.Config, builder *build.Builder, prom *promql.Client, m *observability.Metrics, logger *slog.Logger, keys *auth.KeySet) *Server {
+// New wires up a Server. keys may be nil to run with API-key authentication
+// disabled. clk may be nil; nil falls back to clock.System.
+func New(cfg config.Config, builder *build.Builder, prom promql.Querier, m *observability.Metrics, logger *slog.Logger, keys auth.Validator, clk clock.Clock) *Server {
+	if clk == nil {
+		clk = clock.System{}
+	}
+	if keys == nil {
+		keys = auth.NewKeySet()
+	}
 	return &Server{
 		cfg:     cfg,
 		builder: builder,
@@ -43,16 +50,7 @@ func New(cfg config.Config, builder *build.Builder, prom *promql.Client, m *obse
 		metrics: m,
 		logger:  logger,
 		keys:    keys,
-		nowFunc: time.Now,
-	}
-}
-
-// SetNowFunc overrides the clock used by handlers that evaluate "now"
-// (currently /v1/clusters discovery). Tests use this to align discovery
-// queries with statically-timestamped fixtures.
-func (s *Server) SetNowFunc(f func() time.Time) {
-	if f != nil {
-		s.nowFunc = f
+		clk:     clk,
 	}
 }
 

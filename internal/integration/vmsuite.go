@@ -21,6 +21,7 @@ import (
 	"github.com/marz32one/kube-state-graph/internal/api"
 	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
+	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
 	"github.com/marz32one/kube-state-graph/internal/promql"
@@ -177,17 +178,23 @@ func (s *VMSuite) WaitForSeries(query string, evalTime time.Time, budget time.Du
 	return false
 }
 
-// StartAPIServer constructs an in-process API server pointed at the running
-// VictoriaMetrics container, wraps it in httptest.NewServer, and returns the
-// server's base URL. Caller-supplied configure func may tweak the Config.
-func (s *VMSuite) StartAPIServer(configure func(*config.Config)) *httptest.Server {
-	httpSrv, _ := s.StartAPIServerWith(configure)
-	return httpSrv
+// APIOption tweaks the in-process API server constructed by StartAPIServer.
+// Functional options keep production New() signatures stable while letting
+// tests inject deterministic substitutes (e.g. a fixed clock).
+type APIOption func(*apiOptions)
+
+type apiOptions struct {
+	clk clock.Clock
 }
 
-// StartAPIServerWith is like StartAPIServer but also returns the underlying
-// *api.Server so tests can inject hooks (e.g. SetNowFunc for clock control).
-func (s *VMSuite) StartAPIServerWith(configure func(*config.Config)) (*httptest.Server, *api.Server) {
+// WithClock pins the server's Clock dependency. nil falls back to clock.System.
+func WithClock(clk clock.Clock) APIOption { return func(o *apiOptions) { o.clk = clk } }
+
+// StartAPIServer constructs an in-process API server pointed at the running
+// VictoriaMetrics container, wraps it in httptest.NewServer, and returns the
+// server's base URL. Caller-supplied configure func may tweak the Config;
+// optional APIOptions tweak Server-level dependencies.
+func (s *VMSuite) StartAPIServer(configure func(*config.Config), opts ...APIOption) *httptest.Server {
 	s.T().Helper()
 	cfg := config.Defaults()
 	cfg.PromURL = s.vmURL
@@ -196,6 +203,11 @@ func (s *VMSuite) StartAPIServerWith(configure func(*config.Config)) (*httptest.
 		configure(&cfg)
 	}
 	s.Require().NoError(cfg.Validate())
+
+	o := apiOptions{}
+	for _, fn := range opts {
+		fn(&o)
+	}
 
 	logger := observability.NewLogger(cfg.LogLevel)
 	metrics := observability.NewMetrics()
@@ -209,10 +221,10 @@ func (s *VMSuite) StartAPIServerWith(configure func(*config.Config)) (*httptest.
 	if cfg.APIKeysFile != "" {
 		s.Require().NoError(ks.LoadFile(cfg.APIKeysFile))
 	}
-	builder := build.New(prom, cfg, metrics)
-	srv := api.New(cfg, builder, prom, metrics, logger, ks)
+	builder := build.New(prom, cfg, metrics, o.clk)
+	srv := api.New(cfg, builder, prom, metrics, logger, ks, o.clk)
 
 	httpSrv := httptest.NewServer(srv.Handler())
 	s.T().Cleanup(httpSrv.Close)
-	return httpSrv, srv
+	return httpSrv
 }

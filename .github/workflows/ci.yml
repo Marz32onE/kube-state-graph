@@ -73,3 +73,21 @@ jobs:
       # docs/ and the embedded internal/api/static/openapi/ payload.
       - name: Verify docs in sync
         run: make check-docs
+
+  mocks-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pre-download modules
+        run: go mod download
+
+      # Mockery is pinned via the go.mod `tool` directive and invoked through
+      # `go tool mockery`, so no separate install step is needed.
+      - name: Verify mocks in sync
+        run: make verify-mocks

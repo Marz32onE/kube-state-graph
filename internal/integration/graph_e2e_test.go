@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
+	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 )
 
@@ -213,10 +214,10 @@ func (s *GraphSuite) TestRepeatedRequestsReturnSameETag() {
 }
 
 func (s *GraphSuite) TestClustersDiscovery() {
-	// Discovery handler evaluates "now" via Server.nowFunc; pin it to fixedNow
-	// so the 1h discovery lookback covers the statically-timestamped fixtures.
-	srv, apiSrv := s.StartAPIServerWith(nil)
-	apiSrv.SetNowFunc(func() time.Time { return fixedNow })
+	// Discovery handler evaluates "now" via the injected Clock. Pin it to
+	// fixedNow so the 1h discovery lookback covers the statically-timestamped
+	// fixtures.
+	srv := s.StartAPIServer(nil, WithClock(clock.Fake{T: fixedNow}))
 	resp := s.httpGet(srv.URL + "/v1/clusters")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)

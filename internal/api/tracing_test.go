@@ -199,8 +199,8 @@ func TestAuth_NoAPIKeyInLogs(t *testing.T) {
 	require.NoError(t, err)
 	ks := auth.NewKeySet()
 	ks.LoadCSV("real-key-1,real-key-2")
-	builder := build.New(prom, cfg, metrics)
-	server := New(cfg, builder, prom, metrics, logger, ks)
+	builder := build.New(prom, cfg, metrics, nil)
+	server := New(cfg, builder, prom, metrics, logger, ks, nil)
 
 	srv := httptest.NewServer(server.Handler())
 	t.Cleanup(srv.Close)

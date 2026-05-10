@@ -58,7 +58,7 @@ type Topology struct {
 
 // ReadTopology runs the five topology queries in parallel and assembles the
 // result.
-func ReadTopology(ctx context.Context, q *promql.Client, window time.Duration, end time.Time) (Topology, error) {
+func ReadTopology(ctx context.Context, q promql.Querier, window time.Duration, end time.Time) (Topology, error) {
 	var podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector
 
 	g, ctx := errgroup.WithContext(ctx)

@@ -24,7 +24,7 @@ type ServiceGraphResult struct {
 // KSG_EXTERNAL_NAME_PATTERN substitution rule.
 func ReadServiceGraph(
 	ctx context.Context,
-	q *promql.Client,
+	q promql.Querier,
 	window time.Duration,
 	end time.Time,
 	externalPattern string,

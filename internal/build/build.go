@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/graph"
 	"github.com/marz32one/kube-state-graph/internal/observability"
@@ -20,14 +21,18 @@ import (
 // Builder runs the topology + service-graph readers and assembles a
 // multi-cluster Graph for one bucketed time window.
 type Builder struct {
-	q       *promql.Client
+	q       promql.Querier
 	cfg     config.Config
 	metrics *observability.Metrics
+	clk     clock.Clock
 }
 
-// New constructs a Builder.
-func New(q *promql.Client, cfg config.Config, m *observability.Metrics) *Builder {
-	return &Builder{q: q, cfg: cfg, metrics: m}
+// New constructs a Builder. clk may be nil; nil falls back to clock.System.
+func New(q promql.Querier, cfg config.Config, m *observability.Metrics, clk clock.Clock) *Builder {
+	if clk == nil {
+		clk = clock.System{}
+	}
+	return &Builder{q: q, cfg: cfg, metrics: m, clk: clk}
 }
 
 // Build runs all upstream queries for [end - window, end] and returns the
@@ -72,7 +77,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	}
 
 	nodes, edges := assemble(topology, sg)
-	g := graph.NewGraph(nodes, edges, time.Now().UTC())
+	g := graph.NewGraph(nodes, edges, b.clk.Now().UTC())
 
 	// Cross-cluster status is derived from the resolved endpoint nodes'
 	// `cluster` labels, since edges only carry the trace-source cluster
@@ -153,7 +158,7 @@ func (b *Builder) upProbe(ctx context.Context) (bool, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, b.cfg.APITimeout)
 	defer cancel()
 	vec, err := b.q.Instant(probeCtx, string(promql.QUpProbe),
-		promql.Render(promql.QUpProbe, 0), time.Now().UTC())
+		promql.Render(promql.QUpProbe, 0), b.clk.Now().UTC())
 	if err != nil {
 		return false, err
 	}
