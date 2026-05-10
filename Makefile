@@ -1,5 +1,6 @@
 .PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down kind-redeploy kind-restart local-up local-down local-redeploy local-restart local-smoke smoke clean \
-        docker-build docker-push docker-buildx docker-load-kind docker-run docker-docs docker-docs-stop
+        docker-build docker-push docker-buildx docker-load-kind docker-run docker-docs docker-docs-stop \
+        init init-go init-tools init-hooks doctor mocks verify-mocks tools-versions
 
 BIN_DIR := bin
 BIN     := $(BIN_DIR)/kube-state-graph
@@ -22,6 +23,118 @@ DOCKER_BUILD_ARGS := \
     --build-arg COMMIT=$(COMMIT) \
     --build-arg BUILD_DATE=$(BUILD_DATE)
 
+## ---------------------------------------------------------------------------
+## Local-dev bootstrap.
+##
+##   make init          # one-shot: go mod download + dev tools + (optional) hooks
+##   make init-go       # only: go mod download / tidy verify
+##   make init-tools    # only: install host-level dev binaries (golangci-lint, govulncheck)
+##   make init-hooks    # optional: install pre-commit hook (gofmt + vet + lint)
+##   make doctor        # report toolchain versions & missing pieces
+##
+## Go-based tools tracked via go.mod `tool` directive (Go 1.24+) are invoked
+## with `go tool <name>` and need no install step. They are excluded from the
+## production binary by the Go toolchain.
+##
+## Host-level tools (golangci-lint, govulncheck) live in $(GOBIN). They are
+## NOT pulled into go.mod and NOT required by CI consumers of the module.
+GOBIN ?= $(shell go env GOPATH)/bin
+GOLANGCI_LINT_VERSION ?= v2.11.4
+GOVULNCHECK_VERSION   ?= latest
+
+init: init-go init-tools
+	@echo ""
+	@echo "Local dev environment ready."
+	@echo "  make doctor         # verify toolchain"
+	@echo "  make init-hooks     # (optional) install pre-commit hook"
+
+init-go:
+	@echo ">> go mod download"
+	go mod download
+	@echo ">> verifying go.mod is tidy (read-only check)"
+	@cp go.mod go.mod.bak && cp go.sum go.sum.bak; \
+	    go mod tidy >/dev/null 2>&1; \
+	    if ! diff -q go.mod go.mod.bak >/dev/null || ! diff -q go.sum go.sum.bak >/dev/null; then \
+	        mv go.mod.bak go.mod && mv go.sum.bak go.sum; \
+	        echo "WARN: go.mod / go.sum not tidy. Run 'go mod tidy' and commit."; \
+	    else \
+	        rm -f go.mod.bak go.sum.bak; \
+	        echo "  ok"; \
+	    fi
+
+## Install host-level dev binaries into $(GOBIN). Skipped if already present
+## at the pinned version. Safe to re-run.
+init-tools:
+	@echo ">> ensure $(GOBIN) is on PATH"
+	@case ":$$PATH:" in *":$(GOBIN):"*) ;; *) echo "  WARN: $(GOBIN) not on PATH. Add: export PATH=\"$(GOBIN):\$$PATH\"";; esac
+	@echo ">> golangci-lint $(GOLANGCI_LINT_VERSION)"
+	@if ! command -v golangci-lint >/dev/null 2>&1 || ! golangci-lint --version 2>/dev/null | grep -q "$$(echo $(GOLANGCI_LINT_VERSION) | sed 's/^v//')"; then \
+	    curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+	        | sh -s -- -b $(GOBIN) $(GOLANGCI_LINT_VERSION); \
+	else \
+	    echo "  already installed: $$(golangci-lint --version)"; \
+	fi
+	@echo ">> govulncheck $(GOVULNCHECK_VERSION)"
+	@if ! command -v govulncheck >/dev/null 2>&1; then \
+	    GOBIN=$(GOBIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION); \
+	else \
+	    echo "  already installed at $$(command -v govulncheck)"; \
+	fi
+	@echo ">> mockery (via go tool — no install needed)"
+	@go tool mockery --version 2>/dev/null | tail -1 | awk '{print "  " $$0}' || echo "  WARN: 'go tool mockery' failed; check go.mod tool directive."
+
+## Install a project-local pre-commit hook running gofmt + vet + lint on the
+## staged Go files. Idempotent: overwrites existing hook with our managed one.
+init-hooks:
+	@if [ ! -d .git ]; then echo "not a git repo; skipping"; exit 0; fi
+	@mkdir -p .git/hooks
+	@printf '%s\n' \
+	    '#!/usr/bin/env bash' \
+	    'set -euo pipefail' \
+	    'files=$$(git diff --cached --name-only --diff-filter=ACM | grep "\\.go$$" || true)' \
+	    '[ -z "$$files" ] && exit 0' \
+	    'unformatted=$$(gofmt -l $$files || true)' \
+	    'if [ -n "$$unformatted" ]; then echo "gofmt: $$unformatted"; exit 1; fi' \
+	    'go vet ./... || exit 1' \
+	    > .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "installed .git/hooks/pre-commit (gofmt + vet)"
+
+doctor:
+	@echo "go         : $$(go version 2>/dev/null || echo MISSING)"
+	@echo "GOBIN      : $(GOBIN)"
+	@echo "golangci   : $$(golangci-lint --version 2>/dev/null | head -1 || echo MISSING)"
+	@echo "govulncheck: $$(command -v govulncheck >/dev/null && echo present || echo MISSING)"
+	@echo "swag (tool): $$(go tool swag -v 2>/dev/null | head -1 || echo MISSING)"
+	@echo "mockery    : $$(go tool mockery --version 2>/dev/null | tail -1 || echo MISSING)"
+	@echo "docker     : $$(docker --version 2>/dev/null || echo MISSING)"
+	@echo "kind       : $$(kind --version 2>/dev/null || echo MISSING)"
+
+tools-versions:
+	@echo "Pinned dev tools (override via env):"
+	@echo "  GOLANGCI_LINT_VERSION = $(GOLANGCI_LINT_VERSION)"
+	@echo "  GOVULNCHECK_VERSION   = $(GOVULNCHECK_VERSION)"
+
+## Generate testify-style mocks. Re-run whenever an interface in a configured
+## package changes. Mocks are committed to git so CI does not need mockery.
+mocks:
+	@if [ ! -f .mockery.yaml ]; then \
+	    echo "no .mockery.yaml; nothing to generate"; \
+	else \
+	    go tool mockery; \
+	fi
+
+## Verify committed mocks match the current interfaces. Used by CI.
+verify-mocks: mocks
+	@if ! git diff --quiet -- '**/mocks/' 2>/dev/null; then \
+	    echo "FAIL: mocks out of sync. Run 'make mocks' and commit."; \
+	    git --no-pager diff -- '**/mocks/'; \
+	    exit 1; \
+	fi
+	@echo "mocks up-to-date"
+
+## ---------------------------------------------------------------------------
+
 build:
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/kube-state-graph
@@ -37,7 +150,11 @@ lint:
 	golangci-lint run --timeout=5m
 
 vuln:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	@if command -v govulncheck >/dev/null 2>&1; then \
+	    govulncheck ./...; \
+	else \
+	    go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...; \
+	fi
 
 cover:
 	go test ./... -coverprofile=coverage.out -covermode=atomic
