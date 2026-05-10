@@ -51,15 +51,13 @@ func TestShutdown_FlushesPendingSpans(t *testing.T) {
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 
 	providers := Providers{
-		Tracer:  tp,
-		Enabled: true,
 		Shutdown: func(ctx context.Context) error {
 			return tp.Shutdown(ctx)
 		},
 	}
 
 	const want = 3
-	for i := 0; i < want; i++ {
+	for range want {
 		_, span := tp.Tracer("test").Start(context.Background(), "shutdown-flush")
 		span.End()
 	}

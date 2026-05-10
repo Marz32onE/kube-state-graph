@@ -181,6 +181,13 @@ func (s *VMSuite) WaitForSeries(query string, evalTime time.Time, budget time.Du
 // VictoriaMetrics container, wraps it in httptest.NewServer, and returns the
 // server's base URL. Caller-supplied configure func may tweak the Config.
 func (s *VMSuite) StartAPIServer(configure func(*config.Config)) *httptest.Server {
+	httpSrv, _ := s.StartAPIServerWith(configure)
+	return httpSrv
+}
+
+// StartAPIServerWith is like StartAPIServer but also returns the underlying
+// *api.Server so tests can inject hooks (e.g. SetNowFunc for clock control).
+func (s *VMSuite) StartAPIServerWith(configure func(*config.Config)) (*httptest.Server, *api.Server) {
 	s.T().Helper()
 	cfg := config.Defaults()
 	cfg.PromURL = s.vmURL
@@ -207,5 +214,5 @@ func (s *VMSuite) StartAPIServer(configure func(*config.Config)) *httptest.Serve
 
 	httpSrv := httptest.NewServer(srv.Handler())
 	s.T().Cleanup(httpSrv.Close)
-	return httpSrv
+	return httpSrv, srv
 }

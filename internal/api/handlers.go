@@ -298,7 +298,7 @@ func (s *Server) handleClusters(c *gin.Context) {
 
 func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 	q := promql.Render(promql.QClusterDiscovery, promql.ClusterDiscoveryLookback)
-	vec, err := s.prom.Instant(ctx, string(promql.QClusterDiscovery), q, time.Now().UTC())
+	vec, err := s.prom.Instant(ctx, string(promql.QClusterDiscovery), q, s.nowFunc().UTC())
 	if err != nil {
 		return nil, err
 	}

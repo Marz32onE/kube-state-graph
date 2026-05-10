@@ -30,6 +30,7 @@ type Server struct {
 	metrics *observability.Metrics
 	logger  *slog.Logger
 	keys    *auth.KeySet
+	nowFunc func() time.Time
 }
 
 // New wires up a Server. keys may be nil or empty to run with API-key
@@ -42,6 +43,16 @@ func New(cfg config.Config, builder *build.Builder, prom *promql.Client, m *obse
 		metrics: m,
 		logger:  logger,
 		keys:    keys,
+		nowFunc: time.Now,
+	}
+}
+
+// SetNowFunc overrides the clock used by handlers that evaluate "now"
+// (currently /v1/clusters discovery). Tests use this to align discovery
+// queries with statically-timestamped fixtures.
+func (s *Server) SetNowFunc(f func() time.Time) {
+	if f != nil {
+		s.nowFunc = f
 	}
 }
 
