@@ -4,17 +4,31 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/marz32one/kube-state-graph/internal/auth"
 )
 
-func TestAuth_Disabled_AllRoutesPassThrough(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil) // empty keyset = auth disabled
+// authServer constructs a handler with the supplied API keys loaded into a
+// real auth.KeySet (the production validator — pure in-memory, no I/O).
+func authServer(t *testing.T, keys ...string) *httptest.Server {
+	t.Helper()
+	ks := auth.NewKeySet()
+	if len(keys) > 0 {
+		ks.LoadCSV(strings.Join(keys, ","))
+	}
+	s := newServerWithMocksAndKeys(t, newMockQuerier(t, nil), ks, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestAuth_Disabled_AllRoutesPassThrough(t *testing.T) {
+	srv := authServer(t) // no keys = auth disabled
 
 	for _, path := range []string{"/livez", "/v1/edge-types", "/metrics"} {
 		resp, err := http.Get(srv.URL + path)
@@ -25,10 +39,7 @@ func TestAuth_Disabled_AllRoutesPassThrough(t *testing.T) {
 }
 
 func TestAuth_MissingHeader_Returns401(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServerWithKeys(t, mock, []string{"k1"})
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
+	srv := authServer(t, "k1")
 
 	resp, err := http.Get(srv.URL + "/v1/edge-types")
 	require.NoError(t, err)
@@ -42,10 +53,7 @@ func TestAuth_MissingHeader_Returns401(t *testing.T) {
 }
 
 func TestAuth_WrongKey_Returns401(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServerWithKeys(t, mock, []string{"k1"})
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
+	srv := authServer(t, "k1")
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/edge-types", nil)
 	req.Header.Set(APIKeyHeader, "wrong-key")
@@ -56,10 +64,7 @@ func TestAuth_WrongKey_Returns401(t *testing.T) {
 }
 
 func TestAuth_ValidKey_Passes(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServerWithKeys(t, mock, []string{"k1", "k2"})
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
+	srv := authServer(t, "k1", "k2")
 
 	for _, key := range []string{"k1", "k2"} {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/edge-types", nil)
@@ -72,10 +77,7 @@ func TestAuth_ValidKey_Passes(t *testing.T) {
 }
 
 func TestAuth_OpenPaths_BypassWithoutKey(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServerWithKeys(t, mock, []string{"k1"})
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
+	srv := authServer(t, "k1")
 
 	for _, path := range []string{"/livez", "/metrics", "/openapi.yaml", "/openapi.json", "/docs"} {
 		resp, err := http.Get(srv.URL + path)
@@ -86,10 +88,7 @@ func TestAuth_OpenPaths_BypassWithoutKey(t *testing.T) {
 }
 
 func TestAuth_DocsAssets_BypassWithoutKey(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServerWithKeys(t, mock, []string{"k1"})
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
+	srv := authServer(t, "k1")
 
 	resp, err := http.Get(srv.URL + "/docs/assets/scalar.js")
 	require.NoError(t, err)
@@ -100,10 +99,7 @@ func TestAuth_DocsAssets_BypassWithoutKey(t *testing.T) {
 }
 
 func TestAuth_GraphRoute_RequiresKey(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServerWithKeys(t, mock, []string{"k1"})
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
+	srv := authServer(t, "k1")
 
 	resp, err := http.Get(srv.URL + "/v1/graph?start=2026-05-01T12:00:00Z&end=2026-05-01T12:05:00Z")
 	require.NoError(t, err)

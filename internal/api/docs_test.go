@@ -17,8 +17,8 @@ import (
 var httpsLinkRe = regexp.MustCompile(`(?i)\b(?:src|href)\s*=\s*["']https://`)
 
 func TestDocs_OfflineInvariant(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	q := newMockQuerier(t, nil)
+	s := newServerWithMocks(t, q, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -35,8 +35,8 @@ func TestDocs_OfflineInvariant(t *testing.T) {
 }
 
 func TestDocs_AssetsServed(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	q := newMockQuerier(t, nil)
+	s := newServerWithMocks(t, q, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -53,8 +53,8 @@ func TestDocs_AssetsServed(t *testing.T) {
 }
 
 func TestDocs_AssetsRejectsTraversal(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	q := newMockQuerier(t, nil)
+	s := newServerWithMocks(t, q, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -67,8 +67,8 @@ func TestDocs_AssetsRejectsTraversal(t *testing.T) {
 }
 
 func TestOpenAPIYAMLEndpoint(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	q := newMockQuerier(t, nil)
+	s := newServerWithMocks(t, q, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -86,8 +86,8 @@ func TestOpenAPIYAMLEndpoint(t *testing.T) {
 }
 
 func TestOpenAPIJSONEndpoint_IfNoneMatch304(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	q := newMockQuerier(t, nil)
+	s := newServerWithMocks(t, q, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 

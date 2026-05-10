@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -18,9 +19,9 @@ import (
 
 	"github.com/marz32one/kube-state-graph/internal/auth"
 	"github.com/marz32one/kube-state-graph/internal/build"
+	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
-	"github.com/marz32one/kube-state-graph/internal/promql"
 )
 
 // installInMemoryTracer registers an in-memory exporter so tests can inspect
@@ -44,8 +45,7 @@ func installInMemoryTracer(t *testing.T) *tracetest.InMemoryExporter {
 
 func TestTracing_LivezProbeEmitsNoSpan(t *testing.T) {
 	exporter := installInMemoryTracer(t)
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -58,8 +58,7 @@ func TestTracing_LivezProbeEmitsNoSpan(t *testing.T) {
 
 func TestTracing_MetricsScrapeEmitsNoSpan(t *testing.T) {
 	exporter := installInMemoryTracer(t)
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -72,8 +71,7 @@ func TestTracing_MetricsScrapeEmitsNoSpan(t *testing.T) {
 
 func TestTracing_EdgeTypesEmitsServerSpan(t *testing.T) {
 	exporter := installInMemoryTracer(t)
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -107,8 +105,7 @@ func TestTracing_EdgeTypesEmitsServerSpan(t *testing.T) {
 // W3C traceparent header so the server span chains under the caller's trace.
 func TestTracing_InboundTraceparentBecomesParent(t *testing.T) {
 	exporter := installInMemoryTracer(t)
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -141,13 +138,8 @@ func TestTracing_InboundTraceparentBecomesParent(t *testing.T) {
 // stamps Error status on the server span via mapBuildError.
 func TestTracing_FailedGraphRecordsErrorSpan(t *testing.T) {
 	exporter := installInMemoryTracer(t)
-	// Mock returns a 500 so the prom client surfaces an upstream error.
-	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	t.Cleanup(mock.Close)
-
-	s := newTestServer(t, mock, nil)
+	// Querier mock surfaces an upstream error so build → 502.
+	s := newServerWithMocks(t, newErrQuerier(t, errors.New("upstream 500: boom")), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -184,23 +176,21 @@ func TestTracing_FailedGraphRecordsErrorSpan(t *testing.T) {
 // presented X-API-Key value into log output.
 func TestAuth_NoAPIKeyInLogs(t *testing.T) {
 	const sentinelKey = "SENTINEL-NEVER-LOG-ME-1234"
-	mock := promMock(t, nil)
 
 	cfg := config.Defaults()
-	cfg.PromURL = mock.URL
+	cfg.PromURL = "http://unused"
 	require.NoError(t, cfg.Validate())
 
 	var buf bytes.Buffer
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	logger := slog.New(handler)
 
+	q := newMockQuerier(t, nil)
 	metrics := observability.NewMetrics()
-	prom, err := promql.New(cfg.PromURL, metrics)
-	require.NoError(t, err)
 	ks := auth.NewKeySet()
 	ks.LoadCSV("real-key-1,real-key-2")
-	builder := build.New(prom, cfg, metrics, nil)
-	server := New(cfg, builder, prom, metrics, logger, ks, nil)
+	builder := build.New(q, cfg, metrics, clock.System{})
+	server := New(cfg, builder, q, metrics, logger, ks, clock.System{})
 
 	srv := httptest.NewServer(server.Handler())
 	t.Cleanup(srv.Close)
@@ -223,8 +213,7 @@ func TestAuth_NoAPIKeyInLogs(t *testing.T) {
 // change the response ETag — resource attributes and span IDs must NOT leak
 // into the JSON body.
 func TestTracing_ETagStableAcrossTracingState(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	url := srv.URL + "/v1/edge-types"

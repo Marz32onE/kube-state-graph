@@ -5,77 +5,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/marz32one/kube-state-graph/internal/auth"
-	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/config"
-	"github.com/marz32one/kube-state-graph/internal/observability"
-	"github.com/marz32one/kube-state-graph/internal/promql"
 )
-
-// promMock returns a httptest.Server speaking the Prometheus HTTP API,
-// answering with the supplied JSON per query string substring match.
-func promMock(t *testing.T, fixtures map[string]string) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
-		query := r.Form.Get("query")
-		for needle, body := range fixtures {
-			if strings.Contains(query, needle) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(body))
-				return
-			}
-		}
-		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func newTestServer(t *testing.T, mock *httptest.Server, override func(*config.Config)) *Server {
-	t.Helper()
-	cfg := config.Defaults()
-	cfg.PromURL = mock.URL
-	if override != nil {
-		override(&cfg)
-	}
-	require.NoError(t, cfg.Validate())
-	logger := observability.NewLogger("error")
-	metrics := observability.NewMetrics()
-	prom, err := promql.New(cfg.PromURL, metrics)
-	require.NoError(t, err)
-	builder := build.New(prom, cfg, metrics, nil)
-	return New(cfg, builder, prom, metrics, logger, auth.NewKeySet(), nil)
-}
-
-// newTestServerWithKeys constructs a Server with a populated keyset so tests
-// can exercise the API-key middleware end-to-end.
-func newTestServerWithKeys(t *testing.T, mock *httptest.Server, keys []string) *Server {
-	t.Helper()
-	cfg := config.Defaults()
-	cfg.PromURL = mock.URL
-	require.NoError(t, cfg.Validate())
-	logger := observability.NewLogger("error")
-	metrics := observability.NewMetrics()
-	prom, err := promql.New(cfg.PromURL, metrics)
-	require.NoError(t, err)
-	ks := auth.NewKeySet()
-	ks.LoadCSV(strings.Join(keys, ","))
-	builder := build.New(prom, cfg, metrics, nil)
-	return New(cfg, builder, prom, metrics, logger, ks, nil)
-}
 
 // TestDebugLastQueries_RouteNotRegistered confirms removal of the debug route.
 func TestDebugLastQueries_RouteNotRegistered(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -86,8 +25,7 @@ func TestDebugLastQueries_RouteNotRegistered(t *testing.T) {
 }
 
 func TestGraphEndpoint_MissingStart(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -103,8 +41,7 @@ func TestGraphEndpoint_MissingStart(t *testing.T) {
 }
 
 func TestGraphEndpoint_InvalidRange(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -119,8 +56,7 @@ func TestGraphEndpoint_InvalidRange(t *testing.T) {
 }
 
 func TestEdgeTypesEndpoint_StaticCatalogue(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -151,8 +87,7 @@ func TestEdgeTypesEndpoint_StaticCatalogue(t *testing.T) {
 }
 
 func TestEdgeTypesEndpoint_IfNoneMatch304(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
@@ -170,8 +105,7 @@ func TestEdgeTypesEndpoint_IfNoneMatch304(t *testing.T) {
 }
 
 func TestLivez(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	resp, err := http.Get(srv.URL + "/livez")
@@ -181,8 +115,7 @@ func TestLivez(t *testing.T) {
 }
 
 func TestMetricsEndpoint(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	resp, err := http.Get(srv.URL + "/metrics")
@@ -192,8 +125,7 @@ func TestMetricsEndpoint(t *testing.T) {
 }
 
 func TestDebugEndpoint_DisabledByDefault(t *testing.T) {
-	mock := promMock(t, nil)
-	s := newTestServer(t, mock, nil)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	resp, err := http.Get(srv.URL + "/debug/last-queries")
