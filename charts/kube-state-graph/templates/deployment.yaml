@@ -1,0 +1,165 @@
+{{- $apiKeysOn := include "kube-state-graph.apiKeysEnabled" . -}}
+{{- $_ := required "config.promURL is required: set --set config.promURL=http://victoria-metrics.<ns>.svc:8428 (or your Prometheus-compatible upstream URL)." .Values.config.promURL -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kube-state-graph.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-state-graph.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "kube-state-graph.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kube-state-graph.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Roll the pod when the rendered API-keys Secret changes content.
+        # Harmless when an existingSecret is referenced.
+        {{- if $apiKeysOn }}
+        checksum/api-keys: {{ include (print $.Template.BasePath "/secret-apikeys.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "kube-state-graph.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- if $apiKeysOn }}
+        - name: api-keys
+          secret:
+            secretName: {{ include "kube-state-graph.apiKeySecretName" . }}
+            defaultMode: 0o444
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: server
+          image: {{ include "kube-state-graph.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- if .Values.config.promURL }}
+            - name: KSG_PROM_URL
+              value: {{ .Values.config.promURL | quote }}
+            {{- end }}
+            {{- if .Values.config.listenAddr }}
+            - name: KSG_LISTEN_ADDR
+              value: {{ .Values.config.listenAddr | quote }}
+            {{- end }}
+            {{- if .Values.config.buildTimeout }}
+            - name: KSG_BUILD_TIMEOUT
+              value: {{ .Values.config.buildTimeout | quote }}
+            {{- end }}
+            {{- if .Values.config.apiTimeout }}
+            - name: KSG_API_TIMEOUT
+              value: {{ .Values.config.apiTimeout | quote }}
+            {{- end }}
+            {{- if .Values.config.externalNamePattern }}
+            - name: KSG_EXTERNAL_NAME_PATTERN
+              value: {{ .Values.config.externalNamePattern | quote }}
+            {{- end }}
+            {{- if .Values.config.logLevel }}
+            - name: KSG_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            {{- end }}
+            {{- if $apiKeysOn }}
+            - name: KSG_API_KEYS_FILE
+              value: {{ printf "%s/%s" .Values.apiKeys.mountPath .Values.apiKeys.existingSecretKey | quote }}
+            {{- if .Values.apiKeys.reloadInterval }}
+            - name: KSG_API_KEYS_RELOAD_INTERVAL
+              value: {{ .Values.apiKeys.reloadInterval | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.otel.enabled }}
+            {{- if .Values.otel.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            {{- end }}
+            {{- if .Values.otel.protocol }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.otel.protocol | quote }}
+            {{- end }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.otel.insecure | quote }}
+            {{- if .Values.otel.serviceName }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.otel.serviceName | quote }}
+            {{- end }}
+            {{- if .Values.otel.resourceAttributes }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ .Values.otel.resourceAttributes | quote }}
+            {{- end }}
+            {{- if .Values.otel.tracesSampler }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .Values.otel.tracesSampler | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- if $apiKeysOn }}
+            - name: api-keys
+              mountPath: {{ .Values.apiKeys.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

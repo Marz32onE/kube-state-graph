@@ -1,0 +1,224 @@
+# Default values for kube-state-graph.
+# See README.md and the project CLAUDE.md for an explanation of each
+# server flag / env var. Every KSG_* env var listed at
+# https://github.com/marz32one/kube-state-graph can be set via .config or
+# .extraEnv below.
+
+# -- Number of API server replicas. The server is stateless (no in-process
+# result cache and no singleflight in v1), so horizontal scaling is safe.
+replicaCount: 1
+
+image:
+  # -- Container image repository.
+  repository: ghcr.io/marz32one/kube-state-graph
+  # -- Image tag. Falls back to Chart.appVersion when empty.
+  tag: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets attached to the pod spec.
+imagePullSecrets: []
+
+# -- Override the chart name used in resource names. Defaults to ".Chart.Name".
+nameOverride: ""
+# -- Fully override the generated fullname. When set, resource names are
+# this verbatim (no release-name prefix).
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Whether to create a dedicated ServiceAccount.
+  create: true
+  # -- ServiceAccount name. When empty and create=true, defaults to the
+  # chart fullname.
+  name: ""
+  # -- Annotations applied to the ServiceAccount.
+  annotations: {}
+
+# -- Extra annotations applied to the Deployment's pod template.
+podAnnotations: {}
+# -- Extra labels applied to the Deployment's pod template.
+podLabels: {}
+
+# -- Pod-level security context. Defaults match the distroless:nonroot
+# runtime baked into the image.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context. The image is distroless:nonroot
+# with a read-only ENTRYPOINT, so the rootfs can stay read-only.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # -- Service type. Use NodePort for local kind dev, ClusterIP everywhere else.
+  type: ClusterIP
+  # -- Service port (the port clients dial).
+  port: 8080
+  # -- NodePort to expose when service.type=NodePort. 0 lets the API server
+  # allocate one automatically.
+  nodePort: 0
+  # -- Annotations applied to the Service.
+  annotations: {}
+
+ingress:
+  # -- Enable an Ingress in front of the API.
+  enabled: false
+  # -- Ingress class name (e.g. "nginx").
+  className: ""
+  # -- Ingress annotations.
+  annotations: {}
+  # -- Host rules. Each entry: { host: <hostname>, paths: [{ path, pathType }] }.
+  hosts: []
+  # -- TLS settings. Each entry: { secretName, hosts: [...] }.
+  tls: []
+
+# -- Compute resources. Empty by default — pick a request/limit pair that
+# matches your build-timeout and upstream PromQL fan-out load.
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+# -- Node selector.
+nodeSelector: {}
+# -- Tolerations.
+tolerations: []
+# -- Affinity rules.
+affinity: {}
+
+# -- Topology spread constraints. Useful for multi-zone HA.
+topologySpreadConstraints: []
+
+# -- Optional PodDisruptionBudget. Enable when running >1 replica behind
+# an Ingress / Service that requires availability during voluntary drains.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# -- Optional HorizontalPodAutoscaler. Each /v1/graph request runs a full
+# upstream fan-out, so CPU-based autoscaling is reasonable.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# Core server config. Maps 1:1 to KSG_* env vars.
+config:
+  # -- Upstream Prometheus-compatible URL (KSG_PROM_URL). REQUIRED.
+  promURL: ""
+  # -- HTTP listen address (KSG_LISTEN_ADDR).
+  # NOTE: the chart hard-codes containerPort 8080 and probes target the
+  # named port "http". If you change the port here (e.g. ":9090"), liveness
+  # and readiness will fail because the container still exposes 8080. To
+  # use a non-8080 port, also override the Deployment via extraVolumes /
+  # postRenderer, or open an issue to make this fully parametric.
+  listenAddr: ":8080"
+  # -- Per-build context timeout for /v1/graph (KSG_BUILD_TIMEOUT, e.g. "15s").
+  # Empty leaves the binary default in place.
+  buildTimeout: ""
+  # -- Per-request timeout for non-graph endpoints (KSG_API_TIMEOUT, e.g. "5s").
+  apiTimeout: ""
+  # -- Substring used to flag external endpoints (KSG_EXTERNAL_NAME_PATTERN).
+  # e.g. "://" treats any client/server label containing it as an external node.
+  externalNamePattern: ""
+  # -- Log level (KSG_LOG_LEVEL): debug, info, warn, error.
+  logLevel: "info"
+
+apiKeys:
+  # -- Reference an existing Secret holding API keys. When set, takes
+  # precedence over .apiKeys.keys. The Secret MUST hold a single key whose
+  # value is the API-keys file (one key per line, # comments allowed).
+  existingSecret: ""
+  # -- Data key inside the referenced/created Secret holding the keys file.
+  existingSecretKey: "keys"
+  # -- Inline API keys. One entry per accepted key. When non-empty AND
+  # existingSecret is empty, the chart creates a Secret with these literals.
+  # NOT for production — manage real keys out-of-band and pass via
+  # existingSecret. Leave both fields empty to disable auth (dev only).
+  keys: []
+  # -- File reload interval (KSG_API_KEYS_RELOAD_INTERVAL). Empty disables.
+  reloadInterval: "30s"
+  # -- Mount path for the keys file. KSG_API_KEYS_FILE is set to
+  # "<mountPath>/<existingSecretKey>".
+  mountPath: /etc/kube-state-graph/api-keys
+
+# OpenTelemetry export. All env vars below are passed verbatim; the binary
+# reads them via the official OTel env-var contract (no bespoke flags).
+# Leave .otel.enabled=false to disable export (server falls back to no-op
+# providers — zero export overhead, no background goroutines).
+otel:
+  enabled: false
+  # -- OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).
+  endpoint: ""
+  # -- OTLP protocol (OTEL_EXPORTER_OTLP_PROTOCOL): grpc | http/protobuf.
+  protocol: "grpc"
+  # -- OTLP insecure (OTEL_EXPORTER_OTLP_INSECURE).
+  insecure: true
+  # -- Service name (OTEL_SERVICE_NAME).
+  serviceName: "kube-state-graph"
+  # -- Resource attributes (OTEL_RESOURCE_ATTRIBUTES), comma-separated.
+  resourceAttributes: ""
+  # -- Trace sampler (OTEL_TRACES_SAMPLER).
+  tracesSampler: "parentbased_always_on"
+
+# -- Extra env vars merged in after the chart-managed ones (these win on conflict).
+extraEnv: []
+  # - name: FOO
+  #   value: "bar"
+# -- Extra envFrom sources (configMapRef / secretRef).
+extraEnvFrom: []
+# -- Extra volumes mounted onto the pod.
+extraVolumes: []
+# -- Extra volume mounts attached to the server container.
+extraVolumeMounts: []
+
+# Liveness / readiness probes. The server exposes /livez and /readyz on the
+# main listener; both are exempt from API-key auth (see D11).
+livenessProbe:
+  httpGet:
+    path: /livez
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+  successThreshold: 1
+
+# Optional Prometheus Operator ServiceMonitor. Targets the /metrics endpoint
+# (which is exempt from API-key auth) and scrapes the kube_state_graph_* and
+# go_* / promhttp_* series.
+serviceMonitor:
+  enabled: false
+  # -- Namespace for the ServiceMonitor. Empty = same namespace as the release.
+  namespace: ""
+  # -- Scrape interval.
+  interval: 30s
+  # -- Scrape timeout.
+  scrapeTimeout: 10s
+  # -- Extra labels (often the Prometheus Operator's release selector).
+  labels: {}
+  # -- Per-endpoint relabelings.
+  relabelings: []
+  metricRelabelings: []

@@ -1,0 +1,46 @@
+kube-state-graph release {{ .Release.Name }} installed in namespace {{ .Release.Namespace }}.
+
+1. Wait for the Deployment to roll out:
+
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "kube-state-graph.fullname" . }}
+
+2. Reach the API:
+{{- if eq .Values.service.type "NodePort" }}
+{{- if gt (int .Values.service.nodePort) 0 }}
+
+     http://<node-ip>:{{ .Values.service.nodePort }}/v1/clusters
+{{- else }}
+
+     export NODE_PORT=$(kubectl -n {{ .Release.Namespace }} get svc {{ include "kube-state-graph.fullname" . }} -o jsonpath='{.spec.ports[0].nodePort}')
+     http://<node-ip>:$NODE_PORT/v1/clusters
+{{- end }}
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "kube-state-graph.fullname" . }}
+     # wait for EXTERNAL-IP then: http://<external-ip>:{{ .Values.service.port }}/v1/clusters
+{{- else }}
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kube-state-graph.fullname" . }} 8080:{{ .Values.service.port }}
+     # then: http://localhost:8080/v1/clusters
+{{- end }}
+
+{{- if include "kube-state-graph.apiKeysEnabled" . }}
+
+3. API-key auth is enabled. Send `X-API-Key: <key>` on every /v1/* call.
+{{- if .Values.apiKeys.existingSecret }}
+   Keys come from the existing Secret "{{ .Values.apiKeys.existingSecret }}" (key "{{ .Values.apiKeys.existingSecretKey }}").
+{{- else }}
+   Keys provisioned via the chart Secret "{{ include "kube-state-graph.apiKeySecretName" . }}".
+   Rotate via `helm upgrade --set-file apiKeys.keys=...` or by switching to apiKeys.existingSecret.
+{{- end }}
+{{- else }}
+
+3. API-key auth is DISABLED. /v1/* is open to anyone who can reach the Service.
+   Set `apiKeys.existingSecret` or `apiKeys.keys` before exposing this to anything but local dev.
+{{- end }}
+
+{{- if not .Values.config.promURL }}
+
+WARNING: config.promURL is empty. The server defaults to http://localhost:8428 and will fail readiness.
+Set --set config.promURL=http://victoria-metrics.<ns>.svc:8428 (or your VictoriaMetrics URL) before relying on the API.
+{{- end }}

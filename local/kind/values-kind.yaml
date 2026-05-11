@@ -1,0 +1,60 @@
+# Helm values overlay for the local kind rig under local/kind/.
+#
+# Use with:
+#   helm upgrade --install kube-state-graph charts/kube-state-graph/ \
+#     --namespace kube-state-graph \
+#     --values local/kind/values-kind.yaml
+#
+# This file pins values to match the legacy manifest at
+# local/kind/manifests/30-api-server.yaml so a Helm-based install is a
+# drop-in replacement for `kubectl apply -f local/kind/manifests/`.
+#
+# Notes:
+# - The image is built locally and loaded into kind by bootstrap.sh; we keep
+#   imagePullPolicy=Never so the kubelet never tries to fetch it from a
+#   registry.
+# - The API-keys Secret (kube-state-graph-api-keys) is already provisioned
+#   by local/kind/manifests/05-api-key-secret.yaml, so we reference it via
+#   apiKeys.existingSecret rather than letting the chart create one.
+# - NodePort 30080 keeps host-side http://localhost:30080 working (the kind
+#   config maps the worker node's 30080 onto host port 30080).
+
+fullnameOverride: kube-state-graph
+
+image:
+  repository: localhost/kube-state-graph/server
+  tag: dev
+  pullPolicy: Never
+
+service:
+  type: NodePort
+  port: 8080
+  nodePort: 30080
+
+config:
+  promURL: http://victoria-metrics.kube-state-graph.svc:8428
+  listenAddr: ":8080"
+  externalNamePattern: "://"
+  logLevel: info
+
+apiKeys:
+  # Pre-provisioned by manifests/05-api-key-secret.yaml — chart does NOT
+  # create a Secret in this overlay.
+  existingSecret: kube-state-graph-api-keys
+  existingSecretKey: keys
+  reloadInterval: 30s
+  mountPath: /etc/kube-state-graph/api-keys
+
+otel:
+  enabled: true
+  endpoint: http://alloy.kube-state-graph.svc:4317
+  protocol: grpc
+  insecure: true
+  serviceName: kube-state-graph
+  resourceAttributes: deployment.environment=kind-local,cluster=kind-local
+  tracesSampler: parentbased_always_on
+
+# The kind worker is single-node and tiny; leave resources unset and rely
+# on Pod-level QoS BestEffort. Production overlays should set explicit
+# requests/limits.
+resources: {}

@@ -1,6 +1,7 @@
 .PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down kind-redeploy kind-restart local-up local-down local-redeploy local-restart local-smoke smoke clean \
         docker-build docker-push docker-buildx docker-load-kind docker-run docker-docs docker-docs-stop \
-        init init-go init-tools init-hooks doctor mocks verify-mocks tools-versions
+        init init-go init-tools init-hooks doctor mocks verify-mocks tools-versions \
+        helm-lint helm-template helm-install-kind helm-uninstall-kind
 
 BIN_DIR := bin
 BIN     := $(BIN_DIR)/kube-state-graph
@@ -201,6 +202,39 @@ kind-restart local-restart:
 
 smoke local-smoke:
 	./local/kind/smoke.sh
+
+## ---------------------------------------------------------------------------
+## Helm chart (charts/kube-state-graph/).
+##
+## The chart is a deployable artefact; tests do not depend on it.
+## CI should run `make helm-lint` (and ideally `helm-template`) on changes
+## under charts/.
+
+CHART_DIR := charts/kube-state-graph
+
+helm-lint:
+	helm lint $(CHART_DIR)
+	helm lint $(CHART_DIR) --values local/kind/values-kind.yaml
+
+## Render the chart to stdout for both default and kind overlays. Useful
+## as a smoke test before committing template changes.
+helm-template:
+	@echo "==> default values"
+	helm template kube-state-graph $(CHART_DIR) --namespace kube-state-graph \
+		--set config.promURL=http://victoria-metrics:8428 >/dev/null
+	@echo "==> local/kind overlay"
+	helm template kube-state-graph $(CHART_DIR) --namespace kube-state-graph \
+		--values local/kind/values-kind.yaml >/dev/null
+	@echo "OK"
+
+## Install / upgrade kube-state-graph into the existing kind cluster using
+## the in-repo chart. Assumes `make kind-up` already created the supporting
+## resources (namespace, Secret, VictoriaMetrics, Alloy, ...). Re-runnable.
+helm-install-kind:
+	./local/kind/helm-install.sh
+
+helm-uninstall-kind:
+	helm uninstall kube-state-graph --namespace kube-state-graph
 
 clean:
 	rm -rf $(BIN_DIR) coverage.out
