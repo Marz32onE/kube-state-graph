@@ -762,6 +762,36 @@ GET /v1/graph                               (otelgin server span)
 
 If `tracerProvider.Shutdown` or `loggerProvider.Shutdown` returns context-deadline-exceeded, the local stderr handler logs `otlp shutdown timed out` and the process exits with a non-zero status. The exporter SHALL NOT extend the grace period — operators rely on K8s `terminationGracePeriodSeconds` matching `--shutdown-grace-period`.
 
+### D26. Configurable upstream metric-name prefix
+
+Some deployments expose kube-state-metrics-shaped series under an organisational prefix — a fork of kube-state-metrics, a custom collector that re-publishes the same series, or a multi-tenant pipeline that namespaces metrics per tenant (`o11y_kube_pod_info`, `acme_kube_node_info`, etc.). To support those without forking KSG, the API server prepends a single configurable prefix to every kube-state-metrics-shaped series name it queries.
+
+**Configuration**: `KSG_METRIC_PREFIX` env var or `--metric-prefix` flag (flag wins). Default is empty string — bit-identical to current behaviour. Validated against the Prometheus metric-name charset `^[a-zA-Z_:][a-zA-Z0-9_:]*$` when non-empty; invalid value fails startup. The trailing underscore is the operator's responsibility (`KSG_METRIC_PREFIX=o11y_` not `o11y`); the server does not inject one, so callers can produce both `o11y_kube_pod_info` and `o11ykube_pod_info` shapes if a real exporter genuinely needs the latter.
+
+**Scope**: applied to every `kube_*` series the topology reader consumes — `kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels` — plus the `kube_node_info`-backed cluster-discovery query. NOT applied to `traces_service_graph_request_total` (Alloy/Tempo-family — different exporter, will not share a kube-state-metrics prefix) or to the Prometheus-native `up{}` readiness probe.
+
+**Label-name contract**: only the metric *name* is prefixed. The label set the reader expects (`cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`, `host_ip`, `persistentvolumeclaim`, `claim_name`, `volume`, `label_*`, `address`, `type`) is the kube-state-metrics contract and is NOT configurable. A custom exporter that wants to be consumed by KSG MUST mimic both the metric-name suffix (`kube_pod_info` etc., after stripping the prefix) AND the label set. This is documented as the "exporter compatibility contract" in `docs/operations.md`.
+
+**Implementation**: `promql.Renderer{Prefix string}` with a `Render(q Query, window) string` method. `build.Builder` and `api.Server` each hold a `Renderer` constructed from `config.Config.MetricPrefix` at startup; the package-level `promql.Render` is preserved as a zero-prefix convenience for tests that do not care about the prefix axis. Threading the renderer through constructors (rather than re-reading `Config.MetricPrefix` at every callsite) localises the wiring and keeps the existing `promql.Render(q, window)` signature available for pure unit tests.
+
+**Why a single prefix instead of per-metric overrides**:
+
+- Real custom exporters that re-publish KSM-shaped series consistently use one organisational prefix; per-metric naming divergence is uncommon enough to defer.
+- Single env var keeps the operator workflow simple and the Secret-mount surface flat.
+- If a real exporter ships with mixed names (e.g. `myorg_pods` + `myorg_pvcs`), a follow-up change can promote `Renderer` to a per-query name map without breaking the v1 contract — additive expansion.
+
+**Why prefix is additive (not full rename)**:
+
+- The 80 % case is "wrap stock series under an org prefix". Forcing operators to spell out the full name for every metric (`--metric-pod-info=o11y_kube_pod_info`) is verbose and error-prone for the common case.
+- The label-name contract is unchanged regardless, so a prefix-only knob accurately matches the supported deformation.
+
+**Alternatives considered**:
+
+- **Per-metric name overrides (4 flags)**: rejected for v1 — no concrete user, deferred to a follow-up if a real exporter forces non-prefix naming. Easy to add additively later.
+- **Full YAML mapping config (names + label keys)**: rejected — over-engineered. Label-name divergence is not a known requirement; if it ever lands, a separate config artifact is justified, not a flag.
+- **Stripped-then-templated (`{prefix}kube_pod_info` template strings)**: rejected — same effect as additive prefix, more code, fewer affordances for tests.
+- **Apply the prefix to the service-graph metric too**: rejected — different exporter family (Alloy/Tempo), realistic operators won't unify the prefix across both. A separate `KSG_SERVICE_GRAPH_METRIC` knob can ship in a follow-up change if a real deployment ever surfaces.
+
 - Why no bespoke `--otlp-*` flags: every operator who already runs an OTel-instrumented service is configured by the standard env vars; introducing a parallel CLI surface forks the operator workflow for no benefit.
 - Why no in-process result cache implications: D6 still holds — the build always runs. Tracing only adds visibility; it does not change ETag determinism (resource attributes are not in the response body).
 - Why log to *both* stderr and OTLP: the binary must remain useful in `kubectl logs` even when the OTel collector is down. Fan-out keeps the stderr stream intact.

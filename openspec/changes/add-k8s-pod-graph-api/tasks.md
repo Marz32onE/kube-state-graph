@@ -421,3 +421,53 @@ Per design D25 and `specs/otlp-observability/spec.md`. Wires OpenTelemetry traci
 - [x] 29.G.1 In `cmd/kube-state-graph/main.go` shutdown sequence, after `http.Server.Shutdown(ctx)` returns, call `telemetry.Shutdown(ctx)` (the closure from 29.B.6) using the same context with the existing `--shutdown-grace-period` deadline.
 - [x] 29.G.2 If `telemetry.Shutdown` returns an error, log it via the local stderr handler (NOT through the slog OTLP bridge — the bridge is being torn down) and exit with status 1.
 - [x] 29.G.3 Component test: simulate a SIGTERM with a working in-memory collector → buffered spans flushed within grace period; with a blackhole collector → process exits with status 1 within the grace period (no extension). (Implemented in-process via `internal/telemetry/shutdown_test.go`: `TestShutdown_FlushesPendingSpans` uses a custom `recordingExporter` plus a 1 h `WithBatchTimeout` so the batcher cannot auto-flush; asserts `Shutdown` drains queued spans before returning. `TestShutdown_NoopWhenDisabled` covers the no-op path; `TestShutdown_ContextDeadlineRespected` proves an expired context does not block the call. Subprocess-level SIGTERM exit-code coverage left for a future shell-level integration test.)
+
+## 30. Configurable upstream metric-name prefix
+
+Per design D26 and the "Configurable upstream metric-name prefix" requirement in `specs/cluster-topology-source/spec.md`. Adds a single additive prefix knob so deployments using a fork of kube-state-metrics or a custom exporter that re-publishes KSM-shaped series under an organisational prefix (e.g. `o11y_kube_pod_info`) can be supported without forking the API server. The prefix is empty by default — bit-identical behaviour to today.
+
+### 30.A Config surface
+
+- [ ] 30.A.1 Add `MetricPrefix string` to `config.Config` in `internal/config/config.go`. Default `""` in `Defaults()`.
+- [ ] 30.A.2 Bind env var `KSG_METRIC_PREFIX` in `applyEnv` (string getter).
+- [ ] 30.A.3 Bind flag `--metric-prefix` in `Parse` with help text describing the additive semantics and example `o11y_`.
+- [ ] 30.A.4 Add validation in `Config.Validate`: when non-empty, must match `^[a-zA-Z_:][a-zA-Z0-9_:]*$` (Prometheus metric-name charset). Error message includes `metric-prefix` so operators can grep.
+- [ ] 30.A.5 Unit tests in `internal/config/config_test.go`: default empty, env wins over default, flag wins over env, valid prefix accepted (`o11y_`, `acme_`), invalid prefix rejected (`o11y-bad!`, `1starts_with_digit`).
+
+### 30.B Renderer in `internal/promql`
+
+- [ ] 30.B.1 Add `Renderer struct { Prefix string }` and method `func (r Renderer) Render(q Query, window time.Duration) string` in `internal/promql/queries.go`. Apply `r.Prefix` to: `QPodInfo`, `QNodeInfo`, `QNodeAddresses`, `QPVCBindings`, `QNodeLabels`, `QClusterDiscovery`. Do NOT apply to `QServiceGraphTotal` or `QUpProbe`.
+- [ ] 30.B.2 Keep the existing package-level `Render(q, window)` as a thin shim that delegates to `Renderer{}.Render(q, window)` (zero-prefix back-compat for tests that don't care).
+- [ ] 30.B.3 Update `queries_test.go`: table-driven assertions for both empty and non-empty prefix across all six prefixed queries, plus a negative assertion that `Render(QServiceGraphTotal)` and `Render(QUpProbe)` are unaffected by prefix.
+- [ ] 30.B.4 The `Query` string constants stay as the bare names (used as the `query` label on self-metrics + the `kube_state_graph.query_name` span attribute). Prefix affects only the rendered PromQL string, not the metric/span dimension.
+
+### 30.C Thread through Builder + Server
+
+- [ ] 30.C.1 Add `r promql.Renderer` field to `build.Builder`. Construct it from `cfg.MetricPrefix` inside `build.New` so callers do not need to change their argument lists.
+- [ ] 30.C.2 Replace every `promql.Render(promql.Q...)` callsite in `internal/build/topology.go`, `internal/build/servicegraph.go`, and `internal/build/build.go` (`upProbe`) with `b.r.Render(...)` — except `QServiceGraphTotal` and `QUpProbe` may continue to use the package-level `Render` since they are not prefixed anyway. For consistency, route them through `b.r.Render` too (the renderer is a no-op on those queries).
+- [ ] 30.C.3 Add `r promql.Renderer` field to `api.Server`. Construct from `cfg.MetricPrefix` inside `api.New`. Replace `promql.Render(promql.QClusterDiscovery, ...)` in `handlers.go` and `promql.Render(promql.QUpProbe, ...)` in `handleReadyz` with `s.r.Render(...)`.
+- [ ] 30.C.4 `ReadTopology` and `ReadServiceGraph` currently take `q promql.Querier` and `window` directly — pass the renderer in too (extra parameter) rather than re-reading from a `Builder` receiver, since these are package-level functions. Plumb through from `Builder.Build`.
+
+### 30.D Wire main.go
+
+- [ ] 30.D.1 No change required to `cmd/kube-state-graph/main.go` aside from logging the prefix in the startup banner (`logger.Info("starting kube-state-graph", ..., "metric_prefix", cfg.MetricPrefix)`) for operator visibility.
+
+### 30.E Integration + golden coverage
+
+- [ ] 30.E.1 In `internal/integration/graph_e2e_test.go`, add ONE new subtest that ingests a `kube_pod_info` series under the name `o11y_kube_pod_info` (plus the matching `o11y_kube_node_info` etc.), starts the API with `cfg.MetricPrefix = "o11y_"`, and asserts the resulting graph contains the expected pod node. Other existing subtests stay on the default empty prefix.
+- [ ] 30.E.2 Verify `internal/api/server_happy_test.go` substring-matchers (`"last_over_time(kube_pod_info"`, `"last_over_time(kube_node_info"`) keep working when the default prefix is empty. No test code change needed — the substring is still present in the rendered query when prefix is `""`.
+- [ ] 30.E.3 Add one focused `internal/api/handlers_test.go` (or sibling) case that constructs a Server with `cfg.MetricPrefix = "o11y_"`, calls `/v1/clusters`, and asserts the mock querier saw a query string containing `o11y_kube_node_info`. Uses `newMockQuerier` with a fixture keyed on `"o11y_kube_node_info"`.
+- [ ] 30.E.4 Golden tests: golden bodies are unaffected because the prefix lives entirely upstream of the response shape — only confirm `make test` still passes with no `-update`.
+
+### 30.F Docs + operator notes
+
+- [ ] 30.F.1 Add a `KSG_METRIC_PREFIX` / `--metric-prefix` entry to the env-var / flag table in `README.md` (and `README.zh-tw.md` if present) under the upstream configuration section.
+- [ ] 30.F.2 Add an "Exporter compatibility contract" subsection to `docs/operations.md` that lists: (a) supported metric-name suffix list (the six `kube_*` series + `cluster_discovery`); (b) the required label set per metric (mirror the spec); (c) the additive nature of the prefix; (d) the explicit non-coverage of `traces_service_graph_request_total` and `up{}`.
+- [ ] 30.F.3 Add a bullet to the "Load-bearing design rules" section of `CLAUDE.md`: "Metric-name prefix is an additive `KSG_METRIC_PREFIX` knob applied to KSM-shaped series only; the metric-name suffix and label-name set are a fixed contract (see D26)."
+- [ ] 30.F.4 Document in `docs/operations.md` that the prefix is NOT applied to `traces_service_graph_request_total` (Alloy/Tempo family) or `up{}` (Prometheus-native), and that a separate knob can ship in a follow-up if a deployment needs it.
+
+### 30.G Validation
+
+- [ ] 30.G.1 Run `openspec validate "add-k8s-pod-graph-api"`.
+- [ ] 30.G.2 Run `make test`, `make vet`, `make lint`.
+- [ ] 30.G.3 Verify `make verify-mocks` clean (no interface signature changes — `promql.Querier` is unchanged).

@@ -21,10 +21,16 @@ type ServiceGraphResult struct {
 
 // ReadServiceGraph fetches service-graph series for the window and joins
 // each endpoint against the supplied topology, applying the
-// KSG_EXTERNAL_NAME_PATTERN substitution rule.
+// KSG_EXTERNAL_NAME_PATTERN substitution rule. The Renderer is accepted for
+// signature symmetry with ReadTopology — the configurable metric-name prefix
+// is NOT applied to traces_service_graph_request_total (different exporter
+// family, see design.md D26), so r is effectively a no-op here today; passing
+// it through future-proofs the wiring should a follow-up change introduce a
+// service-graph prefix knob.
 func ReadServiceGraph(
 	ctx context.Context,
 	q promql.Querier,
+	r promql.Renderer,
 	window time.Duration,
 	end time.Time,
 	externalPattern string,
@@ -32,7 +38,7 @@ func ReadServiceGraph(
 ) (ServiceGraphResult, error) {
 	vec, err := q.Instant(ctx,
 		string(promql.QServiceGraphTotal),
-		promql.Render(promql.QServiceGraphTotal, window),
+		r.Render(promql.QServiceGraphTotal, window),
 		end,
 	)
 	if err != nil {

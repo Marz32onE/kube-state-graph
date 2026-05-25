@@ -297,7 +297,7 @@ func (s *Server) handleClusters(c *gin.Context) {
 }
 
 func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
-	q := promql.Render(promql.QClusterDiscovery, promql.ClusterDiscoveryLookback)
+	q := s.r.Render(promql.QClusterDiscovery, promql.ClusterDiscoveryLookback)
 	vec, err := s.prom.Instant(ctx, string(promql.QClusterDiscovery), q, s.clk.Now().UTC())
 	if err != nil {
 		return nil, err
@@ -384,7 +384,7 @@ func (s *Server) handleLivez(c *gin.Context) {
 func (s *Server) handleReadyz(c *gin.Context) {
 	probeCtx, cancel := context.WithTimeout(c.Request.Context(), s.cfg.APITimeout)
 	defer cancel()
-	_, err := s.prom.Instant(probeCtx, string(promql.QUpProbe), promql.Render(promql.QUpProbe, 0), s.clk.Now().UTC())
+	_, err := s.prom.Instant(probeCtx, string(promql.QUpProbe), s.r.Render(promql.QUpProbe, 0), s.clk.Now().UTC())
 	if err != nil {
 		writeError(c, http.StatusServiceUnavailable, "upstream_unreachable", err.Error())
 		return

@@ -99,6 +99,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 | `--api-keys` | `KSG_API_KEYS` | （空） | 逗號分隔字面 key；僅 dev 用途，設了 `--api-keys-file` 即忽略。 |
 | `--api-keys-reload-interval` | `KSG_API_KEYS_RELOAD_INTERVAL` | `30s` | `--api-keys-file` 重新讀取頻率；`0` 關閉熱重載。 |
 | `--log-level` | `KSG_LOG_LEVEL` | `info` | `debug \| info \| warn \| error`。 |
+| `--metric-prefix` | `KSG_METRIC_PREFIX` | （空） | 附加在拓樸 reader 查詢的 kube-state-metrics 系列名稱前的前綴（例如 `o11y_` → `o11y_kube_pod_info`）。**不**影響 `traces_service_graph_request_total` 或 `up{}`。詳見 [exporter 相容性合約](docs/operations.md#exporter-compatibility-contract)。 |
 
 ## 文件
 

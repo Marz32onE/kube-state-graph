@@ -57,33 +57,35 @@ type Topology struct {
 }
 
 // ReadTopology runs the five topology queries in parallel and assembles the
-// result.
-func ReadTopology(ctx context.Context, q promql.Querier, window time.Duration, end time.Time) (Topology, error) {
+// result. The Renderer carries the configurable upstream metric-name prefix
+// (see design.md D26) so deployments using a fork of kube-state-metrics or a
+// custom exporter that re-publishes KSM-shaped series can be supported.
+func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, window time.Duration, end time.Time) (Topology, error) {
 	var podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QPodInfo), promql.Render(promql.QPodInfo, window), end)
+		v, err := q.Instant(ctx, string(promql.QPodInfo), r.Render(promql.QPodInfo, window), end)
 		podVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeInfo), promql.Render(promql.QNodeInfo, window), end)
+		v, err := q.Instant(ctx, string(promql.QNodeInfo), r.Render(promql.QNodeInfo, window), end)
 		nodeVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeAddresses), promql.Render(promql.QNodeAddresses, window), end)
+		v, err := q.Instant(ctx, string(promql.QNodeAddresses), r.Render(promql.QNodeAddresses, window), end)
 		addrVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QPVCBindings), promql.Render(promql.QPVCBindings, window), end)
+		v, err := q.Instant(ctx, string(promql.QPVCBindings), r.Render(promql.QPVCBindings, window), end)
 		pvcVec = v
 		return err
 	})
 	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeLabels), promql.Render(promql.QNodeLabels, window), end)
+		v, err := q.Instant(ctx, string(promql.QNodeLabels), r.Render(promql.QNodeLabels, window), end)
 		labelVec = v
 		return err
 	})

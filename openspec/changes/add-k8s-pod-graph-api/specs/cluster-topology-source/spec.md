@@ -34,6 +34,37 @@ The topology reader SHALL consume at minimum the following `kube-state-metrics` 
 - **WHEN** the upstream contains `kube_pod_info` and `kube_node_info` but no `kube_node_labels` series for the window
 - **THEN** the reader produces a valid topology with empty `labels` maps on node entities and does not fail the build
 
+### Requirement: Configurable upstream metric-name prefix
+
+The topology reader SHALL prepend a single configurable prefix to every `kube_*` series name it queries, so deployments using a fork of kube-state-metrics or a custom exporter that re-publishes the same series under an organisational prefix (e.g. `o11y_kube_pod_info`) can be supported without forking the API server. The prefix SHALL be sourced from the `KSG_METRIC_PREFIX` environment variable or the `--metric-prefix` flag (flag wins over env when both are set). The default value SHALL be the empty string, preserving stock kube-state-metrics behaviour. The prefix SHALL be additive — appended verbatim before the existing series name; the existing `kube_*` suffix and the upstream label-name contract (`cluster`, `namespace`, `pod`, `uid`, `node`, `persistentvolumeclaim`, `label_*`, etc.) are unchanged. The prefix SHALL be validated against the Prometheus metric-name charset `^[a-zA-Z_:][a-zA-Z0-9_:]*$` when non-empty; an invalid value SHALL fail server startup. The trailing underscore (if any) is the operator's responsibility — the server does not inject one.
+
+The same prefix SHALL apply to every kube-state-metrics-shaped series the reader consumes: `kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels`, and the `kube_node_info`-backed cluster discovery query. The prefix SHALL NOT be applied to `traces_service_graph_request_total` (which is produced by a different exporter family) nor to the Prometheus-native `up{}` readiness probe.
+
+#### Scenario: Default empty prefix preserves stock series names
+
+- **WHEN** the server starts without `KSG_METRIC_PREFIX` or `--metric-prefix`
+- **THEN** every topology query string contains the bare `kube_*` series name (e.g. `last_over_time(kube_pod_info[<window>])`) and no prefix is added
+
+#### Scenario: Custom prefix from environment
+
+- **WHEN** the server starts with `KSG_METRIC_PREFIX=o11y_`
+- **THEN** the issued topology PromQL contains `last_over_time(o11y_kube_pod_info[<window>])`, `last_over_time(o11y_kube_node_info[<window>])`, `last_over_time(o11y_kube_node_status_addresses{type="ExternalIP"}[<window>])`, `last_over_time(o11y_kube_pod_spec_volumes_persistentvolumeclaims_info[<window>])`, and `last_over_time(o11y_kube_node_labels[<window>])`, AND the cluster-discovery query becomes `group by (cluster) (last_over_time(o11y_kube_node_info[<lookback>]))`
+
+#### Scenario: Prefix does not affect service-graph or probe queries
+
+- **WHEN** the server starts with `KSG_METRIC_PREFIX=o11y_`
+- **THEN** the service-graph reader still queries `rate(traces_service_graph_request_total[<window>])` (no prefix) and the `/readyz` probe still issues `up` (no prefix)
+
+#### Scenario: Flag overrides environment variable
+
+- **WHEN** the server starts with `KSG_METRIC_PREFIX=acme_` in the environment and `--metric-prefix=beta_` on the command line
+- **THEN** the resulting topology queries reference `beta_kube_pod_info` and not `acme_kube_pod_info`
+
+#### Scenario: Invalid prefix charset rejected at startup
+
+- **WHEN** the server starts with `KSG_METRIC_PREFIX="o11y-bad!"`
+- **THEN** `config.Validate` returns an error containing `metric-prefix` and the process exits non-zero before binding the listener
+
 ### Requirement: Time-window evaluation
 
 Each topology query SHALL be evaluated at the caller-supplied `end` timestamp using `last_over_time(<series>[<window>]) @ <end>` so the result reflects the most recent value of each series within the requested window. The reader SHALL NOT fall back to instant evaluation at `now`.

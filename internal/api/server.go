@@ -28,6 +28,7 @@ type Server struct {
 	cfg     config.Config
 	builder *build.Builder
 	prom    promql.Querier
+	r       promql.Renderer
 	metrics *observability.Metrics
 	logger  *slog.Logger
 	keys    auth.Validator
@@ -35,7 +36,11 @@ type Server struct {
 }
 
 // New wires up a Server. keys may be nil to run with API-key authentication
-// disabled. clk may be nil; nil falls back to clock.System.
+// disabled. clk may be nil; nil falls back to clock.System. The Renderer is
+// derived from cfg.MetricPrefix so the cluster-discovery + readiness
+// (`up{}`) queries the Server issues on its own (independent of the build
+// pipeline) honour the configured upstream metric-name prefix
+// (see design.md D26).
 func New(cfg config.Config, builder *build.Builder, prom promql.Querier, m *observability.Metrics, logger *slog.Logger, keys auth.Validator, clk clock.Clock) *Server {
 	if clk == nil {
 		clk = clock.System{}
@@ -47,6 +52,7 @@ func New(cfg config.Config, builder *build.Builder, prom promql.Querier, m *obse
 		cfg:     cfg,
 		builder: builder,
 		prom:    prom,
+		r:       promql.Renderer{Prefix: cfg.MetricPrefix},
 		metrics: m,
 		logger:  logger,
 		keys:    keys,

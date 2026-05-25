@@ -26,6 +26,58 @@ func TestRender_NodeAddressesIncludesExternalIPSelector(t *testing.T) {
 	assert.Contains(t, got, `type="ExternalIP"`)
 }
 
+// TestRenderer_PrefixApplied covers the additive metric-name prefix knob
+// (design.md D26) across every kube-state-metrics-shaped query plus the
+// cluster-discovery query that wraps kube_node_info.
+func TestRenderer_PrefixApplied(t *testing.T) {
+	cases := []struct {
+		name   string
+		q      Query
+		window time.Duration
+		want   string
+	}{
+		{"pod-info", QPodInfo, time.Minute, "last_over_time(o11y_kube_pod_info[1m])"},
+		{"node-info", QNodeInfo, time.Minute, "last_over_time(o11y_kube_node_info[1m])"},
+		{"node-addresses", QNodeAddresses, time.Minute, `last_over_time(o11y_kube_node_status_addresses{type="ExternalIP"}[1m])`},
+		{"pvc-bindings", QPVCBindings, time.Minute, "last_over_time(o11y_kube_pod_spec_volumes_persistentvolumeclaims_info[1m])"},
+		{"node-labels", QNodeLabels, time.Minute, "last_over_time(o11y_kube_node_labels[1m])"},
+		{"cluster-discovery", QClusterDiscovery, time.Hour, "group by (cluster) (last_over_time(o11y_kube_node_info[1h]))"},
+	}
+	r := Renderer{Prefix: "o11y_"}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, r.Render(tc.q, tc.window))
+		})
+	}
+}
+
+// TestRenderer_PrefixNotAppliedToServiceGraphOrUp asserts the negative
+// scope rule: the configurable prefix targets only kube-state-metrics-shaped
+// series. Service-graph metrics (Alloy/Tempo family) and the Prometheus-native
+// `up{}` readiness probe MUST be unaffected.
+func TestRenderer_PrefixNotAppliedToServiceGraphOrUp(t *testing.T) {
+	r := Renderer{Prefix: "o11y_"}
+	sg := r.Render(QServiceGraphTotal, time.Minute)
+	assert.Equal(t, "rate(traces_service_graph_request_total[1m])", sg)
+	assert.NotContains(t, sg, "o11y_", "prefix must NOT apply to service-graph metric")
+
+	up := r.Render(QUpProbe, 0)
+	assert.Equal(t, "up", up)
+	assert.NotContains(t, up, "o11y_", "prefix must NOT apply to up{} probe")
+}
+
+// TestRender_ZeroPrefixIdenticalToBareNames pins the back-compat contract:
+// the package-level Render is a zero-prefix Renderer; a deployment that
+// leaves MetricPrefix empty issues bit-identical PromQL to the pre-D26
+// behaviour.
+func TestRender_ZeroPrefixIdenticalToBareNames(t *testing.T) {
+	r := Renderer{}
+	assert.Equal(t, Render(QPodInfo, time.Minute), r.Render(QPodInfo, time.Minute))
+	assert.Equal(t, Render(QNodeInfo, time.Minute), r.Render(QNodeInfo, time.Minute))
+	assert.Equal(t, Render(QClusterDiscovery, time.Hour), r.Render(QClusterDiscovery, time.Hour))
+	assert.Contains(t, r.Render(QPodInfo, time.Minute), "kube_pod_info")
+}
+
 func TestFormatDuration(t *testing.T) {
 	cases := map[time.Duration]string{
 		0:                "0s",

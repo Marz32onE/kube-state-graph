@@ -235,6 +235,43 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 	}
 }
 
+// TestMetricPrefix_ResolvesPrefixedSeries covers design.md D26 end-to-end
+// against a real VictoriaMetrics container: ingest a topology under an
+// `o11y_`-prefixed metric-name family, start the API with
+// `cfg.MetricPrefix="o11y_"`, and assert the resulting graph contains the
+// pod node. Without the prefix knob the build would issue queries for stock
+// `kube_pod_info` / `kube_node_info` which the fixture deliberately does NOT
+// publish, so an empty graph would result.
+func (s *GraphSuite) TestMetricPrefix_ResolvesPrefixedSeries() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+
+	exposition := fmt.Sprintf(`# HELP o11y_kube_pod_info dummy
+o11y_kube_pod_info{cluster="cluster-prefix",namespace="ops",pod="prefixed-pod",uid="prefix-uid-1",node="worker-x",test=%q} 1 %d
+o11y_kube_node_info{cluster="cluster-prefix",node="worker-x",test=%q} 1 %d
+`,
+		disc, t1,
+		disc, t1,
+	)
+	s.IngestExpFmt(exposition)
+	s.Require().True(
+		s.WaitForSeries(`o11y_kube_pod_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested o11y_kube_pod_info",
+	)
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {
+		cfg.MetricPrefix = "o11y_"
+	})
+	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("cluster", "cluster-prefix") }))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	s.Contains(bodyStr, `"id":"cluster-prefix/prefix-uid-1"`,
+		"pod resolved from o11y_-prefixed topology series")
+	s.Contains(bodyStr, `"name":"prefixed-pod"`)
+}
+
 func (s *GraphSuite) TestAPIKey_FileBacked_Enforced() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
 

@@ -22,17 +22,27 @@ import (
 // multi-cluster Graph for one bucketed time window.
 type Builder struct {
 	q       promql.Querier
+	r       promql.Renderer
 	cfg     config.Config
 	metrics *observability.Metrics
 	clk     clock.Clock
 }
 
 // New constructs a Builder. clk may be nil; nil falls back to clock.System.
+// The Renderer is derived from cfg.MetricPrefix and held on the Builder so
+// every PromQL query the build pipeline issues picks up the configured
+// upstream metric-name prefix (see design.md D26).
 func New(q promql.Querier, cfg config.Config, m *observability.Metrics, clk clock.Clock) *Builder {
 	if clk == nil {
 		clk = clock.System{}
 	}
-	return &Builder{q: q, cfg: cfg, metrics: m, clk: clk}
+	return &Builder{
+		q:       q,
+		r:       promql.Renderer{Prefix: cfg.MetricPrefix},
+		cfg:     cfg,
+		metrics: m,
+		clk:     clk,
+	}
 }
 
 // Build runs all upstream queries for [end - window, end] and returns the
@@ -46,7 +56,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	)
 	defer span.End()
 
-	topology, err := ReadTopology(ctx, b.q, window, end)
+	topology, err := ReadTopology(ctx, b.q, b.r, window, end)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -66,7 +76,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 		}
 	}
 
-	sg, err := ReadServiceGraph(ctx, b.q, window, end, b.cfg.ExternalNamePattern, topology)
+	sg, err := ReadServiceGraph(ctx, b.q, b.r, window, end, b.cfg.ExternalNamePattern, topology)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -158,7 +168,7 @@ func (b *Builder) upProbe(ctx context.Context) (bool, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, b.cfg.APITimeout)
 	defer cancel()
 	vec, err := b.q.Instant(probeCtx, string(promql.QUpProbe),
-		promql.Render(promql.QUpProbe, 0), b.clk.Now().UTC())
+		b.r.Render(promql.QUpProbe, 0), b.clk.Now().UTC())
 	if err != nil {
 		return false, err
 	}

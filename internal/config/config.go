@@ -5,9 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// metricPrefixPattern enforces the Prometheus metric-name charset
+// (https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels).
+// Empty MetricPrefix is allowed and bypasses this check.
+var metricPrefixPattern = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
 
 // Config holds the parsed runtime configuration for the kube-state-graph server.
 type Config struct {
@@ -20,6 +26,11 @@ type Config struct {
 	APIKeys               string
 	APIKeysReloadInterval time.Duration
 	LogLevel              string
+	// MetricPrefix is prepended verbatim to every kube-state-metrics-shaped
+	// series name the topology reader queries (and to the cluster-discovery
+	// query). Empty (the default) preserves stock kube-state-metrics behaviour.
+	// See design.md D26.
+	MetricPrefix string
 }
 
 // LookupEnvFunc matches os.LookupEnv signature so tests can inject env values.
@@ -37,6 +48,7 @@ func Defaults() Config {
 		APIKeys:               "",
 		APIKeysReloadInterval: 30 * time.Second,
 		LogLevel:              "info",
+		MetricPrefix:          "",
 	}
 }
 
@@ -56,6 +68,7 @@ func Parse(args []string, lookup LookupEnvFunc) (Config, error) {
 	fs.StringVar(&cfg.APIKeys, "api-keys", cfg.APIKeys, "Comma-separated list of accepted API keys. Used when --api-keys-file is unset.")
 	fs.DurationVar(&cfg.APIKeysReloadInterval, "api-keys-reload-interval", cfg.APIKeysReloadInterval, "How often to re-read --api-keys-file. Set to 0 to disable hot reload.")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, error.")
+	fs.StringVar(&cfg.MetricPrefix, "metric-prefix", cfg.MetricPrefix, "Additive prefix prepended to every kube-state-metrics-shaped series name the topology reader queries (e.g. \"o11y_\" → o11y_kube_pod_info). Empty (default) preserves stock kube-state-metrics behaviour. Trailing underscore is the operator's responsibility — none is injected. Does not affect traces_service_graph_request_total or up{}.")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -89,6 +102,7 @@ func applyEnv(cfg *Config, lookup LookupEnvFunc) {
 	getStr("KSG_API_KEYS", &cfg.APIKeys)
 	getDur("KSG_API_KEYS_RELOAD_INTERVAL", &cfg.APIKeysReloadInterval)
 	getStr("KSG_LOG_LEVEL", &cfg.LogLevel)
+	getStr("KSG_METRIC_PREFIX", &cfg.MetricPrefix)
 }
 
 // Validate checks Config invariants.
@@ -113,6 +127,9 @@ func (c Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("invalid log-level: %q", c.LogLevel)
+	}
+	if c.MetricPrefix != "" && !metricPrefixPattern.MatchString(c.MetricPrefix) {
+		return fmt.Errorf("invalid metric-prefix %q: must match %s", c.MetricPrefix, metricPrefixPattern)
 	}
 	return nil
 }

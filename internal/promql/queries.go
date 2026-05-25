@@ -7,6 +7,11 @@ import (
 
 // Query identifies one of the PromQL templates the build pipeline issues.
 // The name is also used as the `query` label on self-metrics.
+//
+// The constant values are the bare upstream metric names (kube-state-metrics
+// naming). At render time a configurable prefix may be prepended via
+// Renderer; the Query string itself is not rewritten so that self-metric and
+// span dimensions stay stable across deployments that differ only by prefix.
 type Query string
 
 const (
@@ -24,32 +29,55 @@ const (
 // discovery. Sized to absorb transient KSM scrape gaps; not configurable.
 const ClusterDiscoveryLookback = time.Hour
 
+// Renderer renders Query templates to PromQL strings, optionally prepending
+// Prefix to every kube-state-metrics-shaped metric name. The prefix is
+// additive — it is not applied to the service-graph metric
+// (`traces_service_graph_request_total`, produced by a different exporter
+// family) or to the Prometheus-native readiness probe (`up`).
+//
+// Zero value (`Renderer{}`) preserves stock kube-state-metrics behaviour.
+type Renderer struct {
+	Prefix string
+}
+
 // Render returns the PromQL string for the named query, parameterised by
-// `window` (the bucketed end-start).
-func Render(q Query, window time.Duration) string {
+// `window` (the bucketed end-start) and prefixed per r.Prefix where
+// applicable.
+func (r Renderer) Render(q Query, window time.Duration) string {
 	w := FormatDuration(window)
 
 	switch q {
 	case QPodInfo:
-		return fmt.Sprintf(`last_over_time(kube_pod_info[%s])`, w)
+		return fmt.Sprintf(`last_over_time(%skube_pod_info[%s])`, r.Prefix, w)
 	case QNodeInfo:
-		return fmt.Sprintf(`last_over_time(kube_node_info[%s])`, w)
+		return fmt.Sprintf(`last_over_time(%skube_node_info[%s])`, r.Prefix, w)
 	case QNodeAddresses:
 		// External IP only; topology reader filters further if needed.
-		return fmt.Sprintf(`last_over_time(kube_node_status_addresses{type="ExternalIP"}[%s])`, w)
+		return fmt.Sprintf(`last_over_time(%skube_node_status_addresses{type="ExternalIP"}[%s])`, r.Prefix, w)
 	case QPVCBindings:
-		return fmt.Sprintf(`last_over_time(kube_pod_spec_volumes_persistentvolumeclaims_info[%s])`, w)
+		return fmt.Sprintf(`last_over_time(%skube_pod_spec_volumes_persistentvolumeclaims_info[%s])`, r.Prefix, w)
 	case QNodeLabels:
-		return fmt.Sprintf(`last_over_time(kube_node_labels[%s])`, w)
+		return fmt.Sprintf(`last_over_time(%skube_node_labels[%s])`, r.Prefix, w)
 	case QServiceGraphTotal:
-		// Service-graph metrics carry a single `cluster` label representing the
-		// trace source (client-side) cluster. Server-side cluster is recovered
-		// at build time via the topology pod-UID index, not via PromQL.
+		// Service-graph metrics come from Alloy/Tempo, not kube-state-metrics;
+		// the configurable prefix deliberately does NOT apply here. The metric
+		// carries a single `cluster` label representing the trace source
+		// (client-side) cluster; server-side cluster is recovered at build time
+		// via the topology pod-UID index, not via PromQL.
 		return fmt.Sprintf(`rate(traces_service_graph_request_total[%s])`, w)
 	case QClusterDiscovery:
-		return fmt.Sprintf(`group by (cluster) (last_over_time(kube_node_info[%s]))`, w)
+		return fmt.Sprintf(`group by (cluster) (last_over_time(%skube_node_info[%s]))`, r.Prefix, w)
 	case QUpProbe:
+		// Prometheus-native; the configurable prefix does not apply.
 		return `up`
 	}
 	return ""
+}
+
+// Render returns the PromQL string for the named query using a zero-prefix
+// Renderer. Retained for tests and existing callers that do not need a
+// configurable prefix; production code paths go through a Renderer held by
+// build.Builder / api.Server.
+func Render(q Query, window time.Duration) string {
+	return Renderer{}.Render(q, window)
 }

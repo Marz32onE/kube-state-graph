@@ -71,6 +71,7 @@ func run() error {
 		"build_timeout", cfg.BuildTimeout,
 		"api_timeout", cfg.APITimeout,
 		"external_name_pattern_set", cfg.ExternalNamePattern != "",
+		"metric_prefix", cfg.MetricPrefix,
 		"otlp_enabled", telemetryProviders.Enabled,
 	)
 

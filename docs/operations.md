@@ -194,6 +194,47 @@ The auth middleware **never** logs the value of a presented `X-API-Key`, includi
 - Default sampler is `parentbased_alwayson`; switch to `parentbased_traceidratio` for production fleets where every `/v1/graph` would otherwise emit a full trace.
 - `/livez`, `/readyz`, `/metrics`, and `/docs/*` are intentionally not traced. A 50-replica deployment would otherwise emit hundreds of useless probe spans per second.
 
+## Exporter compatibility contract
+
+`kube-state-graph` consumes a small, fixed set of upstream metric families. By default it expects stock kube-state-metrics naming. Deployments that re-publish the same series under an organisational prefix (a fork of KSM, a custom exporter, a multi-tenant pipeline) can configure a single additive prefix without forking the API server.
+
+### What is configurable
+
+| Knob | Env var | Flag | Default | Notes |
+|------|---------|------|---------|-------|
+| Metric-name prefix | `KSG_METRIC_PREFIX` | `--metric-prefix` | empty | Prepended verbatim to every kube-state-metrics-shaped series the topology reader queries. Trailing underscore is the operator's responsibility — none is injected. |
+
+Example: `KSG_METRIC_PREFIX=o11y_` causes the topology reader to query `o11y_kube_pod_info`, `o11y_kube_node_info`, etc. instead of the stock names.
+
+Validation: the prefix must match the Prometheus metric-name charset `^[a-zA-Z_:][a-zA-Z0-9_:]*$` when non-empty. Invalid values fail server startup with an error mentioning `metric-prefix`.
+
+### What is NOT configurable
+
+The prefix targets the metric-name **prefix** only. Everything else is a fixed contract a compatible exporter MUST honour:
+
+- **Metric-name suffix**: the topology reader queries the six families listed below (after stripping the prefix). An exporter that exposes the same data under a different suffix (e.g. `myorg_pods` instead of `myorg_kube_pod_info`) is NOT supported by the current knob.
+- **Label-name set**: each family must publish the labels the reader joins on. See the per-family list below.
+
+| Query identifier | Series the reader queries (with prefix `P`) | Required labels |
+|------------------|---------------------------------------------|-----------------|
+| `kube_pod_info` | `Pkube_pod_info` | `cluster`, `namespace`, `pod`, `uid`, `node`, optional `pod_ip`, `host_ip` |
+| `kube_node_info` | `Pkube_node_info` | `cluster`, `node` |
+| `kube_node_status_addresses` | `Pkube_node_status_addresses{type="ExternalIP"}` | `cluster`, `node`, `type`, `address` |
+| `kube_pod_spec_volumes_persistentvolumeclaims_info` | `Pkube_pod_spec_volumes_persistentvolumeclaims_info` | `cluster`, `namespace`, `pod`, `persistentvolumeclaim` (or `claim_name`), optional `volume` |
+| `kube_node_labels` | `Pkube_node_labels` | `cluster`, `node`, plus any `label_*` flattened Kubernetes labels |
+| `cluster_discovery` (`/v1/clusters`) | `group by (cluster) (last_over_time(Pkube_node_info[1h]))` | `cluster` |
+
+### Out of scope for the prefix knob
+
+The configurable prefix is **NOT** applied to:
+
+- **`traces_service_graph_request_total`** — produced by a different exporter family (Grafana Alloy / Tempo's `servicegraph` connector), so it is unlikely to share an org-wide kube-state-metrics prefix. A separate knob can ship in a follow-up change if a real deployment ever surfaces.
+- **`up{}`** — the Prometheus-native readiness probe is universal; prefixing it would break `/readyz` against any standard Prometheus / VictoriaMetrics deployment.
+
+### When the prefix knob is not enough
+
+If your custom exporter diverges on the metric-name suffix (not just the prefix) or on the label-name set, the current single-prefix knob will not suffice. Open an issue describing the exporter; per-metric overrides or full label remapping can be added additively in a future revision (see design.md D26 alternatives).
+
 ## Tuning notes
 
 - Increase `--build-timeout` only if upstream PromQL is slow; the default 15 s is generous for ≤ 5 k pods.
