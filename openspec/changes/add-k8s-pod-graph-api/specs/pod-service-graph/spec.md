@@ -100,9 +100,70 @@ The decision is per endpoint: a single edge MAY have a pod source and an externa
 - **WHEN** the configured pattern is `"://"` and a series has `client="checkout"` (no `://` in the value)
 - **THEN** the client endpoint resolves to a pod via `(cluster, client_k8s_pod_uid)` exactly as if the pattern were unset
 
+### Requirement: Missing pod-UID human-label fallback
+
+When a service-graph series lacks a pod UID for an endpoint (`client_k8s_pod_uid` or `server_k8s_pod_uid` is empty or absent) AND the corresponding human-readable label (`client` or `server`) is non-empty, the reader SHALL promote that endpoint to an **external** node derived from the human label, instead of dropping the edge.
+
+This fallback fires AFTER the external-pattern rule (`KSG_EXTERNAL_NAME_PATTERN`) and BEFORE the synthesised-pod fallback. It is unconditionally on (no knob) and SHALL apply symmetrically to client and server sides.
+
+For the affected endpoint, the reader SHALL produce a node with:
+
+- `id`     = `external/<label_value>`  (no cluster prefix — the endpoint is not a pod and has no cluster identity)
+- `name`   = `<label_value>` (verbatim — no normalisation, no trimming)
+- `type`   = `"external"`
+- `labels` = `{}` (empty map — no `cluster` key, no `pattern` key)
+
+The `external/<label_value>` ID is intentionally identical in shape to IDs produced by the `KSG_EXTERNAL_NAME_PATTERN` rule. Two upstream series whose label values collapse to the same ID (whether produced by the pattern rule, the missing-UID fallback, or one of each) SHALL resolve to a single external node in the output.
+
+The edge `labels.cluster` rule is unchanged: present (set to the metric's `cluster` label) when the **client** side resolves to a pod; omitted when the client side is external — whether the client became external via the pattern rule or via this missing-UID fallback.
+
+When BOTH the pod UID AND the human label are empty for an endpoint, the reader SHALL drop the edge (no identity remains to construct any node).
+
+The per-endpoint resolution order is:
+
+1. `KSG_EXTERNAL_NAME_PATTERN` substring match → external node (with `labels.pattern`).
+2. Pod-UID resolution against topology / synth-pod fallback (only when UID is non-empty).
+3. Missing-UID human-label fallback (this requirement; only when UID is empty AND label is non-empty).
+4. Drop (both UID and label empty).
+
+#### Scenario: Client UID missing, client label promoted to external
+
+- **WHEN** a service-graph series has `client="admin"`, `cluster="cluster-alpha"`, `server="rest-api"`, `server_k8s_pod_uid="abc"` (resolving to a pod with `cluster="cluster-alpha"`), and `client_k8s_pod_uid` is absent (empty string)
+- **THEN** the resulting edge has `type: "pod-calls-pod"`, `source: "external/admin"`, `target: "cluster-alpha/abc"`; the source node has `id: "external/admin"`, `name: "admin"`, `type: "external"`, no `cluster` key under its `labels`; and the **edge** `labels` map contains no `cluster` key (client side is external)
+
+#### Scenario: Server UID missing, server label promoted to external
+
+- **WHEN** a service-graph series has `client="checkout"`, `cluster="cluster-alpha"`, `client_k8s_pod_uid="abc"` (resolving to a pod), `server="payments"`, and `server_k8s_pod_uid` is absent
+- **THEN** the resulting edge has `target: "external/payments"`; the target node has `id: "external/payments"`, `name: "payments"`, `type: "external"`, no `cluster` key under its `labels`; and the edge has `labels.cluster: "cluster-alpha"` (the client side is still a pod)
+
+#### Scenario: Both UIDs missing, both human labels present
+
+- **WHEN** a series has `client="admin"`, `server="payments"`, `cluster="cluster-alpha"`, and both `client_k8s_pod_uid` and `server_k8s_pod_uid` are absent
+- **THEN** the resulting edge has `source: "external/admin"`, `target: "external/payments"`, edge `type: "pod-calls-pod"`, and the edge `labels` map contains no `cluster` key (client side is external)
+
+#### Scenario: Both UID and human label empty — edge dropped
+
+- **WHEN** a series has `client_k8s_pod_uid=""` AND `client=""` (or symmetrically empty server pair)
+- **THEN** no edge is emitted for that series and no node is synthesised for that endpoint
+
+#### Scenario: Pattern rule wins over missing-UID fallback
+
+- **WHEN** `KSG_EXTERNAL_NAME_PATTERN="://"` is set and a series has `client="http://api.example.com"` with `client_k8s_pod_uid` also empty
+- **THEN** the client side resolves to `external/http://api.example.com` via the pattern rule with `labels.pattern: "://"` set; the missing-UID fallback is NOT consulted (the pattern rule already produced the external node)
+
+#### Scenario: Pattern unset, UID present — fallback does not fire
+
+- **WHEN** `KSG_EXTERNAL_NAME_PATTERN=""` and a series has `client="checkout"` with `client_k8s_pod_uid="abc"`
+- **THEN** the client side resolves via pod-UID lookup (with the synth-pod fallback on topology miss); the missing-UID fallback is NOT consulted (UID is non-empty)
+
+#### Scenario: Pattern-matched and fallback-matched series produce the same external node
+
+- **WHEN** `KSG_EXTERNAL_NAME_PATTERN="admin"`, series A has `client="admin-cli"`, `client_k8s_pod_uid="some-uid"` (pattern matches, UID is non-empty but pattern wins), and series B has `client="admin-cli"`, `client_k8s_pod_uid=""` (UID empty, falls back)
+- **THEN** both series resolve their client side to the single node `id="external/admin-cli"`; the surviving node's `labels` are whichever the first observed series produced (the dedupe is by ID, not by labels — operators MUST NOT depend on a specific labels payload when both code paths reach the same ID)
+
 ### Requirement: Synthesised pod node fallback
 
-When a service-graph series references a pod-UID endpoint that does not appear in the topology produced for the same window, the reader SHALL synthesise a pod node and SHALL NOT drop the edge.
+When a service-graph series references a **non-empty** pod-UID endpoint that does not appear in the topology produced for the same window, the reader SHALL synthesise a pod node and SHALL NOT drop the edge. (Empty pod UIDs are handled by the "Missing pod-UID human-label fallback" requirement above, not by this rule.)
 
 For the **client** side, the synthesised pod uses the metric's `cluster` label as its cluster value: `id="<cluster>/<client_k8s_pod_uid>"`, `labels.cluster=<cluster>`.
 

@@ -471,3 +471,45 @@ Per design D26 and the "Configurable upstream metric-name prefix" requirement in
 - [ ] 30.G.1 Run `openspec validate "add-k8s-pod-graph-api"`.
 - [ ] 30.G.2 Run `make test`, `make vet`, `make lint`.
 - [ ] 30.G.3 Verify `make verify-mocks` clean (no interface signature changes — `promql.Querier` is unchanged).
+
+## 31. Missing pod-UID human-label fallback (pod-service-graph — modified)
+
+### 31.A Reader behaviour
+
+- [ ] 31.A.1 In `internal/build/servicegraph.go::resolveClientEndpoint`, after the `KSG_EXTERNAL_NAME_PATTERN` branch and before the existing `if podUID == "" { return "", false }` short-circuit, add a new branch: when `podUID == ""` AND `humanLabel != ""`, insert an `ExternalNode` (id=`graph.ExternalID(humanLabel)`, name=`humanLabel`, labels=`map[string]string{}`) into `externals` (idempotent — only insert when the id is not already present) and return `(extID, false)`. Reduce the existing `return "", false` to the case where both `podUID` and `humanLabel` are empty.
+- [ ] 31.A.2 Mirror the same change in `resolveServerEndpoint`: empty `podUID` + non-empty `humanLabel` → insert external node, return `extID`. Keep the empty-both case dropping (return `""`).
+- [ ] 31.A.3 Confirm the resulting rule order in both functions is exactly: (a) `KSG_EXTERNAL_NAME_PATTERN` substring match → external (existing); (b) UID-resolution / synth-pod fallback (existing, now explicitly gated on non-empty UID); (c) missing-UID human-label fallback (new branch); (d) drop. The pattern rule continues to win, so a series whose label matches the pattern AND has empty UID still produces an external node carrying `labels.pattern`.
+- [ ] 31.A.4 Confirm the existing edge-cluster-label aggregation in `parseServiceGraph` (`if agg.srcIsPod { labels["cluster"] = agg.srcCluster }`) still produces the desired output: the missing-UID fallback returns `srcIsPod=false`, so the edge omits `labels.cluster` automatically. No code change needed here — verify with the new tests in 31.B.1.
+- [ ] 31.A.5 Confirm the inserted `ExternalNode` from the fallback path is included in `ServiceGraphResult.ExternalNodes` (existing iteration over `externals` map at the bottom of `parseServiceGraph`). No code change needed; the existing map is the single source of truth.
+
+### 31.B Unit tests
+
+- [ ] 31.B.1 Add unit tests in `internal/build/servicegraph_test.go`:
+  - `TestParseServiceGraph_MissingClientUID_PromotesToExternal`: empty `client_k8s_pod_uid`, non-empty `client="admin"`, server-side pod resolvable → edge `source="external/admin"`, source `ExternalNode` in `ExternalNodes`, edge `labels` map contains no `cluster` key.
+  - `TestParseServiceGraph_MissingServerUID_PromotesToExternal`: empty `server_k8s_pod_uid`, non-empty `server="payments"`, client-side pod resolvable, `cluster="cluster-alpha"` → edge `target="external/payments"`, target `ExternalNode` in `ExternalNodes`, edge `labels.cluster="cluster-alpha"`.
+  - `TestParseServiceGraph_BothUIDsMissing_BothLabelsPresent`: both UIDs empty, both human labels present → external→external edge, edge `labels` map contains no `cluster` key, both nodes in `ExternalNodes`.
+  - `TestParseServiceGraph_UIDAndLabelBothEmpty_EdgeDropped`: client UID + client human label both empty → no edge, no node. Server-side variant in a sibling test.
+  - `TestParseServiceGraph_PatternWinsOverMissingUIDFallback`: `KSG_EXTERNAL_NAME_PATTERN="://"`, `client="http://api.example.com"`, `client_k8s_pod_uid=""` → external node carries `labels.pattern: "://"` (proves the pattern branch fired first).
+  - `TestParseServiceGraph_DedupeBetweenPatternAndFallback`: two series, one whose label matches the pattern with non-empty UID, another with the SAME human label but empty UID, both produce the same `external/<label>` id → single node in `ExternalNodes` (existing externals-map dedupe carries the new path).
+- [ ] 31.B.2 Strengthen the property test in `internal/graph/property_test.go` (or add a sibling) that for randomised service-graph fixtures, every emitted edge satisfies: `srcID != ""` AND `tgtID != ""`. With the fallback in place, missing-UID series no longer produce empty IDs, so the invariant should hold for any series whose `(client, server)` pair has at least one non-empty side per endpoint.
+
+### 31.C Component & golden tests
+
+- [ ] 31.C.1 Add a component test in `internal/api/` that injects a service-graph fixture with a UID-less client via `newMockQuerier(t, fixtureSet{...})` and asserts the `/v1/graph` response contains an `external` node with the human label as `name`, and the expected `pod-calls-pod` edge with no edge `labels.cluster` key.
+- [ ] 31.C.2 Add ONE new golden fixture covering the fallback shape under `internal/api/testdata/golden/` (do not mutate existing goldens to avoid mass churn). Run `go test ./internal/api/ -update -run Golden_MissingUIDFallback` (or similar single-name selector) once the fallback is implemented and the fixture stable.
+- [ ] 31.C.3 Confirm existing golden fixtures are byte-identical (no diff) after the change — the fallback only fires for empty UIDs which the current fixtures never produce, so no existing golden should move.
+
+### 31.D Spec, design, and docs
+
+- [ ] 31.D.1 Confirm `openspec/changes/add-k8s-pod-graph-api/specs/pod-service-graph/spec.md` contains the new "Missing pod-UID human-label fallback" requirement and the updated trigger language on "Synthesised pod node fallback" (i.e., "non-empty pod-UID endpoint").
+- [ ] 31.D.2 Confirm `openspec/changes/add-k8s-pod-graph-api/design.md` contains `D27. Missing pod-UID human-label fallback` and the corresponding risk bullet in "Risks / Trade-offs".
+- [ ] 31.D.3 Update `CLAUDE.md` "Load-bearing design rules": amend the existing "External-endpoint substitution rule" bullet (or add a sibling bullet) to note that missing `client_k8s_pod_uid` or `server_k8s_pod_uid` now promotes to `external/<label>` rather than dropping the edge; ID has no cluster prefix; edge `labels.cluster` rules unchanged.
+- [ ] 31.D.4 Update `docs/operations.md` "Exporter compatibility contract" to clarify that `client_k8s_pod_uid` and `server_k8s_pod_uid` are RECOMMENDED but no longer hard-required for an edge to appear — missing UID surfaces the dependency as an `external/<label>` node. Mirror in `docs/operations.zh-tw.md` if it exists.
+- [ ] 31.D.5 Update the OpenAPI / Scalar-rendered description for `/v1/graph` if the response-shape documentation explicitly states "every node is a pod resolved via pod UID" — replace with the per-endpoint resolution order from D27.
+
+### 31.E Validation
+
+- [ ] 31.E.1 Run `openspec validate "add-k8s-pod-graph-api"`.
+- [ ] 31.E.2 Run `make test`, `make vet`, `make lint`.
+- [ ] 31.E.3 Run `make verify-mocks` (no interface signatures changed — should be clean).
+- [ ] 31.E.4 Sanity-check the manual rig: with Beyla emitting at least one span whose `k8s.pod.uid` resource attr is intentionally stripped (or by ingesting a hand-crafted `traces_service_graph_request_total` series via the integration-test ingest helper), confirm `/v1/graph` contains an `external/<label>` node for that endpoint.

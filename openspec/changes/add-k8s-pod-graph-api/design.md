@@ -803,6 +803,47 @@ Some deployments expose kube-state-metrics-shaped series under an organisational
   - **Emit a typed numeric span attribute for ETag instead of a string** (rejected — semconv prefers strings for opaque identifiers; ETag is sha256-hex, not numeric).
   - **Run a parallel async pipeline that captures the build trace into a debug endpoint** (rejected — duplicates OTel functionality; ops teams already have a Collector + Tempo / Jaeger).
 
+### D27. Missing pod-UID human-label fallback
+
+Service-graph series occasionally arrive without `client_k8s_pod_uid` or `server_k8s_pod_uid` populated. Common producers:
+
+- **Beyla** auto-instrumentation that cannot resolve the `k8s.pod.uid` resource attribute for one side of a span (e.g., the calling process runs outside Kubernetes, or the resource-detection processor in Alloy missed it for that span batch).
+- **Application-level OpenTelemetry SDKs** whose authors did not configure the K8s resource detector and consequently emit spans without `k8s.pod.uid`.
+- **Mixed in-cluster / out-of-cluster traffic** where one peer is a CLI tool, a kubectl `port-forward`, or an off-cluster admin process with no pod identity at all.
+
+In v1 prior to this decision, such series were dropped entirely — `resolveClientEndpoint` and `resolveServerEndpoint` short-circuit on empty UID. The dependency disappeared from the graph even though the human-readable `client`/`server` labels still named the endpoint clearly.
+
+The chosen behaviour: when the pod UID for an endpoint is empty but the corresponding `client` (or `server`) string label is non-empty, the endpoint is promoted to an external node:
+
+- `id` = `external/<label_value>` (no cluster prefix — the endpoint is not a pod)
+- `name` = `<label_value>` (verbatim)
+- `type` = `"external"`
+- `labels` = `{}` (empty — no `cluster` key, no `pattern` key)
+
+Per-endpoint resolution order:
+
+1. `KSG_EXTERNAL_NAME_PATTERN` substring match → external (carries `labels.pattern`).
+2. Pod-UID lookup against topology / synthesised-pod fallback (only when UID is non-empty).
+3. Missing-UID human-label fallback (this decision; only when UID is empty AND human label is non-empty).
+4. Drop (both UID and label empty).
+
+Decision points:
+
+- **Always on, no knob.** Adding a config gate to revert to "drop edge" was considered and rejected — the prior drop behaviour was silent data loss, and operators already need an actionable signal when a producer regresses. A visible external node is strictly more useful than silence; if the resulting noise becomes a real problem for any deployment, a follow-up change can introduce a gate.
+- **Both sides, symmetric.** The same rule fires independently for client and server endpoints. A series with both UIDs missing and both labels present produces an `external→external` edge — consistent with the existing external-pattern rule's per-endpoint independence (D18).
+- **Reuses the `external/<label>` ID scheme.** Two series whose label values collide — one matched by `KSG_EXTERNAL_NAME_PATTERN`, the other surfaced via missing-UID fallback — resolve to the same node in the output. Intentional dedupe: the API consumer cares about the dependency edge, not its provenance.
+- **Edge `labels.cluster` rule unchanged.** When the client side is external (via pattern OR via this fallback), the edge `labels.cluster` is omitted. When the client side is still a pod and only the server fell back, the edge keeps `labels.cluster=<trace-source cluster>`.
+- **Drop only when both UID AND label are empty.** With no identity at all there is no node to emit. The edge is dropped silently (consistent with the v1 contract for fully-unidentified endpoints).
+- **No marker label on inferred externals.** Considered (`labels.source="missing_pod_uid"`) but rejected for v1 — adds a serialiser-visible discriminator the API consumer rarely needs, and makes dedupe semantics with pattern-matched externals (which carry `labels.pattern`) less predictable. A future revision MAY add it if observability into producer health becomes a priority.
+
+Alternatives considered:
+
+- **Drop edge on missing UID (status quo)**: rejected — silent data loss; operators routinely lose dependencies under known Beyla / Alloy resource-attribute regressions, and have no in-API signal to chase the producer.
+- **Synthesise a pod node from the human label**: rejected — invents a pod identity that does not exist (no cluster, no UID, no namespace). The endpoint is not a pod; modelling it as one violates the assumption that pod IDs are `<cluster>/<uid>` and confuses traversal / filtering downstream.
+- **Gate behind a new env var (e.g., `KSG_FALLBACK_MISSING_UID`)**: rejected for v1 — adds an opt-in knob with no clearly preferable default (off = silent loss, on = visible). Simpler to make the more useful behaviour unconditional and revisit if real noise emerges.
+- **New separate `unresolved/<label>` ID space**: rejected — adds a second external-like node type to document, serialise, and filter, for a distinction (declared vs inferred) the API consumer rarely needs at v1 scale. Reuse of `external/` keeps the node-type vocabulary closed.
+- **Surface a fix-the-producer error response instead**: rejected — the API server is a faithful relay, not a producer validator. Operators learn about the producer regression by seeing many `external/*` nodes appear in the graph; a single response-shape signal would be both noisy (per-request) and weaker (no per-endpoint visibility).
+
 ## Risks / Trade-offs
 
 - [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost; until then, ETag-based revalidation is the only amortisation lever.
@@ -819,6 +860,7 @@ Some deployments expose kube-state-metrics-shaped series under an organisational
 - [OTLP collector outage stalls slog bridge or trace export] → Both exporters use bounded `BatchSpanProcessor` / `BatchLogProcessor` queues; on persistent collector failure, the SDK drops the oldest batches and surfaces the failure via the SDK's internal error handler (logged through stderr, not through the bridge to avoid feedback loops). Local stderr logs remain unaffected.
 - [Trace span explosion on debug endpoints] → `/debug/*` routes are traced; document that operators should avoid scripting curl loops over them in production. Mitigation is at the Collector via tail sampling.
 - [`db.statement` attribute leaks tenant info via PromQL label matchers] → Document; operators with stricter policy disable tracing or strip the attribute at the Collector.
+- [Missing-UID fallback floods graph with `external/*` nodes on producer regression] → A Beyla / Alloy regression that strips `k8s.pod.uid` resource attributes will now surface as a wave of inferred `external/<client>` and `external/<server>` nodes instead of silently dropped edges. This is intentional — the alternative was silent data loss — but operators must treat a sudden growth of `type="external"` node count as a signal to investigate the trace pipeline rather than the API. See D27.
 
 ## Migration Plan
 
