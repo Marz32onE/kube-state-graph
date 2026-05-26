@@ -21,10 +21,11 @@ var update = flag.Bool("update", false, "update golden files")
 // responses for several canned scenarios so contract drift is caught on PR.
 func TestGolden_GraphResponses(t *testing.T) {
 	scenarios := map[string]graph.View{
-		"single-cluster":    buildSingleCluster(),
-		"two-cluster-cross": buildTwoClusterCross(),
-		"with-external":     buildWithExternal(),
-		"name-filter":       buildNameFilter(),
+		"single-cluster":       buildSingleCluster(),
+		"two-cluster-cross":    buildTwoClusterCross(),
+		"with-external":        buildWithExternal(),
+		"name-filter":          buildNameFilter(),
+		"missing-uid-fallback": buildMissingUIDFallback(),
 	}
 
 	for name, view := range scenarios {
@@ -97,6 +98,18 @@ func buildWithExternal() graph.View {
 	edge := graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, ext.IDValue, map[string]string{
 		"cluster": "cluster-alpha",
 	})
+	return graph.View{Nodes: []graph.GraphNode{pod, ext}, Edges: []*graph.Edge{edge}}
+}
+
+// buildMissingUIDFallback snapshots the D27 fallback shape: a service-graph
+// series whose client_k8s_pod_uid is empty surfaces as `external/<label>`
+// with an empty labels map (distinguishable from the pattern-matched
+// external case, which carries labels.pattern). The edge omits
+// labels.cluster because the client side is external.
+func buildMissingUIDFallback() graph.View {
+	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
+	ext := &graph.ExternalNode{IDValue: "external/admin", NameValue: "admin", LabelsValue: map[string]string{}}
+	edge := graph.NewEdge(graph.EdgeTypePodCallsPod, ext.IDValue, pod.IDValue, map[string]string{})
 	return graph.View{Nodes: []graph.GraphNode{pod, ext}, Edges: []*graph.Edge{edge}}
 }
 

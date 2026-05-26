@@ -231,6 +231,25 @@ The configurable prefix is **NOT** applied to:
 - **`traces_service_graph_request_total`** — produced by a different exporter family (Grafana Alloy / Tempo's `servicegraph` connector), so it is unlikely to share an org-wide kube-state-metrics prefix. A separate knob can ship in a follow-up change if a real deployment ever surfaces.
 - **`up{}`** — the Prometheus-native readiness probe is universal; prefixing it would break `/readyz` against any standard Prometheus / VictoriaMetrics deployment.
 
+### Service-graph metric label contract
+
+`traces_service_graph_request_total` is produced by Grafana Alloy /
+Tempo's `servicegraph` connector, not by kube-state-metrics. Its label set
+is summarised below; the K8s pod-UID dimensions are **RECOMMENDED** but no
+longer hard-required for an edge to appear in `/v1/graph`.
+
+| Label | Required? | Notes |
+|-------|-----------|-------|
+| `client`, `server` | yes (at least one per side) | Human-readable endpoint name. Used as the substitution input for `KSG_EXTERNAL_NAME_PATTERN` and as the fallback identity when the corresponding pod-UID dimension is empty. |
+| `client_k8s_pod_uid`, `server_k8s_pod_uid` | recommended | When populated, the reader resolves the endpoint to a pod via the global pod-UID index. When empty and the corresponding `client`/`server` label is non-empty, the endpoint surfaces as `external/<label>` (D27 missing-UID fallback). When BOTH the UID and the label are empty for an endpoint, the edge is dropped. |
+| `cluster` | yes | Trace-source / client-side cluster; required for the edge's `labels.cluster` field when the client side resolves to a pod. |
+| `client_k8s_namespace_name`, `server_k8s_namespace_name` | optional | Carried to synth pods when the UID-based lookup misses topology. |
+
+A sudden bloom of `type="external"` nodes whose names look like internal
+workloads is a signal to investigate the trace pipeline (Beyla resource
+detector, Alloy `k8sattributes` processor) — not the API. Before D27, such
+endpoints were silently dropped; the visible fallback is intentional.
+
 ### When the prefix knob is not enough
 
 If your custom exporter diverges on the metric-name suffix (not just the prefix) or on the label-name set, the current single-prefix knob will not suffice. Open an issue describing the exporter; per-metric overrides or full label remapping can be added additively in a future revision (see design.md D26 alternatives).

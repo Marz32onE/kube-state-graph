@@ -179,6 +179,23 @@ func resolveClientEndpoint(
 
 	// Pod-UID resolution. Client side knows its cluster from the metric.
 	if podUID == "" {
+		// Missing pod-UID human-label fallback (D27 / spec §"Missing pod-UID
+		// human-label fallback"). When the producer (typically Beyla / Alloy)
+		// failed to resolve k8s.pod.uid for this endpoint but the human label
+		// is still populated, promote to an external node rather than silently
+		// dropping the edge. No labels payload — the endpoint is not a pod
+		// (no cluster), and no pattern fired (no labels.pattern).
+		if humanLabel != "" {
+			extID := graph.ExternalID(humanLabel)
+			if _, ok := externals[extID]; !ok {
+				externals[extID] = &graph.ExternalNode{
+					IDValue:     extID,
+					NameValue:   humanLabel,
+					LabelsValue: map[string]string{},
+				}
+			}
+			return extID, false
+		}
 		return "", false
 	}
 	id = graph.PodID(cluster, podUID)
@@ -232,6 +249,20 @@ func resolveServerEndpoint(
 	// Pod-UID resolution. Server side recovers its cluster via the topology
 	// pod-UID index — the metric does not carry server_cluster.
 	if podUID == "" {
+		// Missing pod-UID human-label fallback (D27). Mirror of the client-side
+		// rule — promote to external/<label> when the producer dropped the
+		// UID but the human label survived.
+		if humanLabel != "" {
+			extID := graph.ExternalID(humanLabel)
+			if _, ok := externals[extID]; !ok {
+				externals[extID] = &graph.ExternalNode{
+					IDValue:     extID,
+					NameValue:   humanLabel,
+					LabelsValue: map[string]string{},
+				}
+			}
+			return extID
+		}
 		return ""
 	}
 	if pod, ok := podByUID[podUID]; ok {

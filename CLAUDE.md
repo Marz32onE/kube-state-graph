@@ -125,12 +125,26 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   the verbatim label as `name`. Per-endpoint independent — both sides of a
   single edge can be evaluated separately. Edge `type` stays `pod-calls-pod`.
   When the client side is external, the edge `labels.cluster` is omitted.
+- **Missing pod-UID human-label fallback** (D27, always on): when
+  `client_k8s_pod_uid` or `server_k8s_pod_uid` is empty AND the corresponding
+  `client`/`server` label is non-empty, that endpoint is promoted to
+  `external/<label>` (no cluster prefix; `labels={}`, no `pattern` key)
+  instead of dropping the edge. Per-endpoint resolution order:
+  (1) `KSG_EXTERNAL_NAME_PATTERN` match → external with `labels.pattern`;
+  (2) UID-based pod resolution / synth-pod fallback (only when UID is non-empty);
+  (3) missing-UID human-label fallback (this rule); (4) drop (both UID and label
+  empty). Edge `labels.cluster` rules are unchanged — omitted whenever the
+  client side resolves to an external node, whether via pattern or via this
+  fallback. The same `external/<label>` ID dedupes against pattern-matched
+  externals in the externals map.
 - **Server-side pod resolution** uses `Topology.PodsByUID` — a global pod-UID
   index built from all loaded clusters. Service-graph metrics carry only the
   trace-source `cluster` (client side); the server side's cluster is recovered
   by looking up `server_k8s_pod_uid` against this index, since K8s pod UIDs
-  are unique cross-cluster in practice. Missing UIDs become synth pods with
-  `cluster=""` (server-side cluster unknown).
+  are unique cross-cluster in practice. Missing UIDs (with non-empty server
+  label) follow the missing-UID fallback above; UIDs present but unknown
+  to topology become synth pods with `cluster=""` (server-side cluster
+  unknown).
 - **No filters pushed to PromQL.** Each build loads every cluster present in upstream VictoriaMetrics. Caller-supplied filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at projection time over the freshly built `*Graph`. Bounded query cost is delegated to upstream VictoriaMetrics search limits.
 - **`/v1/edge-types` reads from `graph.EdgeTypes` only** — a single in-code
   registry shared with the builder. Adding an edge type = update both the

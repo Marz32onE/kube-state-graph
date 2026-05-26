@@ -1,0 +1,40 @@
+{
+  "apiVersion": "v1",
+  "clusters": [
+    "cluster-alpha"
+  ],
+  "elements": {
+    "nodes": [
+      {
+        "data": {
+          "id": "cluster-alpha/p1",
+          "name": "checkout",
+          "type": "pod",
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "shop"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "external/admin",
+          "name": "admin",
+          "type": "external",
+          "labels": {}
+        }
+      }
+    ],
+    "edges": [
+      {
+        "data": {
+          "id": "93a2f25a-b472-54da-b8d2-55398dde8f8f",
+          "type": "pod-calls-pod",
+          "source": "external/admin",
+          "target": "cluster-alpha/p1",
+          "labels": {}
+        }
+      }
+    ]
+  }
+}
