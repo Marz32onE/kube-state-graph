@@ -3,6 +3,7 @@ package promql
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -58,6 +59,12 @@ func (c *Client) Instant(ctx context.Context, name, query string, ts time.Time) 
 	)
 	defer span.End()
 
+	slog.DebugContext(ctx, "promql query",
+		"name", name,
+		"query", query,
+		"ts", ts.UTC().Format(time.RFC3339),
+	)
+
 	start := time.Now()
 	defer func() {
 		c.metrics.UpstreamQueryDur.WithLabelValues(name).Observe(time.Since(start).Seconds())
@@ -67,6 +74,12 @@ func (c *Client) Instant(ctx context.Context, name, query string, ts time.Time) 
 		c.metrics.UpstreamQueryFail.WithLabelValues(name).Inc()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
+		slog.ErrorContext(ctx, "promql query failed",
+			"name", name,
+			"query", query,
+			"ts", ts.UTC().Format(time.RFC3339),
+			"err", err,
+		)
 		return nil, fmt.Errorf("prom query %s: %w", name, err)
 	}
 	vec, ok := val.(model.Vector)

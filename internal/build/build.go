@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -69,9 +70,19 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	// Outside-retention check: zero pods + healthy upstream ⇒ retention miss.
 	if len(topology.Pods) == 0 && len(topology.Nodes) == 0 {
 		if up, _ := b.upProbe(ctx); up {
-			err := NewError(ReasonOutsideRetention, "no topology rows in window; upstream healthy", nil)
+			startStr := end.Add(-window).UTC().Format(time.RFC3339)
+			endStr := end.UTC().Format(time.RFC3339)
+			msg := fmt.Sprintf("no topology rows in window [%s, %s] (window=%s); upstream healthy",
+				startStr, endStr, window)
+			err := NewError(ReasonOutsideRetention, msg, nil)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, string(ReasonOutsideRetention))
+			slog.WarnContext(ctx, "outside_retention",
+				"start", startStr,
+				"end", endStr,
+				"window", window.String(),
+				"metric_prefix", b.cfg.MetricPrefix,
+			)
 			return nil, err
 		}
 	}
