@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- build stage ---------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.26.2-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS build
 
 ARG TARGETOS
 ARG TARGETARCH
