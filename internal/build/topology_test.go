@@ -47,7 +47,7 @@ func TestParseTopology_MissingClusterBucketed(t *testing.T) {
 	assert.Contains(t, tp.ClustersObserved, "unknown")
 }
 
-func TestParseTopology_PodIPAndHostIPSurfaced(t *testing.T) {
+func TestParseTopology_PodIPAttribute(t *testing.T) {
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
 			"cluster":   "cluster-alpha",
@@ -62,9 +62,14 @@ func TestParseTopology_PodIPAndHostIPSurfaced(t *testing.T) {
 	})
 	tp := parseTopology(vec, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
-	labels := tp.Pods[0].Labels()
-	assert.Equal(t, "10.244.0.42", labels["pod_ip"])
-	assert.Equal(t, "10.0.0.7", labels["host_ip"])
+	pod := tp.Pods[0]
+	assert.Equal(t, []string{"10.244.0.42"}, pod.IPAddress(),
+		"pod_ip must surface as a top-level IPAddress attribute")
+	labels := pod.Labels()
+	_, hasPodIP := labels["pod_ip"]
+	_, hasHostIP := labels["host_ip"]
+	assert.False(t, hasPodIP, "pod_ip must not appear in labels")
+	assert.False(t, hasHostIP, "host_ip is dropped — it is the node's IP, not the pod's")
 }
 
 // kube-state-metrics emits multiple kube_pod_info series for a single pod-UID
@@ -101,9 +106,10 @@ func TestParseTopology_MergesSameUIDPartialLabels(t *testing.T) {
 	)
 	tp := parseTopology(vec, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
-	labels := tp.Pods[0].Labels()
-	assert.Equal(t, "10.244.0.42", labels["pod_ip"], "pod_ip must survive merge from richer sample")
-	assert.Equal(t, "10.0.0.7", labels["host_ip"], "host_ip must survive merge from richer sample")
+	pod := tp.Pods[0]
+	assert.Equal(t, []string{"10.244.0.42"}, pod.IPAddress(),
+		"pod_ip must survive merge from richer sample and surface on IPAddress")
+	labels := pod.Labels()
 	assert.Equal(t, "cluster-alpha/worker-0", labels["node"], "node must survive merge from richer sample")
 }
 
@@ -120,10 +126,7 @@ func TestParseTopology_PodIPAbsentWhenMetricMissing(t *testing.T) {
 	})
 	tp := parseTopology(vec, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
-	_, hasPodIP := tp.Pods[0].Labels()["pod_ip"]
-	_, hasHostIP := tp.Pods[0].Labels()["host_ip"]
-	assert.False(t, hasPodIP, "pod_ip should be absent when metric omits it")
-	assert.False(t, hasHostIP, "host_ip should be absent when metric omits it")
+	assert.Nil(t, tp.Pods[0].IPAddress(), "IPAddress should be nil when pod_ip is absent")
 }
 
 func TestParseTopology_K8sNodeLabelsFlattened(t *testing.T) {
@@ -140,7 +143,10 @@ func TestParseTopology_K8sNodeLabelsFlattened(t *testing.T) {
 	tp := parseTopology(nil, nodeVec, addrVec, nil, labelVec)
 	require.Len(t, tp.Nodes, 1)
 	n := tp.Nodes[0]
-	assert.Equal(t, "203.0.113.10", n.Labels()["external_ip"])
+	assert.Equal(t, []string{"203.0.113.10"}, n.IPAddress(),
+		"ExternalIP must surface on the K8sNode IPAddress attribute")
+	_, hasExternalIP := n.Labels()["external_ip"]
+	assert.False(t, hasExternalIP, "external_ip must not appear in labels")
 	assert.Equal(t, "us-east-1a", n.Labels()["topology.kubernetes.io/zone"])
 	assert.Equal(t, "amd64", n.Labels()["kubernetes.io/arch"])
 }

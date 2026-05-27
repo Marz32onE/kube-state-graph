@@ -126,6 +126,11 @@ components:
             properties:
                 id:
                     type: string
+                ipaddress:
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
                 labels:
                     additionalProperties:
                         type: string
@@ -310,7 +315,7 @@ paths:
     /v1/clusters:
         get:
             description: |-
-                Returns the set of clusters observed in `kube_node_info` over a fixed 1 h lookback. Each request hits VictoriaMetrics directly under `--api-timeout`. The response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match`.
+                Returns the set of clusters observed in `kube_node_info` over a fixed 1 h lookback. Each request hits VictoriaMetrics directly under `--api-timeout`.
 
                 <details><summary><b>Sample response</b></summary>
 
@@ -365,7 +370,7 @@ paths:
     /v1/edge-types:
         get:
             description: |-
-                Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with `Cache-Control: public, max-age=3600` and a stable `ETag`. Use this to validate the `edge_type` filter on `/v1/graph` and to drive UI legends.
+                Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with `Cache-Control: public, max-age=3600`. Use this to validate the `edge_type` filter on `/v1/graph` and to drive UI legends.
 
                 <details><summary><b>Edge type matrix</b></summary>
 
@@ -410,8 +415,6 @@ paths:
                 **Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, external).
 
                 **Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
-
-                **Caching**: response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match` and receive `304 Not Modified` when the body would be unchanged. No `Cache-Control` is emitted.
 
                 Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
 
@@ -573,7 +576,7 @@ paths:
             description: |-
                 Same underlying graph as `/v1/graph` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: `nodes_fields[]`, `nodes[]`, `edges_fields[]`, `edges[]`.
 
-                Filtering, traversal, and ETag semantics are identical to `/v1/graph` — see that endpoint for full details.
+                Filtering and traversal semantics are identical to `/v1/graph` — see that endpoint for full details.
 
                 Example: `GET /v1/graph/nodegraph?start=1746442800&end=1746446400&cluster=prod-eu&edge_type=pod-calls-pod&root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab&depth=3&direction=out`
 

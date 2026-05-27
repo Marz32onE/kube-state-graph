@@ -22,10 +22,11 @@ type cytoscapeNode struct {
 }
 
 type cytoscapeNodeData struct {
-	ID     string            `json:"id"`
-	Name   string            `json:"name"`
-	Type   string            `json:"type"`
-	Labels map[string]string `json:"labels"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Type      string            `json:"type"`
+	IPAddress []string          `json:"ipaddress,omitempty"`
+	Labels    map[string]string `json:"labels"`
 }
 
 type cytoscapeEdge struct {
@@ -49,10 +50,11 @@ func serialiseCytoscape(g *graph.Graph, view graph.View) cytoscapeBody {
 	for _, n := range view.Nodes {
 		body.Elements.Nodes = append(body.Elements.Nodes, cytoscapeNode{
 			Data: cytoscapeNodeData{
-				ID:     n.ID(),
-				Name:   n.Name(),
-				Type:   string(n.Type()),
-				Labels: n.Labels(),
+				ID:        n.ID(),
+				Name:      n.Name(),
+				Type:      string(n.Type()),
+				IPAddress: n.IPAddress(),
+				Labels:    n.Labels(),
 			},
 		})
 	}

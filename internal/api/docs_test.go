@@ -78,14 +78,13 @@ func TestOpenAPIYAMLEndpoint(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "application/yaml")
 	assert.Contains(t, resp.Header.Get("Cache-Control"), "max-age=3600")
-	assert.NotEmpty(t, resp.Header.Get("ETag"))
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "openapi:")
 }
 
-func TestOpenAPIJSONEndpoint_IfNoneMatch304(t *testing.T) {
+func TestOpenAPIJSONEndpoint(t *testing.T) {
 	q := newMockQuerier(t, nil)
 	s := newServerWithMocks(t, q, nil)
 	srv := httptest.NewServer(s.Handler())
@@ -93,14 +92,12 @@ func TestOpenAPIJSONEndpoint_IfNoneMatch304(t *testing.T) {
 
 	resp, err := http.Get(srv.URL + "/openapi.json")
 	require.NoError(t, err)
-	etag := resp.Header.Get("ETag")
-	resp.Body.Close()
-	require.NotEmpty(t, etag)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+	assert.Contains(t, resp.Header.Get("Cache-Control"), "max-age=3600")
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/openapi.json", nil)
-	req.Header.Set("If-None-Match", etag)
-	resp2, err := http.DefaultClient.Do(req)
+	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
-	assert.Equal(t, http.StatusNotModified, resp2.StatusCode)
+	assert.NotEmpty(t, body)
 }

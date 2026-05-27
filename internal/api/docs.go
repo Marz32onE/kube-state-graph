@@ -1,9 +1,7 @@
 package api
 
 import (
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"path"
@@ -28,11 +26,6 @@ func loadEmbedded(efs embed.FS, name string) []byte {
 	return b
 }
 
-func sha256Quoted(b []byte) string {
-	sum := sha256.Sum256(b)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
-}
-
 // handleOpenAPIYAML serves the embedded OpenAPI 3.0 spec in YAML form.
 //
 //	@Summary	OpenAPI spec (YAML)
@@ -42,13 +35,7 @@ func sha256Quoted(b []byte) string {
 //	@Router		/openapi.yaml [get]
 func (s *Server) handleOpenAPIYAML(c *gin.Context) {
 	body := loadEmbedded(openAPIFS, "static/openapi/openapi.yaml")
-	etag := sha256Quoted(body)
 	c.Header("Cache-Control", "public, max-age=3600")
-	c.Header("ETag", etag)
-	if c.GetHeader("If-None-Match") == etag {
-		c.Status(http.StatusNotModified)
-		return
-	}
 	c.Data(http.StatusOK, "application/yaml; charset=utf-8", body)
 }
 
@@ -61,13 +48,7 @@ func (s *Server) handleOpenAPIYAML(c *gin.Context) {
 //	@Router		/openapi.json [get]
 func (s *Server) handleOpenAPIJSON(c *gin.Context) {
 	body := loadEmbedded(openAPIFS, "static/openapi/openapi.json")
-	etag := sha256Quoted(body)
 	c.Header("Cache-Control", "public, max-age=3600")
-	c.Header("ETag", etag)
-	if c.GetHeader("If-None-Match") == etag {
-		c.Status(http.StatusNotModified)
-		return
-	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 

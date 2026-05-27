@@ -33,6 +33,7 @@ type podObs struct {
 	ts      model.Time
 	labels  map[string]string
 	nodeRaw string
+	podIP   string
 }
 
 // Topology is the typed result of reading kube-state-metrics-style series for
@@ -139,16 +140,18 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 			continue
 		}
 		labels := map[string]string{"cluster": cluster}
-		if ip, ok := externalIPs[[2]string{cluster, nodeName}]; ok {
-			labels["external_ip"] = ip
-		}
 		for k, v := range nodeLabels[[2]string{cluster, nodeName}] {
 			labels[k] = v
 		}
+		var ips []string
+		if ip, ok := externalIPs[[2]string{cluster, nodeName}]; ok && ip != "" {
+			ips = []string{ip}
+		}
 		nodes = append(nodes, &graph.K8sNode{
-			IDValue:     graph.K8sNodeID(cluster, nodeName),
-			NameValue:   nodeName,
-			LabelsValue: labels,
+			IDValue:        graph.K8sNodeID(cluster, nodeName),
+			NameValue:      nodeName,
+			LabelsValue:    labels,
+			IPAddressValue: ips,
 		})
 		clusters[cluster] = struct{}{}
 	}
@@ -171,12 +174,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		if nodeName != "" {
 			labels["node"] = graph.K8sNodeID(cluster, nodeName)
 		}
-		if ip := string(s.Metric["pod_ip"]); ip != "" {
-			labels["pod_ip"] = ip
-		}
-		if ip := string(s.Metric["host_ip"]); ip != "" {
-			labels["host_ip"] = ip
-		}
+		podIP := string(s.Metric["pod_ip"])
 		k := podKey{cluster, ns, name}
 		podGroups[k] = append(podGroups[k], podObs{
 			uid:     uid,
@@ -184,6 +182,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 			ts:      s.Timestamp,
 			labels:  labels,
 			nodeRaw: nodeName,
+			podIP:   podIP,
 		})
 		clusters[cluster] = struct{}{}
 	}
@@ -215,10 +214,25 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		// emitted PodNode reflects the most informative observation.
 		merged := mergeSameUIDLabels(group)
 		canonical := group[0]
+		// Pod IP is sourced from kube_pod_info.pod_ip. Newest sample wins; if
+		// the newest is empty (e.g. arrived before scheduling completed) we
+		// fall back to the most recent non-empty observation.
+		var podIP string
+		for _, obs := range group {
+			if obs.podIP != "" {
+				podIP = obs.podIP
+				break
+			}
+		}
+		var ips []string
+		if podIP != "" {
+			ips = []string{podIP}
+		}
 		canonicalPod := &graph.PodNode{
-			IDValue:     graph.PodID(k.cluster, canonical.uid),
-			NameValue:   k.pod,
-			LabelsValue: merged[canonical.uid],
+			IDValue:        graph.PodID(k.cluster, canonical.uid),
+			NameValue:      k.pod,
+			LabelsValue:    merged[canonical.uid],
+			IPAddressValue: ips,
 		}
 		pods = append(pods, canonicalPod)
 		addPodToIndex(canonical.uid, canonicalPod)

@@ -92,18 +92,16 @@ context.WithTimeout(ctx, --build-timeout)   ── graph endpoints only; deadlin
 graph.Project(g, scope)            ── filters + traversal applied here, NOT during build
    ▼
 serialiseCytoscape / serialiseGrafanaNodeGraph
-   ▼
-ETag = sha256(body); If-None-Match honoured for 304
 ```
 
-v1 has **no in-process result cache** and **no singleflight**. Each request runs a fresh upstream fan-out and recomputes the body. ETag is a **response validator** (RFC 9110 §8.8.3) used for **conditional GET / revalidation** (§13.1) — not a cache. The 304 path saves response-body bytes but does not save upstream PromQL evaluation. A future iteration is expected to add a horizontally scalable cache mechanism for distributed deployment (Redis L2, background materialiser, or graph DB) — tracked as a separate change.
+v1 has **no in-process result cache** and **no singleflight**. Each request runs a fresh upstream fan-out and recomputes the body. A future iteration is expected to add a horizontally scalable cache mechanism for distributed deployment (Redis L2, background materialiser, or graph DB) — tracked as a separate change.
 
 ### Load-bearing design rules
 
 These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 (D1–D19) before changing any of them.
 
-- **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at response time as a projection over the freshly built `*Graph`. ETag (sha256(body)) is a response validator for HTTP conditional GET, not a cache — revisit when the future cache mechanism (D6) lands.
+- **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at response time as a projection over the freshly built `*Graph`. A horizontally scalable cache mechanism for distributed deployment is anticipated but out of scope for v1.
 - **No time-window alignment, no window cap, no future-time guard.** `start` and `end` are passed through to upstream PromQL verbatim; only `end > start` is enforced. The previous 60 s `floor`/`ceil` grid was removed alongside the in-process cache it was bucketing for. Bounded query cost is delegated to upstream VictoriaMetrics search limits (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, `-search.maxSamplesPerQuery`). Response body is `{apiVersion, clusters, elements}` — no time fields are echoed.
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,
@@ -114,8 +112,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   resolved source-node and target-node `labels.cluster` — D9.
 - **Edge IDs are UUIDv5** with a fixed compiled-in namespace (`graph.edgeNamespace`)
   and the canonical input `<type>|<source>|<target>`. Stable across rebuilds —
-  required for golden tests and HTTP `ETag` reproducibility. Bumping the
-  namespace UUID is a v2 break.
+  required for golden tests. Bumping the namespace UUID is a v2 break.
 - **Cluster-scoped IDs everywhere.** Pods: `<cluster>/<uid>`, K8s nodes:
   `<cluster>/<node>`, PVCs: `<cluster>/<namespace>/<claim>`, externals:
   `external/<value>`. Node names are not globally unique without the prefix.
@@ -157,16 +154,19 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   `/docs/assets/*`. Validation is constant-time and iterates the whole set —
   do NOT add early-return optimisations to `auth.KeySet.Validate`. Logs must
   never include the presented key value.
-- **ETag determinism is load-bearing.** sha256(body) is stable iff the body is byte-identical for the same `(window, filters, upstream-data)`. Serialisers MUST sort node/edge slices (`graph.SortNodes`/`SortEdges`), `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Don't add timestamps, random IDs, or unsorted map iteration to the response without re-checking ETag stability.
-- **OTLP tracing/logging is config'd by OTel env vars only** (`OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`). No bespoke `--otlp-*` flags. Telemetry defaults to no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (zero export overhead, no background goroutines). Tracing MUST NOT alter response bodies or ETag determinism — resource attrs and span IDs live on spans, never in JSON. `otelgin` is mounted on `/v1/*` only; `/livez`, `/readyz`, `/metrics`, and `/docs/*` are deliberately untraced. The auth middleware MUST NEVER log or attribute the presented `X-API-Key` value via either the local handler or the OTLP slog bridge.
+- **Deterministic response body.** The serialiser produces byte-identical output for the same `(window, filters, upstream-data)`: node/edge slices MUST go through `graph.SortNodes`/`SortEdges`, `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Don't add timestamps, random IDs, or unsorted map iteration to the response — golden tests will break.
+- **IP addresses live on the typed `ipaddress` attribute, never in `labels`.** `PodNode.IPAddress()` carries `[pod_ip]` from `kube_pod_info` (when present). `K8sNode.IPAddress()` carries `[external_ip]` from `kube_node_status_addresses{type="ExternalIP"}` (when present). `PVCNode` and `ExternalNode` always return nil. `host_ip` from `kube_pod_info` is intentionally dropped — it is the node's IP, surfaced via the node entry instead. The serialiser emits `data.ipaddress` (with `omitempty`); `labels.pod_ip`, `labels.host_ip`, and `labels.external_ip` MUST NOT appear.
+- **OTLP tracing/logging is config'd by OTel env vars only** (`OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`). No bespoke `--otlp-*` flags. Telemetry defaults to no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (zero export overhead, no background goroutines). Tracing MUST NOT alter response bodies — resource attrs and span IDs live on spans, never in JSON. `otelgin` is mounted on `/v1/*` only; `/livez`, `/readyz`, `/metrics`, and `/docs/*` are deliberately untraced. The auth middleware MUST NEVER log or attribute the presented `X-API-Key` value via either the local handler or the OTLP slog bridge.
 - **Upstream metric-name prefix is an additive `KSG_METRIC_PREFIX` knob** applied to KSM-shaped series only (`kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels`, and the `kube_node_info`-backed cluster-discovery query). The prefix is prepended verbatim — trailing underscore is the operator's responsibility. NOT applied to `traces_service_graph_request_total` (different exporter family — Alloy/Tempo) or `up{}` (Prometheus-native). The metric-name suffix and the label-name set per series are a fixed contract any compatible exporter MUST honour; see design.md D26 and `docs/operations.md` § "Exporter compatibility contract". Threaded via `promql.Renderer{Prefix}` held on `build.Builder` and `api.Server`; the `Query` string constants remain bare so `query=` / `query_name=` dimensions on self-metrics and spans stay stable across deployments that differ only by prefix.
 
 ### Sealed graph types
 
 `graph.GraphNode` is a sealed interface (`isGraphNode()` unexported). Concrete
 types: `PodNode`, `K8sNode`, `PVCNode`, `ExternalNode`. All four expose
-`ID()`, `Name()`, `Type()`, `Labels()`. Serialisation goes through these
-methods — never through type switches in the serialiser.
+`ID()`, `Name()`, `Type()`, `Labels()`, `IPAddress()`. Serialisation goes
+through these methods — never through type switches in the serialiser.
+`IPAddress()` returns nil for `PVCNode` / `ExternalNode`; `PodNode` returns
+`[pod_ip]` when known; `K8sNode` returns `[external_ip]` when known.
 
 ### Test stack layers
 

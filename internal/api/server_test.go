@@ -65,7 +65,6 @@ func TestEdgeTypesEndpoint_StaticCatalogue(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Cache-Control"), "max-age=3600")
-	assert.NotEmpty(t, resp.Header.Get("ETag"))
 
 	var body struct {
 		APIVersion string `json:"apiVersion"`
@@ -84,24 +83,6 @@ func TestEdgeTypesEndpoint_StaticCatalogue(t *testing.T) {
 	for k, v := range want {
 		assert.Truef(t, v, "missing edge type %q", k)
 	}
-}
-
-func TestEdgeTypesEndpoint_IfNoneMatch304(t *testing.T) {
-	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-
-	resp, err := http.Get(srv.URL + "/v1/edge-types")
-	require.NoError(t, err)
-	etag := resp.Header.Get("ETag")
-	resp.Body.Close()
-
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/edge-types", nil)
-	req.Header.Set("If-None-Match", etag)
-	resp2, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp2.Body.Close()
-	assert.Equal(t, http.StatusNotModified, resp2.StatusCode)
 }
 
 func TestLivez(t *testing.T) {

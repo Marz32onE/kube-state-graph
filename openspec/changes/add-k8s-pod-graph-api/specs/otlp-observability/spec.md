@@ -34,14 +34,14 @@ The middleware SHALL extract the W3C `traceparent` and `tracestate` headers from
 
 The middleware SHALL NOT be installed on `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`, or `/docs/assets/*` so health probes and documentation requests do not generate spans.
 
-Each request span SHALL carry semantic-convention HTTP attributes (`http.request.method`, `http.route`, `url.scheme`, `url.path`, `server.address`, `server.port`, `client.address`, `user_agent.original`, `http.response.status_code`) and the response `ETag` value as `kube_state_graph.etag`.
+Each request span SHALL carry semantic-convention HTTP attributes (`http.request.method`, `http.route`, `url.scheme`, `url.path`, `server.address`, `server.port`, `client.address`, `user_agent.original`, `http.response.status_code`).
 
 When a handler returns a non-2xx status, the middleware SHALL set the span status to `Error` with the configured `build.Reason` string as the description, and SHALL NOT record the request body.
 
 #### Scenario: Inbound request creates a server span
 
 - **WHEN** a client sends `GET /v1/graph?start=...&end=...` with a valid API key and no inbound `traceparent`
-- **THEN** the server emits one server span named `GET /v1/graph` with attributes including `http.request.method=GET`, `http.route=/v1/graph`, `http.response.status_code=200`, and `kube_state_graph.etag=<the response ETag>`
+- **THEN** the server emits one server span named `GET /v1/graph` with attributes including `http.request.method=GET`, `http.route=/v1/graph`, and `http.response.status_code=200`
 
 #### Scenario: Inbound traceparent becomes the parent context
 

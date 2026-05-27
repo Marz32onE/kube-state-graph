@@ -15,12 +15,15 @@ const (
 // GraphNode is the sealed interface implemented by every node kind.
 //
 // Implementations expose the canonical wire fields directly so the API
-// serialiser can iterate without type switches.
+// serialiser can iterate without type switches. IPAddress carries the
+// observed IPv4/IPv6 strings for nodes that have them (pods → pod_ip,
+// K8s nodes → ExternalIP); other node kinds return nil.
 type GraphNode interface {
 	ID() string
 	Name() string
 	Type() NodeType
 	Labels() map[string]string
+	IPAddress() []string
 
 	isGraphNode()
 }
@@ -28,28 +31,32 @@ type GraphNode interface {
 // PodNode represents a Kubernetes pod entity (or a synthesised pod when the
 // service-graph reader observes a pod UID with no topology).
 type PodNode struct {
-	IDValue     string
-	NameValue   string
-	LabelsValue map[string]string
+	IDValue        string
+	NameValue      string
+	LabelsValue    map[string]string
+	IPAddressValue []string
 }
 
 func (p *PodNode) ID() string                { return p.IDValue }
 func (p *PodNode) Name() string              { return p.NameValue }
 func (p *PodNode) Type() NodeType            { return NodeTypePod }
 func (p *PodNode) Labels() map[string]string { return p.LabelsValue }
+func (p *PodNode) IPAddress() []string       { return p.IPAddressValue }
 func (p *PodNode) isGraphNode()              {}
 
 // K8sNode represents a Kubernetes node entity.
 type K8sNode struct {
-	IDValue     string
-	NameValue   string
-	LabelsValue map[string]string
+	IDValue        string
+	NameValue      string
+	LabelsValue    map[string]string
+	IPAddressValue []string
 }
 
 func (n *K8sNode) ID() string                { return n.IDValue }
 func (n *K8sNode) Name() string              { return n.NameValue }
 func (n *K8sNode) Type() NodeType            { return NodeTypeK8sNode }
 func (n *K8sNode) Labels() map[string]string { return n.LabelsValue }
+func (n *K8sNode) IPAddress() []string       { return n.IPAddressValue }
 func (n *K8sNode) isGraphNode()              {}
 
 // PVCNode represents a PersistentVolumeClaim entity.
@@ -63,6 +70,7 @@ func (p *PVCNode) ID() string                { return p.IDValue }
 func (p *PVCNode) Name() string              { return p.NameValue }
 func (p *PVCNode) Type() NodeType            { return NodeTypePVC }
 func (p *PVCNode) Labels() map[string]string { return p.LabelsValue }
+func (p *PVCNode) IPAddress() []string       { return nil }
 func (p *PVCNode) isGraphNode()              {}
 
 // ExternalNode represents a non-pod endpoint surfaced when the
@@ -77,6 +85,7 @@ func (e *ExternalNode) ID() string                { return e.IDValue }
 func (e *ExternalNode) Name() string              { return e.NameValue }
 func (e *ExternalNode) Type() NodeType            { return NodeTypeExternal }
 func (e *ExternalNode) Labels() map[string]string { return e.LabelsValue }
+func (e *ExternalNode) IPAddress() []string       { return nil }
 func (e *ExternalNode) isGraphNode()              {}
 
 // SortNodes orders nodes deterministically by ID for stable output.

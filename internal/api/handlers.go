@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,8 +32,6 @@ import (
 //	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, external).
 //	@Description
 //	@Description	**Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
-//	@Description
-//	@Description	**Caching**: response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match` and receive `304 Not Modified` when the body would be unchanged. No `Cache-Control` is emitted.
 //	@Description
 //	@Description	Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
 //	@Description
@@ -104,7 +100,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Summary		Get multi-cluster graph (Grafana Node Graph datasource)
 //	@Description	Same underlying graph as `/v1/graph` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: `nodes_fields[]`, `nodes[]`, `edges_fields[]`, `edges[]`.
 //	@Description
-//	@Description	Filtering, traversal, and ETag semantics are identical to `/v1/graph` — see that endpoint for full details.
+//	@Description	Filtering and traversal semantics are identical to `/v1/graph` — see that endpoint for full details.
 //	@Description
 //	@Description	Example: `GET /v1/graph/nodegraph?start=1746442800&end=1746446400&cluster=prod-eu&edge_type=pod-calls-pod&root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab&depth=3&direction=out`
 //	@Description
@@ -244,7 +240,7 @@ type ClusterInfo struct {
 // VictoriaMetrics over a fixed 1 h discovery lookback.
 //
 //	@Summary		List clusters
-//	@Description	Returns the set of clusters observed in `kube_node_info` over a fixed 1 h lookback. Each request hits VictoriaMetrics directly under `--api-timeout`. The response carries a content-addressed `ETag` so callers may revalidate via `If-None-Match`.
+//	@Description	Returns the set of clusters observed in `kube_node_info` over a fixed 1 h lookback. Each request hits VictoriaMetrics directly under `--api-timeout`.
 //	@Description
 //	@Description	<details><summary><b>Sample response</b></summary>
 //	@Description
@@ -287,12 +283,6 @@ func (s *Server) handleClusters(c *gin.Context) {
 		"clusters":   clusters,
 	}
 	raw, _ := json.Marshal(body)
-	etag := sha256ETag(raw)
-	c.Header("ETag", etag)
-	if c.GetHeader("If-None-Match") == etag {
-		c.Status(http.StatusNotModified)
-		return
-	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", raw)
 }
 
@@ -324,7 +314,7 @@ func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 // can produce.
 //
 //	@Summary		Edge-type catalogue
-//	@Description	Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with `Cache-Control: public, max-age=3600` and a stable `ETag`. Use this to validate the `edge_type` filter on `/v1/graph` and to drive UI legends.
+//	@Description	Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with `Cache-Control: public, max-age=3600`. Use this to validate the `edge_type` filter on `/v1/graph` and to drive UI legends.
 //	@Description
 //	@Description	<details><summary><b>Edge type matrix</b></summary>
 //	@Description
@@ -348,13 +338,7 @@ func (s *Server) handleEdgeTypes(c *gin.Context) {
 		"edge_types": graph.EdgeTypes,
 	}
 	raw, _ := json.Marshal(body)
-	etag := graph.EdgeTypesETag()
 	c.Header("Cache-Control", "public, max-age=3600")
-	c.Header("ETag", etag)
-	if c.GetHeader("If-None-Match") == etag {
-		c.Status(http.StatusNotModified)
-		return
-	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", raw)
 }
 
@@ -483,16 +467,5 @@ func (s *Server) writeJSON(c *gin.Context, body any, format string) {
 		return
 	}
 	s.metrics.SerialiseDuration.WithLabelValues(format).Observe(time.Since(start).Seconds())
-	etag := sha256ETag(raw)
-	c.Header("ETag", etag)
-	if c.GetHeader("If-None-Match") == etag {
-		c.Status(http.StatusNotModified)
-		return
-	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", raw)
-}
-
-func sha256ETag(b []byte) string {
-	sum := sha256.Sum256(b)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
 }

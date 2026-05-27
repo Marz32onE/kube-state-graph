@@ -49,7 +49,7 @@ The server SHALL pass caller-supplied `start` and `end` through to upstream Prom
 
 ### Requirement: Cytoscape.js response shape
 
-`GET /v1/graph` SHALL return a JSON document in Cytoscape.js shape: `{ apiVersion, clusters, elements: { nodes, edges } }`. The body SHALL NOT contain time-varying or echo-of-input fields, so identical inputs against the same upstream state produce byte-identical bodies and identical `ETag`s.
+`GET /v1/graph` SHALL return a JSON document in Cytoscape.js shape: `{ apiVersion, clusters, elements: { nodes, edges } }`. The body SHALL NOT contain time-varying or echo-of-input fields, so identical inputs against the same upstream state produce byte-identical bodies.
 
 Each **node** SHALL be `{ data: { id, name, type, labels } }`:
 - `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`). For external nodes, `id` SHALL be `external/<label-value>` (no cluster prefix).
@@ -219,7 +219,7 @@ The `name` parameter SHALL match `n.Name()` by exact string equality across **ev
 
 ### Requirement: Cluster discovery endpoint
 
-The server SHALL expose `GET /v1/clusters` that returns the list of clusters with data in centralised VictoriaMetrics over a fixed 1-hour lookback. The response SHALL be derived live from a single `group by (cluster) (last_over_time(kube_node_info[1h]))` query on every request — there is no in-process discovery cache in v1; clients revalidate via the response `ETag`.
+The server SHALL expose `GET /v1/clusters` that returns the list of clusters with data in centralised VictoriaMetrics over a fixed 1-hour lookback. The response SHALL be derived live from a single `group by (cluster) (last_over_time(kube_node_info[1h]))` query on every request — there is no in-process discovery cache in v1.
 
 #### Scenario: Live discovery
 
@@ -228,7 +228,7 @@ The server SHALL expose `GET /v1/clusters` that returns the list of clusters wit
 
 ### Requirement: Edge-type discovery endpoint
 
-The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header and a stable `ETag` derived from the in-code registry.
+The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header.
 
 #### Scenario: Static catalogue
 
@@ -239,11 +239,6 @@ The server SHALL expose `GET /v1/edge-types` that returns the static catalogue o
 
 - **WHEN** a client inspects the catalogue entry for `pod-calls-pod`
 - **THEN** its `may_cross_cluster` field is `true`, its `source_type` and `target_type` are arrays containing both `"pod"` and `"external"`, and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (representing the trace source cluster; cross-cluster status is detected by comparing the source/target nodes' `labels.cluster` rather than from edge labels)
-
-#### Scenario: Conditional GET on /v1/edge-types
-
-- **WHEN** a client repeats the request with `If-None-Match` matching the previous `ETag`
-- **THEN** the server returns 304 Not Modified
 
 ### Requirement: Cross-cluster edge representation
 
@@ -259,23 +254,48 @@ When the freshly built graph contains a `pod-calls-pod` edge whose source-node c
 - **WHEN** a client requests `?cluster=cluster-alpha` and a cross-cluster edge exists from a pod in `cluster-alpha` to a pod in `cluster-beta`
 - **THEN** the response contains the `cluster-alpha` endpoint, the `cluster-beta` endpoint (so the edge resolves), and the edge with `labels.cluster: "cluster-alpha"`; the cross-cluster status is detected by comparing the two endpoint nodes' `labels.cluster` values
 
-### Requirement: Conditional GET via response validator (ETag)
+### Requirement: Deterministic response body
 
-Every successful response from `GET /v1/graph`, `GET /v1/graph/nodegraph`, `GET /v1/clusters`, and `GET /v1/edge-types` SHALL carry an `ETag` strong validator (RFC 9110 §8.8.3) computed as `sha256(<response body>)`. Requests carrying a matching `If-None-Match` SHALL receive `304 Not Modified` with no body and the same `ETag` (RFC 9110 §13.1 conditional GET / revalidation).
+For identical input — same `(window, filters, traversal, upstream-data)` — the server SHALL produce a byte-identical response body across rebuilds. The server SHALL NOT emit any HTTP cache validator (no `ETag`, no `Last-Modified`): cacheability is intentionally a future-iteration concern and v1 has no in-process result cache.
 
-The validator is content-addressed: the server still runs the full upstream fan-out and serialisation pipeline on every request and compares the freshly computed sha256 against the supplied `If-None-Match` value. The 304 path saves response-body bytes-on-the-wire (and the client's deserialisation cost) but does NOT save upstream PromQL evaluation — v1 ships no in-process result cache.
+The serialiser SHALL maintain determinism by sorting `view.Nodes` and `view.Edges`, sorting `Graph.ClusterNames()`, sorting `IPAddress` slices at construction, and keeping the response body shape fixed at `{apiVersion, clusters, elements}` for graph routes (no time-of-build or echo-of-input fields).
 
-`GET /v1/edge-types` SHALL additionally carry `Cache-Control: public, max-age=3600` because the catalogue is compiled into the binary and is stable for the binary's lifetime. `GET /v1/graph`, `GET /v1/graph/nodegraph`, and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header: the server cannot tell a client how long a freshly built graph remains "fresh" without re-querying upstream, so cacheability is left to the client / intermediary. Clients revalidate via `If-None-Match`; whether anyone caches the response body for some TTL is a client-side concern, not a server contract.
+`GET /v1/edge-types`, `GET /openapi.yaml`, `GET /openapi.json`, `GET /docs`, and `GET /docs/assets/*` SHALL carry an explicit `Cache-Control` header (long max-age for the embedded assets). `GET /v1/graph`, `GET /v1/graph/nodegraph`, and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header.
 
-#### Scenario: 304 Not Modified on repeated request
-
-- **WHEN** a client receives an `ETag` from a previous `GET /v1/graph` response and re-sends the same query with `If-None-Match: "<etag>"`
-- **THEN** the server returns 304 Not Modified with no body
-
-#### Scenario: ETag determinism across rebuilds
+#### Scenario: Body byte-identical across repeated requests
 
 - **WHEN** a client sends two consecutive `GET /v1/graph` requests with identical query parameters and the upstream data has not changed between them
-- **THEN** both responses carry byte-identical `ETag` headers, even though each request triggered an independent upstream fan-out
+- **THEN** both response bodies are byte-identical, even though each request triggered an independent upstream fan-out
+
+### Requirement: Node `ipaddress` attribute
+
+Every `data` object for a node in the Cytoscape response SHALL expose a top-level `ipaddress` field of type `string[]` with `omitempty` semantics:
+
+- `type="pod"` nodes SHALL carry the pod's IP from `kube_pod_info.pod_ip` (single-element slice) when the source metric surfaces it, and omit the field otherwise.
+- `type="node"` nodes SHALL carry the K8s node's `ExternalIP` from `kube_node_status_addresses` (single-element slice) when present, and omit the field otherwise.
+- `type="pvc"` and `type="external"` nodes SHALL NOT emit the `ipaddress` field.
+
+The legacy `labels.pod_ip`, `labels.host_ip`, and `labels.external_ip` keys SHALL NOT appear on any node entry — they are replaced by the typed `ipaddress` attribute and the node entry respectively.
+
+#### Scenario: Pod entry carries pod IP on ipaddress
+
+- **WHEN** `kube_pod_info` exposes `pod_ip="10.244.0.10"` for a pod
+- **THEN** the corresponding `type="pod"` node carries `data.ipaddress: ["10.244.0.10"]` and neither `data.labels.pod_ip` nor `data.labels.host_ip` is present
+
+#### Scenario: Node entry carries ExternalIP on ipaddress
+
+- **WHEN** `kube_node_status_addresses{type="ExternalIP",address="203.0.113.10"}` is present for a K8s node
+- **THEN** the corresponding `type="node"` entry carries `data.ipaddress: ["203.0.113.10"]` and `data.labels.external_ip` is not present
+
+#### Scenario: ipaddress omitted when source metric does not surface it
+
+- **WHEN** a pod's `kube_pod_info` series omits `pod_ip`, or a K8s node has no `ExternalIP` row in `kube_node_status_addresses`
+- **THEN** the corresponding node's `data` object does not include an `ipaddress` field
+
+#### Scenario: PVC and external nodes never carry ipaddress
+
+- **WHEN** the response contains nodes of `type="pvc"` or `type="external"`
+- **THEN** those node `data` objects do not include an `ipaddress` field
 
 ### Requirement: API-key authentication on `/v1/*` and `/debug/*`
 
@@ -392,7 +412,7 @@ The server SHALL serve the auto-generated OpenAPI 3.0 specification at two route
 - `GET /openapi.yaml` SHALL return the YAML form with `Content-Type: application/yaml`.
 - `GET /openapi.json` SHALL return the JSON form with `Content-Type: application/json`.
 
-Both responses SHALL carry `Cache-Control: public, max-age=3600` and a stable `ETag` derived from the embedded spec contents. Both SHALL honour `If-None-Match` with `304 Not Modified`. The spec SHALL be generated from handler annotations via `swaggo/swag` v2; the generated `docs/swagger.{json,yaml,go}` artefacts SHALL be checked into the repository.
+Both responses SHALL carry `Cache-Control: public, max-age=3600`. The spec SHALL be generated from handler annotations via `swaggo/swag` v2; the generated `docs/swagger.{json,yaml,go}` artefacts SHALL be checked into the repository.
 
 #### Scenario: YAML spec served
 
@@ -403,11 +423,6 @@ Both responses SHALL carry `Cache-Control: public, max-age=3600` and a stable `E
 
 - **WHEN** a client sends `GET /openapi.json`
 - **THEN** the response is 200 with `Content-Type: application/json` and a body whose top-level object contains an `"openapi"` key
-
-#### Scenario: Conditional GET on the spec
-
-- **WHEN** a client repeats the request with `If-None-Match` matching the previous `ETag`
-- **THEN** the server returns 304 Not Modified
 
 ### Requirement: Scalar API Reference UI served at /docs
 

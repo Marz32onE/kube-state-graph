@@ -40,7 +40,7 @@ Constraints on the API server:
 - Ship a Go (Gin) HTTP server that returns a unified nodes-and-edges JSON document for one or more Kubernetes clusters in a caller-specified time range `[start, end]`, computed from VictoriaMetrics on demand.
 - Expose **cross-cluster** RPC edges (`pod-calls-pod` where the source and target pods resolve to different clusters via the global pod-UID index) as first-class graph elements.
 - Build the graph by issuing PromQL queries with `@` timestamp modifiers and range-aware functions (`last_over_time`, `rate`) against centralised VictoriaMetrics, and joining the result sets in memory across all clusters in scope.
-- Each request runs a fresh upstream fan-out — there is no in-process result cache and no singleflight. Responses still carry an HTTP `ETag` (sha256 of the body) so clients may revalidate via `If-None-Match` and skip transferring the body when it would be unchanged. A horizontally scalable cache mechanism is deferred to a future iteration (see "Future cache mechanism" below).
+- Each request runs a fresh upstream fan-out — there is no in-process result cache and no singleflight. A horizontally scalable cache mechanism is deferred to a future iteration (see "Future cache mechanism" below).
 - Use the `(cluster, pod-uid)` composite as the stable identity for pod nodes and the join key for pod-pod edges; node and PVC IDs are similarly cluster-scoped.
 - Expose Cytoscape.js-shaped JSON as the primary response, plus a Grafana Node Graph compatibility route for visual verification.
 - Provide cluster discovery (`GET /v1/clusters`) sourced live from VictoriaMetrics, plus a static edge-type catalogue (`GET /v1/edge-types`).
@@ -53,7 +53,7 @@ Constraints on the API server:
 - Authorisation, multi-tenant isolation, or TLS termination on the HTTP API (assume reverse proxy handles it). Per-cluster RBAC is also out of scope — every reachable cluster is equally readable through this server. v1 ships static **API-key authentication** only (single shared secret tier, no per-caller scoping); see D24.
 - Ingesting traces. Trace-derived metrics are produced upstream; the API server only reads the resulting metric series.
 - Real-time streaming or WebSocket APIs.
-- An in-process result cache. v1 deliberately ships **no** server-side build cache and **no** singleflight; every request runs a fresh upstream fan-out. ETag-based HTTP revalidation is the only caching layer.
+- An in-process result cache. v1 deliberately ships **no** server-side build cache and **no** singleflight; every request runs a fresh upstream fan-out.
 - A distributed / shared cache (Redis, memcached) or background materialiser. These are explicitly deferred — a future iteration will add a horizontally scalable cache mechanism for distributed deployment; the design space is captured under "Future cache mechanism".
 - A graph database (Neo4j, Memgraph, ArangoDB) for partial / traversal queries. In-memory adjacency suffices for v1.
 - VictoriaMetrics multi-tenant (vmcluster `accountID:projectID`) routing. Single-tenant centralised VM with `cluster` external labels is the v1 isolation model; multi-tenancy is a v1.1 escape hatch.
@@ -80,11 +80,11 @@ Every request to `GET /v1/graph?start=...&end=...` triggers a fresh build of the
 1. Resolve and validate `start` / `end` (only `end > start`; D5).
 2. Run all required PromQL queries against centralised VictoriaMetrics in parallel via `errgroup.WithContext` under a per-build `context.WithTimeout(ctx, --build-timeout)`. On `context.DeadlineExceeded`, abort and return `504 Gateway Timeout` with `reason: "timeout"`. Concurrency limiting is delegated to horizontal scaling (HPA) and Pod resource limits — there is no in-process semaphore.
 3. Join the result sets across clusters in memory and produce the global multi-cluster `Graph`.
-4. Apply filters (`cluster`, `namespace`, `edge_type`, `name`) and traversal pruning (`root`, `depth`, `direction`) over the freshly built `Graph` as a projection, then serialise to the requested format (Cytoscape.js or Grafana Node Graph), compute `ETag = sha256(body)`, honour `If-None-Match` if present, and return.
+4. Apply filters (`cluster`, `namespace`, `edge_type`, `name`) and traversal pruning (`root`, `depth`, `direction`) over the freshly built `Graph` as a projection, then serialise to the requested format (Cytoscape.js or Grafana Node Graph) and return.
 
 There is no in-process result cache, no singleflight, no background `Snapshotter`, no `atomic.Pointer[Graph]`, no fixed refresh interval, and no `POST /admin/refresh`.
 
-- Why: keeps the v1 implementation small and lets a future iteration choose a cache mechanism appropriate for distributed deployment (Redis, materialised-view tier, graph DB) without unwinding an in-process cache assumption first. ETag still gives clients a free conditional-GET path; the upstream cost remains O(requests) until that future iteration lands.
+- Why: keeps the v1 implementation small and lets a future iteration choose a cache mechanism appropriate for distributed deployment (Redis, materialised-view tier, graph DB) without unwinding an in-process cache assumption first. The upstream cost remains O(requests) until that future iteration lands.
 - Alternatives considered:
   - In-process Ristretto + singleflight (the previous design — moved out of v1; revisit when distributed deployment is on the table).
   - Periodic snapshot (rejected — incompatible with time-travel queries; staleness window forces a worst-case freshness penalty even when no caller needs it).
@@ -128,25 +128,22 @@ Each edge carries `type`, `source`, `target`, plus type-specific `attrs` (see D9
 - Why pass-through: with no cache, alignment provides no hit-rate benefit; `last_over_time` / `rate` lookbacks span minutes, so sub-second `@end` drift is not load-bearing for upstream evaluation. Removing alignment also removes a Go package, a `Window` struct in handler signatures, and several rounds of doc/spec coordination.
 - Bounded query cost is delegated entirely to upstream VictoriaMetrics search limits.
 - Alternatives considered:
-  - 60 s `floor`/`ceil` grid (removed in this change — was originally a cache-key bucket; ETag stability argument was post-hoc and weak in practice since real callers don't refresh sub-second).
+  - 60 s `floor`/`ceil` grid (removed in this change — was originally a cache-key bucket; no longer needed without an in-process cache).
   - Per-class TTL ladder (deferred — would only matter once a server-side cache returns; revisit in the future cache mechanism).
 
-### D6. Conditional GET via response validator (ETag); no in-process result cache
+### D6. Response shape and deterministic body; no in-process result cache
 
-v1 emits an HTTP `ETag` **strong validator** on every graph response. ETag is a response identity mechanism per RFC 9110 §8.8.3 used for **conditional GET / revalidation** (§13.1) — it is not a cache. The previous design's three-tier stack (Ristretto + singleflight + server-side cache) is removed. There is no in-process result cache, no request coalescing, and no `/admin/cache` route. Each request runs a fresh upstream fan-out and recomputes the response body.
+v1 ships **no** in-process result cache, **no** singleflight, and **no** `/admin/cache` route. Each request runs a fresh upstream fan-out and recomputes the response body. There is no server-side build cache, and the server does not emit any HTTP cache validator (no `ETag`, no `Last-Modified`) — caching is intentionally a future-iteration concern (see "Future cache mechanism" below).
 
-**Validator mechanism.** After projection + serialisation, the server computes `ETag: "<sha256 of body>"` and writes it on the response. A client (or any HTTP intermediary) may store that validator and, on the next request to the same URL, send `If-None-Match: "<etag>"`. The server still runs the full upstream fan-out and serialisation pipeline, then compares the freshly computed sha256 against the supplied validator: identical ⇒ `304 Not Modified` with empty body and the same `ETag`; different ⇒ `200 OK` with the new body and the new `ETag`. The validator is content-addressed; no server state persists between requests.
-
-The 304 path saves the response body's bytes-on-the-wire (and the client's deserialisation cost) but does NOT save the upstream PromQL fan-out — that is by design at v1 scale and is the trade-off for shipping no server-side build cache. Whether any party (browser, reverse proxy, downstream service) caches the response body for some TTL is a client / intermediary policy and is independent of the server.
-
-**ETag determinism prerequisites.** sha256(body) is stable iff the body is byte-identical for the same `(window, filters, upstream-data)`. The serialiser guarantees this by:
+**Deterministic body.** The serialiser must produce byte-identical output for the same `(window, filters, upstream-data)`. This is load-bearing for golden tests and for any downstream consumer that diffs responses. The serialiser guarantees determinism by:
 
 - Sorting `view.Nodes` and `view.Edges` (`graph.SortNodes` / `graph.SortEdges`) before encoding.
 - Sorting `Graph.ClusterNames()`.
 - Relying on `encoding/json` map-key sorting for `labels map[string]string`.
-- Keeping body shape fixed at `{apiVersion, clusters, elements}`. No time-varying or echo-of-input fields are serialised; observability moves to logs/metrics.
+- Sorting / deduping `IPAddress` slices at construction (today they are emitted in a single-element form; the slice contract is "stable but not semantically ranked").
+- Keeping body shape fixed at `{apiVersion, clusters, elements}` for graph routes. No time-varying or echo-of-input fields are serialised; observability moves to logs/metrics.
 
-Routes whose content is stable and long-lived emit explicit `Cache-Control` (`/v1/edge-types`: 3600 s, `/openapi.{yaml,json}`: 3600 s, `/docs/assets/*`: 86400 s, `/docs`: 300 s). Those headers communicate freshness windows for resources whose content rarely changes — they are independent of the ETag validator on `/v1/graph` and reflect content stability rather than a server-side build cache. `/v1/graph`, `/v1/graph/nodegraph`, and `/v1/clusters` emit only `ETag`: the server cannot tell the client how long a freshly built graph remains "fresh" without re-querying upstream, so cacheability is left to the client / intermediary.
+**Response cache headers.** Routes whose content is stable and long-lived emit explicit `Cache-Control` (`/v1/edge-types`: 3600 s, `/openapi.{yaml,json}`: 3600 s, `/docs/assets/*`: 86400 s, `/docs`: 300 s) so that browsers and reverse proxies may cache them client-side. `/v1/graph`, `/v1/graph/nodegraph`, and `/v1/clusters` emit no `Cache-Control` — every freshly built body is treated as authoritative.
 
 **No singleflight.** Concurrent identical requests each run their own upstream fan-out. At dev / pre-distributed-deployment traffic this is acceptable. Cluster-wide deduplication is part of the future cache mechanism, not v1.
 
@@ -234,7 +231,8 @@ Service-graph counters are ingested as two monotonic samples (`t0` and `t1 = t0 
 | Node | `id` | string | Cluster-scoped composite. Pods: `<cluster>/<pod-uid>`. Nodes: `<cluster>/<node-name>`. PVCs: `<cluster>/<namespace>/<claim>`. **External**: `external/<label-value>` (no cluster). |
 | Node | `name` | string | Pod name / node name / PVC claim name. For external nodes, the verbatim `client` or `server` label value (e.g., `http://api.example.com`). Used as the display label in the Grafana panel. |
 | Node | `type` | string | One of `"pod"`, `"node"`, `"pvc"`, `"external"`. |
-| Node | `labels` | `map[string]string` | String-only key/value bag. Pod / node / PVC nodes always include `cluster`, `namespace` (pods/PVCs), `node` (pods, cluster-scoped node ID), `external_ip` (nodes when known). K8s pod / node labels are flattened in verbatim. **External nodes** carry minimal labels (the configured `pattern` value under `pattern`); they do NOT carry `cluster`, since they are not cluster-scoped. New keys are additive. |
+| Node | `ipaddress` | `[]string` (`omitempty`) | Observed IP addresses for the node. Present on `type="pod"` (`kube_pod_info.pod_ip`) and `type="node"` (K8s node `ExternalIP` from `kube_node_status_addresses`). Omitted for `type="pvc"` and `type="external"`, and omitted on pod / node entries when the source metric does not surface an IP. The slice order is stable but not semantically ranked. |
+| Node | `labels` | `map[string]string` | String-only key/value bag. Pod / node / PVC nodes always include `cluster`, `namespace` (pods/PVCs), `node` (pods, cluster-scoped node ID). K8s pod / node labels are flattened in verbatim. IP addresses are **not** carried in `labels` — see the `ipaddress` row above. **External nodes** carry minimal labels (the configured `pattern` value under `pattern`); they do NOT carry `cluster`, since they are not cluster-scoped. New keys are additive. |
 | Edge | `id` | string | UUIDv5 derived from a fixed namespace UUID and the canonical tuple `(type, source, target)`. Stable across builds for the same edge; format compliant with RFC 4122. |
 | Edge | `type` | string | One of the registered edge types in `/v1/edge-types` (e.g., `"pod-runs-on-node"`, `"pod-mounts-pvc"`, `"pod-calls-pod"`). |
 | Edge | `source` | string | Source node `id`. Always references a node present in the same response. |
@@ -287,10 +285,10 @@ The second route, `GET /v1/graph/nodegraph`, returns the same data projected int
 This makes the integration-test Grafana panel show pod / node names directly without per-deployment template tweaking.
 
 - Why: a single canonical schema (`id`, `name`, `type`, `labels`) drives both formats; any future field addition lives in `labels` and is therefore non-breaking.
-- Why UUIDv5 for edge `id`: deterministic (golden tests and ETag stay stable; same edge → same ID across rebuilds), RFC 4122 compliant, and decoupled from the human-readable `(source, target, type)` triple so renaming convention later does not change IDs already exposed.
+- Why UUIDv5 for edge `id`: deterministic (golden tests stay stable; same edge → same ID across rebuilds), RFC 4122 compliant, and decoupled from the human-readable `(source, target, type)` triple so renaming convention later does not change IDs already exposed.
 - Alternatives considered:
   - `kind`/`label`/`attrs` field names (rejected — divergent from user-requested schema).
-  - Random UUIDv4 for edges (rejected — breaks ETag stability and golden tests; same edge would get a different ID every build).
+  - Random UUIDv4 for edges (rejected — breaks golden-test determinism; same edge would get a different ID every build).
   - Plain `{nodes, edges}` only (rejected — locks out Grafana Node Graph compat without an adapter layer).
   - GraphQL (rejected — adds dependency surface for v1 with no clear caller).
 
@@ -324,7 +322,7 @@ The server exposes its own `/metrics` endpoint (Prometheus exposition) with at l
 
 - `kube_state_graph_build_duration_seconds` (histogram — wall-clock build time per request).
 - `kube_state_graph_project_duration_seconds` (histogram — filter + traversal pruning).
-- `kube_state_graph_serialise_duration_seconds{format}` (histogram — JSON encode + ETag computation).
+- `kube_state_graph_serialise_duration_seconds{format}` (histogram — JSON encode time).
 - `kube_state_graph_build_rejected_total{reason="timeout"}` (counter).
 - `kube_state_graph_graph_node_count{cluster,kind}` (gauge — last build only, observational; bounded by configured cluster count).
 - `kube_state_graph_graph_edge_count{type,cross_cluster}` (gauge — `cross_cluster` ∈ `{"true","false"}`).
@@ -350,7 +348,7 @@ The test stack has six layers, all CI-runnable except the last; each MUST exist 
 | Component | yes | Build pipeline end-to-end against an `httptest.Server` mocking the Prometheus query API; covers per-build timeout, parameter validation, and serialiser output | `go test` |
 | Golden | yes | Canned scenarios (single-cluster, two-cluster with cross-cluster edge, three-cluster with traversal pruning) → `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types` JSON compared to checked-in `.golden.json` | `go test` |
 | Property | yes | Random topology + edge inputs across N synthetic clusters + random filters → invariants (no orphan edges, no duplicate IDs, every endpoint resolves, filtered ⊆ unfiltered, traversal stays within `depth`, cross-cluster edges have distinct cluster endpoints) | `testing/quick` or `gopter` |
-| **Container integration** (capability `container-integration`) | yes | Per-package VictoriaMetrics container started via testcontainers-go; series injected via VM's `/api/v1/import/prometheus`; in-process API server pointed at the container; assertions over real PromQL evaluation and real ETag flow | `go test` + Docker |
+| **Container integration** (capability `container-integration`) | yes | Per-package VictoriaMetrics container started via testcontainers-go; series injected via VM's `/api/v1/import/prometheus`; in-process API server pointed at the container; assertions over real PromQL evaluation | `go test` + Docker |
 | **Manual visual rig** (capability `verification-harness`) | **no** | Single Kind cluster with VictoriaMetrics + fake-fixtures producer + API server + Grafana Pod with the checked-in Node Graph dashboard, run on demand by an operator. Used for visual sanity verification of the rendered graph; not exercised by CI | `bash` bootstrap + browser |
 
 The first five layers run on every PR via `go test ./...`. The Kind manual rig is exercised by operators on demand only — see D20 for testcontainer rationale and D21 for static analysis / vulnerability scanning policy.
@@ -412,7 +410,7 @@ The first five layers run on every PR via `go test ./...`. The Kind manual rig i
 ```
 
 - Source: a single in-code registry shared with the graph builder. Adding a new edge type updates both atomically.
-- Caching: response carries `Cache-Control: public, max-age=3600` and an `ETag` derived from the registry's compile-time hash.
+- Caching: response carries `Cache-Control: public, max-age=3600`.
 - Behaviour with `/v1/graph?edge_type=`: callers may pass any subset of `type` values from this endpoint. If a requested type has no edges in the current `Graph`, the response simply contains zero edges of that type — no error, no warning.
 
 ### D16. No graph database, no client-go informer for v1
@@ -439,7 +437,7 @@ Both options were considered and rejected for v1:
 
 `cluster` is repeatable; absent ⇒ all clusters in the freshly built graph. Path-based per-cluster URLs were considered and rejected: cross-cluster edges naturally span more than one cluster, so a single-cluster path implies a scope smaller than the data — leading either to lossy responses (drop cross-cluster edges) or surprising responses (include endpoints outside the path). Query-param multi-select avoids this entirely.
 
-**Discovery.** `GET /v1/clusters` returns the list of clusters that have data in centralised VictoriaMetrics, derived live from `group by (cluster) (last_over_time(kube_node_info[1h]))`. The lookback is fixed at `1h` (sufficient to absorb transient KSM scrape gaps; not configurable). Each request hits VictoriaMetrics directly — there is no in-process discovery cache in v1. The response carries an `ETag` so callers may revalidate cheaply via `If-None-Match`.
+**Discovery.** `GET /v1/clusters` returns the list of clusters that have data in centralised VictoriaMetrics, derived live from `group by (cluster) (last_over_time(kube_node_info[1h]))`. The lookback is fixed at `1h` (sufficient to absorb transient KSM scrape gaps; not configurable). Each request hits VictoriaMetrics directly — there is no in-process discovery cache in v1.
 
 **Cross-cluster edges.** `pod-calls-pod` edges where the resolved source and target pods live in different clusters are emitted as ordinary edges with both endpoint nodes present in the freshly built graph (since each build holds the global multi-cluster graph). When a request scopes to a subset of clusters, cross-cluster edges that touch the selected set are kept along with both endpoint nodes — the remote node's `labels.cluster` makes the cross-cluster context obvious to renderers. The edge carries `labels.cluster` set to the trace-source cluster (i.e. the client-side pod's cluster); consumers detect cross-cluster status by comparing the source-node and target-node `labels.cluster` (a boolean shortcut field is deferred to the future typed struct described in D9).
 
@@ -513,7 +511,7 @@ go test ./internal/integration/
         ├─ ingest synthetic kube_* + traces_service_graph_* exposition with absolute timestamps
         ├─ wait for VM to acknowledge data (poll up{} or count(kube_pod_info) until non-empty, ≤ 10 s)
         ├─ start the API server in-process: srv := api.New(cfg, ...).Handler() + httptest.NewServer
-        └─ exercise /v1/* endpoints, assert HTTP shape / headers / ETag round-trip behaviour
+        └─ exercise /v1/* endpoints, assert HTTP shape / headers / body content
 ```
 
 Decisions:
@@ -524,7 +522,7 @@ Decisions:
 - **Absolute timestamps in fixtures**: tests use fixed timestamps (e.g., `time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)`) and pass the same window to the API. This makes time-window alignment fully deterministic — a class of bugs the httptest mock layer cannot expose.
 - **VM image is pinned** by tag in test code; no `:latest`. Image is pre-pulled in CI to remove first-run noise.
 - **Docker socket required**: the integration-test job runs on `ubuntu-latest` GitHub Actions runners (Docker socket native). macOS / Windows runners are out of scope for this layer.
-- **ETag round-trip determinism**: the integration suite asserts that two consecutive `/v1/graph` requests for identical inputs return identical `ETag` values, since v1 has no result cache and any non-determinism in the build/serialise path would surface here. See `TestRepeatedRequestsReturnSameETag`.
+- **Body determinism**: the integration suite asserts that two consecutive `/v1/graph` requests for identical inputs return byte-identical response bodies, since v1 has no result cache and any non-determinism in the build/serialise path would surface here.
 
 What testcontainers does **not** cover (and so the manual rig still does):
 
@@ -600,7 +598,7 @@ jobs:
 
 | Route | What | Cache |
 |------|------|------|
-| `GET /openapi.yaml` | Generated YAML, served from embedded `docs/swagger.yaml` | `Cache-Control: public, max-age=3600` + ETag |
+| `GET /openapi.yaml` | Generated YAML, served from embedded `docs/swagger.yaml` | `Cache-Control: public, max-age=3600` |
 | `GET /openapi.json` | Generated JSON, served from embedded `docs/swagger.json` | same |
 | `GET /docs` | HTML page that renders the spec via the Scalar API Reference viewer | `Cache-Control: public, max-age=300` |
 | `GET /docs/assets/*` | Static Scalar JS / CSS bundle, served from embedded assets | `Cache-Control: public, max-age=86400, immutable` |
@@ -732,7 +730,7 @@ GET /v1/graph                               (otelgin server span)
 
 | Span | Required attributes |
 |------|---------------------|
-| Server (otelgin) | `http.request.method`, `http.route`, `url.scheme`, `url.path`, `server.address`, `server.port`, `client.address`, `user_agent.original`, `http.response.status_code`, `kube_state_graph.etag` |
+| Server (otelgin) | `http.request.method`, `http.route`, `url.scheme`, `url.path`, `server.address`, `server.port`, `client.address`, `user_agent.original`, `http.response.status_code` |
 | `kube-state-graph.build` | `kube_state_graph.window_seconds`, `kube_state_graph.end_unix`, on success `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count` |
 | `prometheus.query` | `db.system=prometheus`, `db.statement`, `kube_state_graph.query_name`, `server.address`, `server.port` |
 | `kube-state-graph.project` | `graph.node.count`, `graph.edge.count` (post-filter), `kube_state_graph.filter.cluster`, `kube_state_graph.filter.namespace`, `kube_state_graph.filter.edge_type` |
@@ -793,14 +791,13 @@ Some deployments expose kube-state-metrics-shaped series under an organisational
 - **Apply the prefix to the service-graph metric too**: rejected — different exporter family (Alloy/Tempo), realistic operators won't unify the prefix across both. A separate `KSG_SERVICE_GRAPH_METRIC` knob can ship in a follow-up change if a real deployment ever surfaces.
 
 - Why no bespoke `--otlp-*` flags: every operator who already runs an OTel-instrumented service is configured by the standard env vars; introducing a parallel CLI surface forks the operator workflow for no benefit.
-- Why no in-process result cache implications: D6 still holds — the build always runs. Tracing only adds visibility; it does not change ETag determinism (resource attributes are not in the response body).
+- Why no in-process result cache implications: D6 still holds — the build always runs. Tracing only adds visibility; it does not change response-body determinism (resource attributes are not in the response body).
 - Why log to *both* stderr and OTLP: the binary must remain useful in `kubectl logs` even when the OTel collector is down. Fan-out keeps the stderr stream intact.
 - Why bound shutdown by the existing grace period rather than a separate `--otlp-shutdown-timeout`: K8s lifecycle is governed by a single `terminationGracePeriodSeconds`; introducing a second knob forces operators to keep two values in sync.
 - Alternatives considered:
   - **Replace `log/slog` with a dedicated OTel logger** (rejected — `slog` is stdlib, the project already standardised on it in D10, and the bridge is one line of init).
   - **Add an exporter selection flag** (rejected — `OTEL_EXPORTER_OTLP_PROTOCOL` already covers gRPC vs HTTP/protobuf).
   - **Trace `/livez` / `/readyz` and rely on Collector filtering** (rejected — cheap to skip at the source; saves Collector ingestion budget; matches industry guidance).
-  - **Emit a typed numeric span attribute for ETag instead of a string** (rejected — semconv prefers strings for opaque identifiers; ETag is sha256-hex, not numeric).
   - **Run a parallel async pipeline that captures the build trace into a debug endpoint** (rejected — duplicates OTel functionality; ops teams already have a Collector + Tempo / Jaeger).
 
 ### D27. Missing pod-UID human-label fallback
@@ -844,9 +841,26 @@ Alternatives considered:
 - **New separate `unresolved/<label>` ID space**: rejected — adds a second external-like node type to document, serialise, and filter, for a distinction (declared vs inferred) the API consumer rarely needs at v1 scale. Reuse of `external/` keeps the node-type vocabulary closed.
 - **Surface a fix-the-producer error response instead**: rejected — the API server is a faithful relay, not a producer validator. Operators learn about the producer regression by seeing many `external/*` nodes appear in the graph; a single response-shape signal would be both noisy (per-request) and weaker (no per-endpoint visibility).
 
+### D28. Top-level `ipaddress` attribute on pod and K8s-node entries
+
+Pods and K8s nodes carry IP addresses out-of-band of the `labels map[string]string` bag, on a typed top-level attribute `ipaddress: []string` (`omitempty`) on the serialised node `data`. `PodNode.IPAddressValue` carries `kube_pod_info.pod_ip` (when present); `K8sNode.IPAddressValue` carries the K8s node's `ExternalIP` from `kube_node_status_addresses{type="ExternalIP"}` (when present). `PVCNode.IPAddress()` and `ExternalNode.IPAddress()` always return `nil`. The serialiser writes the slice when non-empty and omits the field otherwise.
+
+The legacy `labels.pod_ip` / `labels.host_ip` / `labels.external_ip` keys are removed. `host_ip` (the node's IP, attached to pod samples) is dropped outright — that information lives on the node entry instead, surfaced via `K8sNode.IPAddress()`.
+
+- Why a typed sibling field instead of a `map` key: `labels` is a string bag for typological metadata (cluster, namespace, node-id, flattened K8s labels). IPs are a typed structural attribute that has natural multi-value semantics (dual-stack, IPv4 + IPv6) and is rendered by UI clients independently of labels. Promoting it out of `labels` keeps the typological bag focused and frees consumers from string-encoded list parsing.
+- Why a `[]string` instead of a single scalar: dual-stack and multi-NIC hosts surface more than one address per entity; a slice today (single element in practice for v1) avoids a breaking shape change when those scenarios become common.
+- Why split pod-IP vs host-IP between the pod and the node entry: the same datum (the node's external IP) appearing on every pod under the node was redundant and invited stale-vs-fresh confusion when scrapes raced. The pod entry now carries only the pod's own IP; the node entry is the single source of truth for the node's address.
+- Body-determinism (D6): `ipaddress` slices are constructed deterministically from upstream samples (newest non-empty `pod_ip` wins for pods, the `ExternalIP` row wins for nodes); when multi-element slices land, they must be sorted at construction so `encoding/json` produces byte-identical output.
+
+Alternatives considered:
+
+- **Keep IPs inside `labels`**: rejected — fights the typed-vs-string-bag separation and forces every consumer to know the `pod_ip` / `host_ip` / `external_ip` key set out of band.
+- **Per-type schema variance (`pod.address` vs `node.address`)**: rejected — breaks the sealed-interface uniformity that lets the serialiser iterate `GraphNode` without type switches.
+- **Numeric / structured IP form (`{family, value}`)**: rejected for v1 — the JSON consumer base treats IPs as opaque strings; encoding family would force a schema change once IPv6 lands and adds zero value to today's renderers.
+
 ## Risks / Trade-offs
 
-- [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost; until then, ETag-based revalidation is the only amortisation lever.
+- [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost.
 - [Pod UID churn on restart pollutes long lookback windows] → For windows where `last_over_time(kube_pod_info)` returns multiple UIDs for the same `(cluster, namespace, name)` tuple within the window, keep ONLY the latest UID and discard the prior. There is no reliable way to link a deleted pod's UID to its replacement once kubelet stops reporting the deleted UID (the `kube-state-metrics` series simply stops; the controller assigns a fresh UUID for the new pod with no back-reference). The earlier idea of emitting a `pod-replaced-by` synthetic edge was rejected for this reason — it would have implied an identity mapping that the source data does not support. Document in the spec.
 - [Service-graph metrics absent or sparse] → Topology-only graph is still valid; missing service-graph series produce zero `pod-calls-pod` edges instead of a build failure.
 - [PromQL fan-out large with many clusters] → Per-query cost (duration, samples, points) is bounded by upstream VictoriaMetrics search limits; KSG surfaces VM 5xx as `502 Bad Gateway` with `reason: "upstream"`.

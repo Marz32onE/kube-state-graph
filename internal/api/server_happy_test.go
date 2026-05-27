@@ -63,33 +63,29 @@ func TestGraphEndpoint_HappyPath(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	assert.NotEmpty(t, resp.Header.Get("ETag"))
-
 	var body cytoscapeBody
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "v1", body.APIVersion)
 	assert.NotEmpty(t, body.Elements.Nodes, "expected at least one node in cytoscape body")
-}
 
-func TestGraphEndpoint_HappyPath_IfNoneMatch304(t *testing.T) {
-	s := newServerWithMocks(t, newMockQuerier(t, happyFixtures()), nil)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-
-	end := time.Now().UTC()
-	start := end.Add(-15 * time.Minute)
-	first, err := http.Get(graphURL(srv.URL+"/v1/graph", start, end))
-	require.NoError(t, err)
-	etag := first.Header.Get("ETag")
-	first.Body.Close()
-	require.NotEmpty(t, etag)
-
-	req, _ := http.NewRequest(http.MethodGet, graphURL(srv.URL+"/v1/graph", start, end), nil)
-	req.Header.Set("If-None-Match", etag)
-	second, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer second.Body.Close()
-	assert.Equal(t, http.StatusNotModified, second.StatusCode)
+	// Validate the new top-level IPAddress attribute on pod and node entries.
+	var podIPs, nodeIPs []string
+	for _, n := range body.Elements.Nodes {
+		switch n.Data.Type {
+		case "pod":
+			podIPs = n.Data.IPAddress
+			_, hasPodIP := n.Data.Labels["pod_ip"]
+			_, hasHostIP := n.Data.Labels["host_ip"]
+			assert.False(t, hasPodIP, "labels.pod_ip must not be emitted")
+			assert.False(t, hasHostIP, "labels.host_ip must not be emitted")
+		case "node":
+			nodeIPs = n.Data.IPAddress
+			_, hasExternalIP := n.Data.Labels["external_ip"]
+			assert.False(t, hasExternalIP, "labels.external_ip must not be emitted")
+		}
+	}
+	assert.Equal(t, []string{"10.244.0.10"}, podIPs, "pod ipaddress must carry pod_ip")
+	assert.Empty(t, nodeIPs, "happy fixture provides no ExternalIP for the node")
 }
 
 func TestNodeGraphEndpoint_HappyPath(t *testing.T) {

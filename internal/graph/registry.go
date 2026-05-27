@@ -1,11 +1,5 @@
 package graph
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-)
-
 // EdgeTypeLabel describes a single label key an edge of this type may emit.
 type EdgeTypeLabel struct {
 	Name        string `json:"name"`
@@ -64,10 +58,3 @@ var EdgeTypes = []EdgeTypeDefinition{
 	},
 }
 
-// EdgeTypesETag returns a stable hash of the EdgeTypes registry suitable as
-// an HTTP ETag.
-func EdgeTypesETag() string {
-	b, _ := json.Marshal(EdgeTypes)
-	sum := sha256.Sum256(b)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
-}

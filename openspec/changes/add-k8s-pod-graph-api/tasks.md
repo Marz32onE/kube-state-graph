@@ -68,13 +68,12 @@
 ## 8. HTTP API (capability: graph-api)
 
 - [x] 8.1 Stand up Gin engine with `/v1/` route group, request-ID + slog middleware.
-- [x] 8.2 Implement `GET /v1/graph` handler: parse + validate `start`, `end`, filter params, traversal params; align window + build + project + serialise + ETag.
-- [x] 8.3 Implement Cytoscape.js serialiser: `{ apiVersion, clusters, elements: { nodes, edges } }` with canonical node/edge `data` shape. The body MUST NOT contain time-varying or echo-of-input fields — body shape is fixed so that identical inputs against the same upstream state produce a byte-identical body and `ETag`.
+- [x] 8.2 Implement `GET /v1/graph` handler: parse + validate `start`, `end`, filter params, traversal params; align window + build + project + serialise.
+- [x] 8.3 Implement Cytoscape.js serialiser: `{ apiVersion, clusters, elements: { nodes, edges } }` with canonical node/edge `data` shape. The body MUST NOT contain time-varying or echo-of-input fields — body shape is fixed so that identical inputs against the same upstream state produce a byte-identical body.
 - [x] 8.4 Implement `GET /v1/graph/nodegraph` handler: project → Grafana Node Graph JSON (`nodes_fields`/`nodes`/`edges_fields`/`edges`); map `name`→`title`, cluster·namespace→`subTitle`, `type`→`mainStat`, edge `type`→edge `mainStat`, `secondaryStat` omitted.
-- [x] 8.5 Implement `GET /v1/clusters` handler: live discovery query against VictoriaMetrics, intersected with `--clusters-allowlist`. No in-process discovery cache; ETag-based revalidation only.
-- [x] 8.6 Implement `GET /v1/edge-types` handler: serialise the in-code registry; long `Cache-Control` and registry-hash `ETag`; honour `If-None-Match`.
-- [x] 8.7 Implement `ETag` (sha256 of body) header on graph endpoints. No `Cache-Control` and no `X-Cache` on `/v1/graph`/`/v1/graph/nodegraph` — there is no server-side build cache to advertise.
-- [x] 8.8 Implement `If-None-Match` 304 short-circuit on graph endpoints.
+- [x] 8.5 Implement `GET /v1/clusters` handler: live discovery query against VictoriaMetrics, intersected with `--clusters-allowlist`. No in-process discovery cache.
+- [x] 8.6 Implement `GET /v1/edge-types` handler: serialise the in-code registry; long `Cache-Control` on the response.
+- [x] 8.7 No HTTP cache validator on `/v1/graph` / `/v1/graph/nodegraph` / `/v1/clusters` (no `ETag`, no `Last-Modified`). No `Cache-Control` either — cacheability is a future-iteration concern.
 - [x] 8.9 Implement traversal pruning: BFS over the freshly built graph's adjacency map bounded by `depth`; reject `depth > 6` with `400 depth_too_large`.
 - [x] 8.10 Implement filter validation: reject obviously malformed values; treat unknown values as empty result, not error.
 - [x] 8.11 Implement `GET /livez` (always 200) and `GET /readyz` (1 s `up{}` probe → 200 / 503).
@@ -100,7 +99,7 @@
 ## 11. Component tests (httptest mock upstream)
 
 - [x] 11.1 Build a reusable `httptest.Server` that serves canned PromQL JSON for a fixture set keyed by query string.
-- [x] 11.2 Component-test the build pipeline end to end: each request runs an upstream fan-out and returns a stable `ETag`; repeated identical requests return identical ETags.
+- [x] 11.2 Component-test the build pipeline end to end: each request runs an upstream fan-out; repeated identical requests return byte-identical response bodies.
 - [x] 11.3 (Removed — was: singleflight coalescing test.)
 - [x] 11.4 Component-test concurrency cap: requests beyond `--build-concurrency` return `503 capacity` with `Retry-After: 1`.
 - [x] 11.5 Component-test per-build timeout: stalled upstream returns `503 timeout`.
@@ -142,7 +141,7 @@
 ## 16. Documentation
 
 - [x] 16.1 Write `README.md`: what the server is, the data flow diagram, single-binary usage, env / flag reference.
-- [x] 16.2 Write `docs/api.md`: response shapes, query parameters, 60 s alignment policy, status codes and `reason` values, ETag semantics.
+- [x] 16.2 Write `docs/api.md`: response shapes, query parameters, 60 s alignment policy, status codes and `reason` values.
 - [x] 16.3 Write `docs/multi-cluster.md`: producer-side scrape `external_labels: { cluster: ... }` requirement (single source-cluster label on every series — Tempo / `servicegraph` connector configured with pod-UID dimensions only; remote/server-side cluster is recovered at build time from the topology pod-UID index).
 - [x] 16.4 Write `docs/external-substitution.md`: `KSG_EXTERNAL_NAME_PATTERN` semantics, recommended values (`://`, `@`), examples of resulting graphs.
 - [x] 16.5 Write `docs/operations.md`: self-metrics, alert recipes, `/livez` / `/readyz` semantics, capacity planning notes.
@@ -161,7 +160,7 @@
 - [x] 18.3 Implement `IngestExpFmt(exposition string)` on `VMSuite` that POSTs to `<vm.URL>/api/v1/import/prometheus`, plus `WaitForSeries(query, budget)` polling helper.
 - [x] 18.4 Implement readiness wait that polls VM `/-/ready` until 200 within a configurable budget (default 10 s); fail with `vm_not_ready` on timeout.
 - [x] 18.5 Implement an in-process API-server-under-test factory (`StartAPIServer(configure func(*config.Config)) *httptest.Server`) on `VMSuite` that wires `api.New(...).Handler()`.
-- [x] 18.6 Author absolute-timestamp fixtures and corresponding tests for: single-cluster `pod-runs-on-node`, cross-cluster `pod-calls-pod`, `KSG_EXTERNAL_NAME_PATTERN` substitution producing an external node, ETag round-trip 304, ETag determinism across repeated builds (`TestRepeatedRequestsReturnSameETag`), `/v1/clusters` discovery, `/v1/edge-types` shape.
+- [x] 18.6 Author absolute-timestamp fixtures and corresponding tests for: single-cluster `pod-runs-on-node`, cross-cluster `pod-calls-pod`, `KSG_EXTERNAL_NAME_PATTERN` substitution producing an external node, body determinism across repeated builds, `/v1/clusters` discovery, `/v1/edge-types` shape.
 - [x] 18.7 Per-test discriminator: each `SetupTest` writes fixtures labelled with `test="<TestName>"` so concurrent runs don't collide.
 - [x] 18.8 CI workflow runs `go test ./...` on `ubuntu-latest`; the suite uses `SkipIfDockerUnavailable(t)` to skip cleanly on developer machines / runners without Docker.
 - [x] 18.9 `httptest.Server` mock layer retained for sub-second inner-loop dev; container layer adds value at PR-feedback level. Decision documented in design D20.
@@ -197,7 +196,7 @@
 - [x] 21.5 Add `make docs` target that runs `swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal`; placeholder `docs/swagger.{json,yaml}` checked in.
 - [x] 21.6 Add `make check-docs` target: `make docs` followed by `git diff --exit-code docs/`.
 - [x] 21.7 Add CI job (`docs-drift`) that runs the same; fails PRs with annotation drift.
-- [x] 21.8 Implement `/openapi.yaml` and `/openapi.json` Gin handlers serving the embedded spec via `embed.FS`, with `Cache-Control: max-age=3600`, ETag, and `If-None-Match` 304.
+- [x] 21.8 Implement `/openapi.yaml` and `/openapi.json` Gin handlers serving the embedded spec via `embed.FS`, with `Cache-Control: max-age=3600`.
 - [x] 21.9 Vendor the Scalar API Reference standalone bundle into `internal/api/static/scalar/`. Pin via `VERSION`; placeholder bundle ships so the binary builds offline; `SHA256.expected` populated by the refresh script on first run.
 - [x] 21.10 Add `make refresh-docs-ui` target invoking `scripts/refresh-docs-ui.sh`: downloads pinned Scalar version, validates SHA-256, writes bundle into `internal/api/static/scalar/`.
 - [x] 21.11 Implement the `/docs` Gin handler: returns embedded HTML referencing `/docs/assets/scalar.js` (relative path) and `/openapi.yaml`. Test `TestDocs_OfflineInvariant` asserts no `https://` references in the served HTML.
@@ -272,22 +271,6 @@ Operators want to anchor a graph view on **any** node — pod, K8s node, PVC, or
 - [x] 25.10 Update `docs/api.md` filter-parameter table: remove the `pod` row, add a `name` row describing the cross-type match (exact equality on `n.Name()`, repeatable, OR within param / AND across params, no cross-cluster partner preservation when set, edge endpoints of in-scope nodes re-added subject to namespace).
 - [x] 25.11 Update `docs/api.zh-tw.md` (if present) and the OpenSpec zh-tw mirrors (`design.zh-tw.md`, `proposal.zh-tw.md`) to reflect the rename.
 - [x] 25.12 Run `openspec validate "add-k8s-pod-graph-api"` and confirm the modified spec parses; run `make test` + `make check-docs` after the code change.
-
-## 26. ETag wording refactor (capability: graph-api — modified)
-
-Operators reviewing the docs flagged that v1 framing of ETag as "HTTP-layer caching" is misleading: ETag is a **response validator** (RFC 9110 §8.8.3) used for **conditional GET / revalidation** (RFC 9110 §13.1), not a cache. v1 ships no server-side cache; the ETag's purpose is to let intermediaries and clients revalidate cheaply with `If-None-Match` and receive `304 Not Modified` when the response body would be byte-identical. Whether any party caches the response body is a client / intermediary policy, not a server feature. Section 26 retitles and rewords the affected sections so the contract reads correctly.
-
-- [x] 26.1 In `openspec/changes/add-k8s-pod-graph-api/design.md` D6, retitle "HTTP-layer caching only (ETag); no in-process result cache" → "Conditional GET via response validator (ETag); no in-process result cache". Reword the body to:
-  - State that the server emits an `ETag` strong validator computed as `sha256(body)`.
-  - Frame `If-None-Match` → `304 Not Modified` as **revalidation**, not cache hit.
-  - Note that fixed-TTL `Cache-Control` headers on `/v1/edge-types`, `/openapi.*`, `/docs`, and `/docs/assets/*` are independent of the validator — they apply because those resources have stable, long-lived content, not because v1 ships a build cache.
-  - Keep the existing determinism prerequisites and "no singleflight" / "future cache mechanism" subsections unchanged.
-- [x] 26.2 In `openspec/changes/add-k8s-pod-graph-api/specs/graph-api/spec.md`, audit any requirement / scenario that calls ETag a "cache". Where applicable, restate the contract as a **conditional GET / response validator** (e.g. "the server SHALL emit an `ETag` strong validator…", "clients MAY revalidate via `If-None-Match`…"). The byte-identity determinism contract stays as-is; only the surrounding wording changes.
-- [x] 26.3 Update `docs/api.md` Headers section for `/v1/graph`:
-  - Replace "save bandwidth via revalidation" with explicit framing: ETag is a strong validator on the response body; clients use it for HTTP conditional GET; `304 Not Modified` is returned when the validator matches. Whether anyone caches the body is a client / intermediary concern, not a server feature.
-  - Restate why no `Cache-Control` is emitted on `/v1/graph` and `/v1/graph/nodegraph`: the server has no view of how long a freshly built graph is "fresh" without re-querying upstream, so it leaves cacheability decisions to the client.
-- [x] 26.4 Mirror the same wording adjustments into `design.zh-tw.md` D6 and the zh-tw mirror (if present) of `docs/api.md`.
-- [x] 26.5 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on ETag determinism only if the wording references "caching" — keep the byte-identity invariant verbatim.
 
 ## 27. Configuration surface simplification (capability: graph-api — modified, cluster-topology-source — modified)
 
@@ -391,7 +374,7 @@ Per design D25 and `specs/otlp-observability/spec.md`. Wires OpenTelemetry traci
 ### 29.D HTTP request tracing (otelgin) and outbound propagation
 
 - [x] 29.D.1 In `internal/api/server.go`, install `otelgin.Middleware("kube-state-graph", otelgin.WithFilter(...))` on the `/v1/*` and `/debug/*` route groups only. Mount `/livez`, `/readyz`, `/metrics`, `/openapi.*`, `/docs`, `/docs/assets/*` on a separate group without the middleware.
-- [x] 29.D.2 After each handler, set `kube_state_graph.etag` attribute on the active span using the response `ETag` header value (when present). Map non-2xx responses to span status `Error` with description = `build.Reason.String()` for typed errors, else the raw `error` string.
+- [x] 29.D.2 Map non-2xx responses to span status `Error` with description = `build.Reason.String()` for typed errors, else the raw `error` string.
 - [x] 29.D.3 Wrap the Prometheus HTTP client transport with `otelhttp.NewTransport(http.DefaultTransport, otelhttp.WithPropagators(otel.GetTextMapPropagator()))` so PromQL HTTP calls inject `traceparent` outbound and emit a client span per upstream call.
 - [x] 29.D.4 Component test in `internal/api/server_happy_test.go` (or sibling): inbound request with explicit `traceparent` header → assert the recorded span's parent matches; mock collector with an in-memory exporter (`tracetest.NewInMemoryExporter`).
 - [x] 29.D.5 Component test: probes `/livez`, `/readyz`, `/metrics` produce zero spans on the in-memory exporter.
@@ -409,11 +392,11 @@ Per design D25 and `specs/otlp-observability/spec.md`. Wires OpenTelemetry traci
 
 - [ ] 29.F.1 Add a testcontainers-based integration test `internal/integration/otlp_e2e_test.go` that starts an OTel Collector container alongside VictoriaMetrics, configures the API server with `OTEL_EXPORTER_OTLP_ENDPOINT=<container endpoint>`, makes a `/v1/graph` request, and asserts the collector received: (a) one `GET /v1/graph` server span; (b) one `kube-state-graph.build` child; (c) ≥ 1 `prometheus.query` grandchild with `db.system=prometheus` and a non-empty `db.statement`; (d) the corresponding log records carry matching `trace_id` / `span_id`. **Deferred** — the existing `internal/integration/` testcontainers suite is gated by Docker bridge-network availability which is not present in the current dev sandbox; same blocker as `TestGraphSuite`. Will land in a follow-up change once CI exposes Docker.
 - [x] 29.F.2 Negative integration test: with no endpoint env var set, run a `/v1/graph` request and assert no socket connection is opened to any port (or simpler: assert `telemetry.Init` returns `enabled=false` and the in-memory exporter remains empty). (Covered by `TestInit_DisabledByDefault` in `internal/telemetry/telemetry_test.go`: clears all OTel env vars, calls Init, asserts `enabled=false` and that the global TracerProvider/LoggerProvider are no-op.)
-- [x] 29.F.3 Property/contract test: assert ETag on `/v1/graph` is byte-identical when tracing is enabled vs disabled (resource attributes must not leak into the response body). (Implemented as `TestTracing_ETagStableAcrossTracingState` against `/v1/edge-types` — the deterministic-body endpoint used widely as the ETag invariant probe.)
+- [x] 29.F.3 Property/contract test: assert the response body for `/v1/edge-types` (and by extension `/v1/graph`) is byte-identical when tracing is enabled vs disabled — resource attributes must not leak into the response body. (Implemented as `TestTracing_BodyStableAcrossTracingState`.)
 - [x] 29.F.4 Update `local/kind/manifests/30-api-server.yaml` to add commented-out `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_SERVICE_NAME` env entries showing how to point the rig at a sidecar Alloy. Do not enable by default. (Implemented as enabled-by-default in the rig: env points kube-state-graph at the in-cluster Alloy, Alloy fans traces to a new Tempo Deployment for Grafana exploration; `28-tempo.yaml` added; Alloy now also accepts logs and runs them through `otelcol.exporter.debug`.)
 - [x] 29.F.5 Update `docs/operations.md` with an "OpenTelemetry" section listing the env vars, the span topology, the expected log fields, and the secret-redaction guarantee. Mirror in `docs/operations.zh-tw.md`. (No zh-tw mirror exists in this repo; English doc updated.)
 - [x] 29.F.6 Update `docs/api.md` to mention that responses are unaffected by tracing and that `traceparent` is honoured / propagated.
-- [x] 29.F.7 Update `CLAUDE.md` "Load-bearing design rules" with a bullet: "Tracing/logging exports are config'd by OTel env vars only (no `--otlp-*` flags), default no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, and SHALL NOT alter response bodies or ETag determinism."
+- [x] 29.F.7 Update `CLAUDE.md` "Load-bearing design rules" with a bullet: "Tracing/logging exports are config'd by OTel env vars only (no `--otlp-*` flags), default no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, and SHALL NOT alter response bodies."
 - [x] 29.F.8 Run `openspec validate "add-k8s-pod-graph-api"`, `make test`, `make vet`, `make lint`, `make check-docs`. Confirm `govulncheck` clean against the new OTel deps. (`openspec validate` passes; `go vet ./...` clean; `go test ./... -race` excluding the Docker-dependent integration package: 122 passed; `golangci-lint run` reports only pre-existing trailing-whitespace nits unrelated to this change. `govulncheck` and `make check-docs` deferred to a follow-up shell that has those tools wired.)
 
 ### 29.G Graceful shutdown wiring
@@ -513,3 +496,44 @@ Per design D26 and the "Configurable upstream metric-name prefix" requirement in
 - [ ] 31.E.2 Run `make test`, `make vet`, `make lint`.
 - [ ] 31.E.3 Run `make verify-mocks` (no interface signatures changed — should be clean).
 - [ ] 31.E.4 Sanity-check the manual rig: with Beyla emitting at least one span whose `k8s.pod.uid` resource attr is intentionally stripped (or by ingesting a hand-crafted `traces_service_graph_request_total` series via the integration-test ingest helper), confirm `/v1/graph` contains an `external/<label>` node for that endpoint.
+
+## 32. Typed `ipaddress` node attribute + remove HTTP cache validators (capability: graph-api — modified, cluster-topology-source — modified)
+
+The response shape is changed so that every pod and K8s-node entry carries its observed IP address(es) on a typed top-level `ipaddress` attribute (`string[]`, `omitempty`) instead of inside the `labels` bag, and the legacy `pod_ip` / `host_ip` / `external_ip` label keys are removed. At the same time, the unused HTTP cache-validator path (`ETag` + `If-None-Match` + `304 Not Modified`) is removed from the codebase — v1 ships no in-process result cache and no validator. Section 32 captures the surgical changes; see `design.md` D28 and `specs/graph-api/spec.md` for the new contract.
+
+### 32.A Code
+
+- [x] 32.A.1 `internal/graph/node.go`: add `IPAddress() []string` to the sealed `GraphNode` interface. Add `IPAddressValue []string` to `PodNode` and `K8sNode`; have `PVCNode` / `ExternalNode` return `nil`.
+- [x] 32.A.2 `internal/build/topology.go`: stop writing `pod_ip` / `host_ip` / `external_ip` into the labels map. Track `pod_ip` on `podObs` and surface it as `PodNode.IPAddressValue` (newest non-empty wins across same-UID merge). Surface `kube_node_status_addresses{type="ExternalIP"}` on `K8sNode.IPAddressValue`.
+- [x] 32.A.3 `internal/api/serialise.go`: add `IPAddress []string` to `cytoscapeNodeData` with `json:"ipaddress,omitempty"`. Populate from `n.IPAddress()`.
+- [x] 32.A.4 `internal/api/handlers.go` + `internal/api/docs.go`: remove all `ETag` / `If-None-Match` / `304` logic and the `sha256ETag` / `sha256Quoted` helpers. Drop `crypto/sha256` / `encoding/hex` imports. Strip ETag mentions from swag annotations.
+- [x] 32.A.5 `internal/graph/registry.go`: delete `EdgeTypesETag` and its imports.
+- [x] 32.A.6 `internal/api/tracing_middleware.go`: remove the `kube_state_graph.etag` span attribute.
+- [x] 32.A.7 `internal/observability/metrics.go`: drop the "ETag computation" mention from the serialise-duration help text.
+
+### 32.B Tests
+
+- [x] 32.B.1 `internal/build/topology_test.go`: replace `labels.pod_ip` / `labels.host_ip` / `labels.external_ip` assertions with `IPAddress` checks; assert those label keys are absent. Drop `host_ip` from expectations.
+- [x] 32.B.2 `internal/api/server_test.go`: drop `TestEdgeTypesEndpoint_IfNoneMatch304` and remove the `ETag` header assertion from `TestEdgeTypesEndpoint_StaticCatalogue`.
+- [x] 32.B.3 `internal/api/server_happy_test.go`: drop `TestGraphEndpoint_HappyPath_IfNoneMatch304`. Extend `TestGraphEndpoint_HappyPath` to assert `data.ipaddress` is populated for the pod entry and that the `pod_ip` / `host_ip` / `external_ip` label keys are absent.
+- [x] 32.B.4 `internal/api/docs_test.go`: drop `TestOpenAPIJSONEndpoint_IfNoneMatch304`. Replace the `ETag`-header assertion in `TestOpenAPIYAMLEndpoint` with a body / content-type / cache-control assertion. Add a sibling `TestOpenAPIJSONEndpoint` doing the same for JSON.
+- [x] 32.B.5 `internal/api/tracing_test.go`: rename `TestTracing_ETagStableAcrossTracingState` → `TestTracing_BodyStableAcrossTracingState`; assert byte-identical bodies rather than ETag headers. Drop the `kube_state_graph.etag` attribute check in `TestTracing_EdgeTypesEmitsServerSpan`.
+- [x] 32.B.6 `internal/integration/graph_e2e_test.go`: delete `TestETagRoundTrip304` and `TestRepeatedRequestsReturnSameETag`.
+
+### 32.C Spec, design, and docs
+
+- [x] 32.C.1 `openspec/changes/add-k8s-pod-graph-api/proposal.md` + `proposal.zh-tw.md`: remove ETag mention; add bullet for the new `ipaddress` attribute + label removal.
+- [x] 32.C.2 `openspec/changes/add-k8s-pod-graph-api/design.md` + `design.zh-tw.md`: rewrite D6 ("Response shape and deterministic body; no in-process result cache") to drop ETag entirely. Add D28 ("Top-level `ipaddress` attribute on pod and K8s-node entries"). Sweep all remaining `ETag` / `If-None-Match` mentions from other D entries.
+- [x] 32.C.3 `openspec/changes/add-k8s-pod-graph-api/specs/graph-api/spec.md`: delete the "Conditional GET via response validator (ETag)" requirement and its scenarios. Add a "Deterministic response body" requirement and a "Node `ipaddress` attribute" requirement with scenarios for pod / node / pvc-or-external / absent-source cases. Drop the OpenAPI ETag scenario.
+- [x] 32.C.4 `openspec/changes/add-k8s-pod-graph-api/specs/cluster-topology-source/spec.md`: rewrite the canonical-fields requirement so `pod_ip` / `host_ip` / `external_ip` no longer appear in labels; pod IP lives on `ipaddress`, node IP lives on the K8s-node entry's `ipaddress`, `host_ip` is dropped from the pod entry entirely.
+- [x] 32.C.5 `openspec/changes/add-k8s-pod-graph-api/specs/otlp-observability/spec.md`: drop the `kube_state_graph.etag` span-attribute requirement and the matching scenario assertion.
+- [x] 32.C.6 `internal/api/static/openapi/openapi.yaml` + `openapi.json` + `docs/swagger.yaml` + `docs/swagger.json` + `docs/docs.go`: regenerated via `make docs`. ETag/304 mentions cleared; `ipaddress` field added to `internal_api.cytoscapeNodeData`.
+- [x] 32.C.7 `docs/operations.md`: remove ETag-based amortisation framing in the capacity-planning section and drop `host_ip` from the exporter-compatibility table. Drop the `kube_state_graph.etag` span-attribute row.
+- [x] 32.C.8 `CLAUDE.md`: remove the "ETag determinism is load-bearing" bullet and the ETag mention in the request-lifecycle diagram. Add a new bullet describing the `ipaddress` attribute contract. Add `IPAddress()` to the sealed-interface method list.
+
+### 32.D Validation
+
+- [x] 32.D.1 `go build ./...`, `go vet ./...`, `go test ./... -count=1 -race -short`: all green.
+- [x] 32.D.2 `make docs` regenerates `internal/api/static/openapi/*` + `docs/swagger.*` cleanly with no ETag / 304 references remaining and the new `ipaddress` schema entry visible.
+- [ ] 32.D.3 `openspec validate "add-k8s-pod-graph-api"` passes after the spec rewrites.
+- [ ] 32.D.4 Manually launch the local rig + Scalar UI and confirm `/v1/graph` returns nodes carrying `ipaddress` (pod + node entries) and that no `ETag` header is set on graph routes.

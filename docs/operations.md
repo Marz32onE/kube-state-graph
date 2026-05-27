@@ -47,7 +47,7 @@
 ## Capacity planning
 
 - Bounded query cost is delegated to upstream VictoriaMetrics search limits (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, `-search.maxSamplesPerQuery`). Tune these on VM, not on KSG.
-- v1 ships **no in-process result cache**. Upstream PromQL load scales linearly with HTTP traffic; ETag-based revalidation is the only client-side amortisation. A future cache mechanism for distributed deployment is anticipated — until it lands, plan capacity around `requests/s × build_cost`.
+- v1 ships **no in-process result cache**. Upstream PromQL load scales linearly with HTTP traffic. A future cache mechanism for distributed deployment is anticipated — until it lands, plan capacity around `requests/s × build_cost`.
 - Concurrency is delegated to HPA + Pod resource limits. Recommended starting point: CPU 500m / Memory 512Mi per replica; HPA target on CPU 60% or p95 build latency. Scale up if profiling shows GC pressure or upstream contention.
 
 ## API-key authentication
@@ -163,7 +163,7 @@ Selected attributes:
 
 | Span | Attributes |
 |------|------------|
-| Server (`GET /v1/...`) | `http.request.method`, `http.route`, `http.response.status_code`, `kube_state_graph.etag` |
+| Server (`GET /v1/...`) | `http.request.method`, `http.route`, `http.response.status_code` |
 | `kube-state-graph.build` | `kube_state_graph.window_seconds`, `kube_state_graph.end_unix`, `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count`, `kube_state_graph.cross_cluster_edges` |
 | `prometheus.query` | `db.system=prometheus`, `db.statement=<rendered PromQL>`, `kube_state_graph.query_name`, `kube_state_graph.result_series_count` |
 | `kube-state-graph.project` | `graph.node.count`, `graph.edge.count` (post-filter) |
@@ -217,7 +217,7 @@ The prefix targets the metric-name **prefix** only. Everything else is a fixed c
 
 | Query identifier | Series the reader queries (with prefix `P`) | Required labels |
 |------------------|---------------------------------------------|-----------------|
-| `kube_pod_info` | `Pkube_pod_info` | `cluster`, `namespace`, `pod`, `uid`, `node`, optional `pod_ip`, `host_ip` |
+| `kube_pod_info` | `Pkube_pod_info` | `cluster`, `namespace`, `pod`, `uid`, `node`, optional `pod_ip` |
 | `kube_node_info` | `Pkube_node_info` | `cluster`, `node` |
 | `kube_node_status_addresses` | `Pkube_node_status_addresses{type="ExternalIP"}` | `cluster`, `node`, `type`, `address` |
 | `kube_pod_spec_volumes_persistentvolumeclaims_info` | `Pkube_pod_spec_volumes_persistentvolumeclaims_info` | `cluster`, `namespace`, `pod`, `persistentvolumeclaim` (or `claim_name`), optional `volume` |

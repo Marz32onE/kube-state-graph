@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -87,15 +88,6 @@ func TestTracing_EdgeTypesEmitsServerSpan(t *testing.T) {
 	for _, span := range spans {
 		if span.Name == "GET /v1/edge-types" {
 			found = true
-			// ETag attribute must be set on success.
-			var hasETag bool
-			for _, kv := range span.Attributes {
-				if string(kv.Key) == "kube_state_graph.etag" && kv.Value.AsString() != "" {
-					hasETag = true
-					break
-				}
-			}
-			assert.True(t, hasETag, "server span must carry kube_state_graph.etag")
 		}
 	}
 	assert.True(t, found, "expected server span named GET /v1/edge-types")
@@ -209,10 +201,10 @@ func TestAuth_NoAPIKeyInLogs(t *testing.T) {
 	assert.Contains(t, out, "\"http\"", "expected an http log line: %s", out)
 }
 
-// TestTracing_ETagStableAcrossTracingState asserts enabling tracing does not
-// change the response ETag — resource attributes and span IDs must NOT leak
-// into the JSON body.
-func TestTracing_ETagStableAcrossTracingState(t *testing.T) {
+// TestTracing_BodyStableAcrossTracingState asserts enabling tracing does not
+// change the response body — resource attributes and span IDs must NOT leak
+// into the JSON output.
+func TestTracing_BodyStableAcrossTracingState(t *testing.T) {
 	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -222,8 +214,9 @@ func TestTracing_ETagStableAcrossTracingState(t *testing.T) {
 	// process has installed — typically the noop tracer).
 	r1, err := http.Get(url)
 	require.NoError(t, err)
+	body1, err := io.ReadAll(r1.Body)
 	r1.Body.Close()
-	etag1 := r1.Header.Get("ETag")
+	require.NoError(t, err)
 
 	// Install a recording tracer and refetch.
 	prevTP := otel.GetTracerProvider()
@@ -236,9 +229,9 @@ func TestTracing_ETagStableAcrossTracingState(t *testing.T) {
 
 	r2, err := http.Get(url)
 	require.NoError(t, err)
+	body2, err := io.ReadAll(r2.Body)
 	r2.Body.Close()
-	etag2 := r2.Header.Get("ETag")
+	require.NoError(t, err)
 
-	require.NotEmpty(t, etag1)
-	assert.Equal(t, etag1, etag2, "ETag must not change when tracing is enabled")
+	assert.Equal(t, body1, body2, "response body must be byte-identical regardless of tracing state")
 }

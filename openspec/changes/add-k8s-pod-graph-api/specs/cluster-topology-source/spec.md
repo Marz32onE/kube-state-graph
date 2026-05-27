@@ -99,31 +99,31 @@ The reader SHALL produce topology entities whose stable identifiers are cluster-
 
 ### Requirement: Canonical entity fields
 
-Every emitted topology entity SHALL carry the four canonical fields consumed by the graph API: `id`, `name`, `type`, `labels`. The reader SHALL set these as follows:
+Every emitted topology entity SHALL carry the canonical fields consumed by the graph API: `id`, `name`, `type`, `labels`, and `ipaddress` (for pods and K8s nodes). The reader SHALL set these as follows:
 
-- For pods: `name` = the `pod` label of `kube_pod_info`; `type` = `"pod"`; `labels` includes `cluster`, `namespace`, `node` (cluster-scoped node ID), `pod_ip` and `host_ip` when the upstream `kube_pod_info` series carries them, and any K8s pod labels available from `kube_pod_labels` for that pod (added under their original keys). When kube-state-metrics emits multiple `kube_pod_info` series for the same pod-UID with evolving label sets (e.g. earlier scrapes that lack `node`, `pod_ip`, or `host_ip`), the reader SHALL merge labels across same-UID samples so the emitted entity reflects the most informative observation.
-- For K8s nodes: `name` = the `node` label of `kube_node_info`; `type` = `"node"`; `labels` includes `cluster`, `external_ip` when `kube_node_status_addresses{type="ExternalIP"}` provides one, and any node labels from `kube_node_labels` for that node (the `label_*=` series translates to entries under their original key with the `label_` prefix removed).
-- For PVCs: `name` = the `claim_name` label of `kube_pod_spec_volumes_persistentvolumeclaims_info`; `type` = `"pvc"`; `labels` includes `cluster`, `namespace`, and `volume`.
+- For pods: `name` = the `pod` label of `kube_pod_info`; `type` = `"pod"`; `labels` includes `cluster`, `namespace`, `node` (cluster-scoped node ID), and any K8s pod labels available from `kube_pod_labels` for that pod (added under their original keys). `ipaddress` = `[pod_ip]` from `kube_pod_info.pod_ip` when surfaced; otherwise empty / omitted. The `host_ip` series label is intentionally not surfaced on the pod entity — the node's IP is exposed only via the K8s node entity. When kube-state-metrics emits multiple `kube_pod_info` series for the same pod-UID with evolving label sets (e.g. earlier scrapes that lack `node` or `pod_ip`), the reader SHALL merge labels across same-UID samples and pick the newest non-empty `pod_ip` so the emitted entity reflects the most informative observation.
+- For K8s nodes: `name` = the `node` label of `kube_node_info`; `type` = `"node"`; `labels` includes `cluster` and any node labels from `kube_node_labels` for that node (the `label_*=` series translates to entries under their original key with the `label_` prefix removed). `ipaddress` = `[external_ip]` from `kube_node_status_addresses{type="ExternalIP"}` when surfaced; otherwise empty / omitted. IPs SHALL NOT be carried inside `labels`.
+- For PVCs: `name` = the `claim_name` label of `kube_pod_spec_volumes_persistentvolumeclaims_info`; `type` = `"pvc"`; `labels` includes `cluster`, `namespace`, and `volume`. `ipaddress` is not emitted.
 
 #### Scenario: Pod entity canonical fields
 
 - **WHEN** `kube_pod_info{cluster="cluster-alpha", namespace="shop", pod="checkout-1", uid="abc", node="worker-0"}` is present
 - **THEN** the emitted pod entity has `id="cluster-alpha/abc"`, `name="checkout-1"`, `type="pod"`, `labels.cluster="cluster-alpha"`, `labels.namespace="shop"`, and `labels.node="cluster-alpha/worker-0"`
 
-#### Scenario: Pod IP and host IP surfaced under labels
+#### Scenario: Pod IP surfaced on the ipaddress attribute
 
 - **WHEN** `kube_pod_info{cluster="cluster-alpha", namespace="shop", pod="checkout-1", uid="abc", node="worker-0", pod_ip="10.244.0.42", host_ip="10.0.0.7"}` is present
-- **THEN** the emitted pod entity has `labels.pod_ip="10.244.0.42"` and `labels.host_ip="10.0.0.7"`
+- **THEN** the emitted pod entity has `ipaddress=["10.244.0.42"]`; neither `labels.pod_ip` nor `labels.host_ip` is present, and `host_ip` is dropped because the node's IP lives on the K8s node entity
 
-#### Scenario: Pod IP labels merged across same-UID samples
+#### Scenario: Pod ipaddress merged across same-UID samples
 
-- **WHEN** kube-state-metrics emits two `kube_pod_info` series with the same `uid` — one without `pod_ip`/`host_ip`/`node` (early scrape during scheduling) and a later one with all three populated
-- **THEN** the emitted pod entity carries the populated `node`, `pod_ip`, and `host_ip` values regardless of the order returned by the upstream
+- **WHEN** kube-state-metrics emits two `kube_pod_info` series with the same `uid` — one without `pod_ip`/`node` (early scrape during scheduling) and a later one with both populated
+- **THEN** the emitted pod entity carries the populated `node` label and `ipaddress=[<pod_ip>]` regardless of the order returned by the upstream
 
-#### Scenario: K8s node external_ip surfaced under labels
+#### Scenario: K8s node ExternalIP surfaced on the ipaddress attribute
 
 - **WHEN** `kube_node_status_addresses{cluster="cluster-alpha", node="worker-0", type="ExternalIP", address="203.0.113.10"}` is present
-- **THEN** the emitted K8s node entity has `labels.external_ip="203.0.113.10"`
+- **THEN** the emitted K8s node entity has `ipaddress=["203.0.113.10"]` and `labels.external_ip` is not present
 
 #### Scenario: K8s node labels flattened
 

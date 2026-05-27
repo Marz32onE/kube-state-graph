@@ -38,7 +38,7 @@ func NewMetrics() *Metrics {
 		}),
 		SerialiseDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "kube_state_graph_serialise_duration_seconds",
-			Help:    "Time spent encoding the response and computing the ETag.",
+			Help:    "Time spent encoding the response.",
 			Buckets: []float64{0.0001, 0.001, 0.01, 0.1, 1},
 		}, []string{"format"}),
 		BuildRejected: prometheus.NewCounterVec(prometheus.CounterOpts{

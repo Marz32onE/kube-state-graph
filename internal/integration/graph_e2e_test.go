@@ -184,35 +184,6 @@ func (s *GraphSuite) TestExternalNodeProducedByPattern() {
 	s.Contains(string(body), `"name":"https://payments.partner.example/api"`)
 }
 
-func (s *GraphSuite) TestETagRoundTrip304() {
-	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	first := s.httpGet(s.graphURL(srv.URL, nil))
-	etag := first.Header.Get("ETag")
-	_ = first.Body.Close()
-	s.Require().NotEmpty(etag)
-
-	req, err := http.NewRequestWithContext(s.T().Context(), http.MethodGet, s.graphURL(srv.URL, nil), nil)
-	s.Require().NoError(err)
-	req.Header.Set("If-None-Match", etag)
-	second, err := http.DefaultClient.Do(req)
-	s.Require().NoError(err)
-	defer func() { _ = second.Body.Close() }()
-	s.Equal(http.StatusNotModified, second.StatusCode)
-}
-
-func (s *GraphSuite) TestRepeatedRequestsReturnSameETag() {
-	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	first := s.httpGet(s.graphURL(srv.URL, nil))
-	etag1 := first.Header.Get("ETag")
-	_ = first.Body.Close()
-	s.Require().NotEmpty(etag1)
-
-	second := s.httpGet(s.graphURL(srv.URL, nil))
-	etag2 := second.Header.Get("ETag")
-	_ = second.Body.Close()
-	s.Equal(etag1, etag2, "deterministic body must yield deterministic ETag across rebuilds")
-}
-
 func (s *GraphSuite) TestClustersDiscovery() {
 	// Discovery handler evaluates "now" via the injected Clock. Pin it to
 	// fixedNow so the 1h discovery lookback covers the statically-timestamped
