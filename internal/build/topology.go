@@ -209,9 +209,10 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		// identity link (deleted pods do not back-fill metrics).
 		sort.SliceStable(group, func(i, j int) bool { return group[i].ts > group[j].ts })
 		// kube-state-metrics emits multiple series per pod-UID as labels evolve
-		// during scheduling (e.g. node, pod_ip arrive after the first scrape).
-		// Merge labels across same-UID samples — newer values win — so the
-		// emitted PodNode reflects the most informative observation.
+		// during scheduling (e.g. node arrives after the first scrape). Merge
+		// labels across same-UID samples — newer values win — so the emitted
+		// PodNode reflects the most informative observation. The pod IP lives
+		// outside labels and is selected separately below.
 		merged := mergeSameUIDLabels(group)
 		canonical := group[0]
 		// Pod IP is sourced from kube_pod_info.pod_ip. Newest sample wins; if
@@ -335,8 +336,8 @@ func unflattenLabel(flattened string) string {
 // mergeSameUIDLabels returns one label map per UID, formed by merging labels
 // from every sample with that UID. group is assumed sorted newest-first; older
 // samples fill in keys the newer ones omit. This handles kube-state-metrics
-// emitting multiple kube_pod_info series per UID as state evolves (node /
-// pod_ip / host_ip arrive on later scrapes).
+// emitting multiple kube_pod_info series per UID as state evolves (e.g. node
+// arrives on a later scrape).
 func mergeSameUIDLabels(group []podObs) map[string]map[string]string {
 	out := map[string]map[string]string{}
 	for _, obs := range group {
