@@ -60,17 +60,17 @@ The harness SHALL also produce real `traces_service_graph_request_total` series 
 
 ### Requirement: API server installed in the harness
 
-The harness SHALL install the `kube-state-graph` API server inside the Kind cluster, configured to point at the in-cluster VictoriaMetrics endpoint, and exposed via a NodePort or `kubectl port-forward` so the operator can reach it from the host. The harness SHALL set `KSG_EXTERNAL_NAME_PATTERN="://"` on the API server Deployment.
+The harness SHALL install the `kube-state-graph` API server inside the Kind cluster, configured to point at the in-cluster VictoriaMetrics endpoint, and exposed via a NodePort or `kubectl port-forward` so the operator can reach it from the host. The harness SHALL set `KSG_OTHERS_NAME_PATTERN="://"` on the API server Deployment.
 
 #### Scenario: API server reachable
 
 - **WHEN** the bootstrap has completed and the operator port-forwards (or hits the NodePort for) the API service
 - **THEN** `GET /v1/livez` against the forwarded port returns 200
 
-#### Scenario: External name pattern configured
+#### Scenario: Others name pattern configured
 
 - **WHEN** an operator inspects the API server Deployment in the harness
-- **THEN** the env section contains `KSG_EXTERNAL_NAME_PATTERN` set to `"://"`
+- **THEN** the env section contains `KSG_OTHERS_NAME_PATTERN` set to `"://"`
 
 ### Requirement: Grafana Pod with provisioned dashboard
 

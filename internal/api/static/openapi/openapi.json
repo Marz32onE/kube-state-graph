@@ -71,6 +71,7 @@
                     "pod",
                     "node",
                     "pvc",
+                    "others",
                     "external"
                 ],
                 "type": "string",
@@ -78,6 +79,7 @@
                     "NodeTypePod",
                     "NodeTypeK8sNode",
                     "NodeTypePVC",
+                    "NodeTypeOthers",
                     "NodeTypeExternal"
                 ]
             },
@@ -665,7 +667,7 @@
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.",
+                        "description": "Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, others, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.",
                         "in": "query",
                         "name": "name",
                         "schema": {
@@ -681,7 +683,7 @@
                         "style": "form"
                     },
                     {
-                        "description": "Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `\u003ccluster\u003e/\u003cuid\u003e`, nodes `\u003ccluster\u003e/\u003cnode\u003e`, PVCs `\u003ccluster\u003e/\u003cns\u003e/\u003cclaim\u003e`, externals `external/\u003cvalue\u003e`.",
+                        "description": "Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `\u003ccluster\u003e/\u003cuid\u003e`, nodes `\u003ccluster\u003e/\u003cnode\u003e`, PVCs `\u003ccluster\u003e/\u003cns\u003e/\u003cclaim\u003e`, others `others/\u003cvalue\u003e`, externals `external/\u003cvalue\u003e`.",
                         "in": "query",
                         "name": "root",
                         "schema": {

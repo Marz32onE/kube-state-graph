@@ -15,13 +15,14 @@ import (
 // ServiceGraphResult is the typed output of the pod-service-graph reader.
 type ServiceGraphResult struct {
 	Edges         []*graph.Edge
+	OthersNodes   []*graph.OthersNode
 	ExternalNodes []*graph.ExternalNode
 	SynthPods     []*graph.PodNode
 }
 
 // ReadServiceGraph fetches service-graph series for the window and joins
 // each endpoint against the supplied topology, applying the
-// KSG_EXTERNAL_NAME_PATTERN substitution rule. The Renderer is accepted for
+// KSG_OTHERS_NAME_PATTERN substitution rule. The Renderer is accepted for
 // signature symmetry with ReadTopology — the configurable metric-name prefix
 // is NOT applied to traces_service_graph_request_total (different exporter
 // family, see design.md D26), so r is effectively a no-op here today; passing
@@ -33,7 +34,7 @@ func ReadServiceGraph(
 	r promql.Renderer,
 	window time.Duration,
 	end time.Time,
-	externalPattern string,
+	othersPattern string,
 	topology Topology,
 ) (ServiceGraphResult, error) {
 	vec, err := q.Instant(ctx,
@@ -44,10 +45,10 @@ func ReadServiceGraph(
 	if err != nil {
 		return ServiceGraphResult{}, fmt.Errorf("service-graph query: %w", err)
 	}
-	return parseServiceGraph(vec, externalPattern, topology), nil
+	return parseServiceGraph(vec, othersPattern, topology), nil
 }
 
-func parseServiceGraph(vec model.Vector, externalPattern string, topology Topology) ServiceGraphResult {
+func parseServiceGraph(vec model.Vector, othersPattern string, topology Topology) ServiceGraphResult {
 	if len(vec) == 0 {
 		return ServiceGraphResult{}
 	}
@@ -64,6 +65,12 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 	}
 	podByUID := topology.PodsByUID
 
+	// Disjoint dedupe maps. `others` holds pattern-matched endpoints (D18,
+	// operator-declared); `externals` holds missing-UID human-label fallbacks
+	// (D27, producer regression). The two ID namespaces (`others/<label>` vs
+	// `external/<label>`) are independent — a label string matched by both
+	// code paths produces two distinct nodes.
+	others := map[string]*graph.OthersNode{}
 	externals := map[string]*graph.ExternalNode{}
 	synthPods := map[string]*graph.PodNode{}
 
@@ -103,13 +110,13 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 		// Client side: cluster is known from the metric.
 		srcID, srcIsPod := resolveClientEndpoint(
 			clientLabel, traceCluster, clientUID, clientNS,
-			externalPattern, podByID, externals, synthPods,
+			othersPattern, podByID, others, externals, synthPods,
 		)
 		// Server side: cluster is recovered from the topology pod-UID index
 		// (the metric does not carry it).
 		tgtID := resolveServerEndpoint(
 			serverLabel, serverUID, serverNS,
-			externalPattern, podByUID, externals, synthPods,
+			othersPattern, podByUID, others, externals, synthPods,
 		)
 
 		if srcID == "" || tgtID == "" {
@@ -141,6 +148,9 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 	}
 
 	out := ServiceGraphResult{Edges: edges}
+	for _, o := range others {
+		out.OthersNodes = append(out.OthersNodes, o)
+	}
 	for _, ext := range externals {
 		out.ExternalNodes = append(out.ExternalNodes, ext)
 	}
@@ -152,29 +162,30 @@ func parseServiceGraph(vec model.Vector, externalPattern string, topology Topolo
 
 // resolveClientEndpoint resolves the client side of a service-graph series.
 // Returns (id, srcIsPod). srcIsPod is true when the resolved endpoint is a
-// pod (real or synthesised), false when it is an external node.
+// pod (real or synthesised), false when it is an others or external node.
 //
-// Side effects: may insert into externals or synthPods.
+// Side effects: may insert into others, externals, or synthPods.
 func resolveClientEndpoint(
 	humanLabel, cluster, podUID, namespace string,
-	externalPattern string,
+	othersPattern string,
 	pods map[string]*graph.PodNode,
+	others map[string]*graph.OthersNode,
 	externals map[string]*graph.ExternalNode,
 	synthPods map[string]*graph.PodNode,
 ) (id string, srcIsPod bool) {
-	// External substitution rule.
-	if externalPattern != "" && humanLabel != "" && strings.Contains(humanLabel, externalPattern) {
-		extID := graph.ExternalID(humanLabel)
-		if _, ok := externals[extID]; !ok {
-			externals[extID] = &graph.ExternalNode{
-				IDValue:   extID,
+	// Others-pattern substitution rule (D18).
+	if othersPattern != "" && humanLabel != "" && strings.Contains(humanLabel, othersPattern) {
+		othID := graph.OthersID(humanLabel)
+		if _, ok := others[othID]; !ok {
+			others[othID] = &graph.OthersNode{
+				IDValue:   othID,
 				NameValue: humanLabel,
 				LabelsValue: map[string]string{
-					"pattern": externalPattern,
+					"pattern": othersPattern,
 				},
 			}
 		}
-		return extID, false
+		return othID, false
 	}
 
 	// Pod-UID resolution. Client side knows its cluster from the metric.
@@ -183,8 +194,9 @@ func resolveClientEndpoint(
 		// human-label fallback"). When the producer (typically Beyla / Alloy)
 		// failed to resolve k8s.pod.uid for this endpoint but the human label
 		// is still populated, promote to an external node rather than silently
-		// dropping the edge. No labels payload — the endpoint is not a pod
-		// (no cluster), and no pattern fired (no labels.pattern).
+		// dropping the edge. Empty labels — endpoint is not a pod (no cluster)
+		// and no pattern fired (no labels.pattern). Disjoint from the others
+		// namespace above.
 		if humanLabel != "" {
 			extID := graph.ExternalID(humanLabel)
 			if _, ok := externals[extID]; !ok {
@@ -223,27 +235,28 @@ func resolveClientEndpoint(
 // topology pod-UID index. When the lookup misses, a synth pod is created
 // with cluster="" (server-side cluster is unknown).
 //
-// Side effects: may insert into externals or synthPods.
+// Side effects: may insert into others, externals, or synthPods.
 func resolveServerEndpoint(
 	humanLabel, podUID, namespace string,
-	externalPattern string,
+	othersPattern string,
 	podByUID map[string]*graph.PodNode,
+	others map[string]*graph.OthersNode,
 	externals map[string]*graph.ExternalNode,
 	synthPods map[string]*graph.PodNode,
 ) (id string) {
-	// External substitution rule.
-	if externalPattern != "" && humanLabel != "" && strings.Contains(humanLabel, externalPattern) {
-		extID := graph.ExternalID(humanLabel)
-		if _, ok := externals[extID]; !ok {
-			externals[extID] = &graph.ExternalNode{
-				IDValue:   extID,
+	// Others-pattern substitution rule (D18).
+	if othersPattern != "" && humanLabel != "" && strings.Contains(humanLabel, othersPattern) {
+		othID := graph.OthersID(humanLabel)
+		if _, ok := others[othID]; !ok {
+			others[othID] = &graph.OthersNode{
+				IDValue:   othID,
 				NameValue: humanLabel,
 				LabelsValue: map[string]string{
-					"pattern": externalPattern,
+					"pattern": othersPattern,
 				},
 			}
 		}
-		return extID
+		return othID
 	}
 
 	// Pod-UID resolution. Server side recovers its cluster via the topology
@@ -251,7 +264,7 @@ func resolveServerEndpoint(
 	if podUID == "" {
 		// Missing pod-UID human-label fallback (D27). Mirror of the client-side
 		// rule — promote to external/<label> when the producer dropped the
-		// UID but the human label survived.
+		// UID but the human label survived. Disjoint from the others namespace.
 		if humanLabel != "" {
 			extID := graph.ExternalID(humanLabel)
 			if _, ok := externals[extID]; !ok {

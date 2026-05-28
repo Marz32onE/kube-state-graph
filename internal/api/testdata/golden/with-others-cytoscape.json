@@ -18,9 +18,9 @@
       },
       {
         "data": {
-          "id": "external/http://api.example.com",
+          "id": "others/http://api.example.com",
           "name": "http://api.example.com",
-          "type": "external",
+          "type": "others",
           "labels": {
             "pattern": "://"
           }
@@ -30,10 +30,10 @@
     "edges": [
       {
         "data": {
-          "id": "d67d9558-792b-5607-abed-9fac618fbfe2",
+          "id": "5bca0ff4-9abc-5d57-8ef2-2c7b949add06",
           "type": "pod-calls-pod",
           "source": "cluster-alpha/p1",
-          "target": "external/http://api.example.com",
+          "target": "others/http://api.example.com",
           "labels": {
             "cluster": "cluster-alpha"
           }

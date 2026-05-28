@@ -84,7 +84,8 @@ The container-integration suite SHALL contain at least one test for each of the 
 
 - A single-cluster graph rendering with `pod-runs-on-node` edges.
 - A multi-cluster graph with at least one `pod-calls-pod` edge whose source-node `labels.cluster` differs from its target-node `labels.cluster` (cross-cluster edge recovered via the topology pod-UID index).
-- The `KSG_EXTERNAL_NAME_PATTERN` substitution producing an `external`-typed node.
+- The `KSG_OTHERS_NAME_PATTERN` substitution producing an `others`-typed node.
+- The missing pod-UID human-label fallback producing an `external`-typed node (D27).
 - ETag round-trip: an initial response yields an `ETag`; a follow-up request with `If-None-Match: <etag>` returns 304.
 - ETag determinism: two consecutive identical `GET /v1/graph` requests return byte-identical `ETag` headers (each request triggers an independent build; v1 has no result cache).
 - `/v1/clusters` listing both synthetic cluster names.

@@ -34,7 +34,7 @@ service:
 config:
   promURL: http://victoria-metrics.kube-state-graph.svc:8428
   listenAddr: ":8080"
-  externalNamePattern: "://"
+  othersNamePattern: "://"
   logLevel: info
 
 apiKeys:

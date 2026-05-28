@@ -105,9 +105,10 @@ func TestParseServiceGraph_IntraClusterEdge(t *testing.T) {
 	assert.Equal(t, "cluster-alpha", res.Edges[0].Labels["cluster"])
 }
 
-func TestParseServiceGraph_ExternalSubstitution_ClientSide(t *testing.T) {
-	// Client side is an external endpoint. Server resolves by UID to a pod in
-	// cluster-alpha. The edge's `cluster` label is omitted (client is not a pod).
+func TestParseServiceGraph_OthersSubstitution_ClientSide(t *testing.T) {
+	// Client side is an others endpoint (pattern-matched, D18). Server resolves
+	// by UID to a pod in cluster-alpha. The edge's `cluster` label is omitted
+	// (client is not a pod).
 	alphaPod := &graph.PodNode{
 		IDValue:     "cluster-alpha/abc",
 		NameValue:   "checkout",
@@ -129,21 +130,22 @@ func TestParseServiceGraph_ExternalSubstitution_ClientSide(t *testing.T) {
 	})
 	res := parseServiceGraph(vec, "://", topo)
 	require.Len(t, res.Edges, 1)
-	require.Len(t, res.ExternalNodes, 1)
-	ext := res.ExternalNodes[0]
-	assert.Equal(t, "http://api.example.com", ext.NameValue)
-	assert.Equal(t, "://", ext.LabelsValue["pattern"])
-	assert.NotContains(t, ext.LabelsValue, "cluster", "external nodes must not carry cluster label")
+	require.Len(t, res.OthersNodes, 1)
+	assert.Empty(t, res.ExternalNodes, "pattern rule must NOT populate the external map")
+	oth := res.OthersNodes[0]
+	assert.Equal(t, "http://api.example.com", oth.NameValue)
+	assert.Equal(t, "://", oth.LabelsValue["pattern"])
+	assert.NotContains(t, oth.LabelsValue, "cluster", "others nodes must not carry cluster label")
 	e := res.Edges[0]
-	assert.Equal(t, "external/http://api.example.com", e.Source)
+	assert.Equal(t, "others/http://api.example.com", e.Source)
 	assert.Equal(t, "cluster-alpha/abc", e.Target)
-	assert.NotContains(t, e.Labels, "cluster", "edge cluster label MUST be omitted when client side is external")
+	assert.NotContains(t, e.Labels, "cluster", "edge cluster label MUST be omitted when client side is non-pod (others)")
 	assert.NotContains(t, e.Labels, "client_cluster")
 	assert.NotContains(t, e.Labels, "server_cluster")
 }
 
-func TestParseServiceGraph_ExternalSubstitution_ServerSide(t *testing.T) {
-	// Server side is external; client is a pod in cluster-alpha. Edge keeps
+func TestParseServiceGraph_OthersSubstitution_ServerSide(t *testing.T) {
+	// Server side is others; client is a pod in cluster-alpha. Edge keeps
 	// labels.cluster = "cluster-alpha".
 	alphaPod := &graph.PodNode{
 		IDValue:     "cluster-alpha/abc",
@@ -166,9 +168,11 @@ func TestParseServiceGraph_ExternalSubstitution_ServerSide(t *testing.T) {
 	})
 	res := parseServiceGraph(vec, "://", topo)
 	require.Len(t, res.Edges, 1)
+	require.Len(t, res.OthersNodes, 1)
+	assert.Empty(t, res.ExternalNodes)
 	e := res.Edges[0]
 	assert.Equal(t, "cluster-alpha/abc", e.Source)
-	assert.Equal(t, "external/https://payments.partner.example/api", e.Target)
+	assert.Equal(t, "others/https://payments.partner.example/api", e.Target)
 	assert.Equal(t, "cluster-alpha", e.Labels["cluster"])
 }
 
@@ -184,6 +188,7 @@ func TestParseServiceGraph_PatternEmpty_DisablesRule(t *testing.T) {
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, "", sampleTopology())
+	assert.Empty(t, res.OthersNodes)
 	assert.Empty(t, res.ExternalNodes)
 	require.Len(t, res.Edges, 1)
 	assert.Equal(t, "cluster-alpha/abc", res.Edges[0].Source)
@@ -388,10 +393,10 @@ func TestParseServiceGraph_UIDAndLabelBothEmpty_EdgeDropped_ServerSide(t *testin
 }
 
 func TestParseServiceGraph_PatternWinsOverMissingUIDFallback(t *testing.T) {
-	// KSG_EXTERNAL_NAME_PATTERN="://" + client label contains "://" + empty UID.
-	// The pattern rule fires FIRST and produces an external node carrying
-	// labels.pattern. The missing-UID fallback (which would emit empty labels)
-	// must NOT run.
+	// KSG_OTHERS_NAME_PATTERN="://" + client label contains "://" + empty UID.
+	// The pattern rule fires FIRST and produces an `others` node carrying
+	// labels.pattern. The missing-UID fallback (which would emit `external/`
+	// with empty labels) must NOT run.
 	alphaPod := &graph.PodNode{
 		IDValue:     "cluster-alpha/abc",
 		LabelsValue: map[string]string{"cluster": "cluster-alpha"},
@@ -412,20 +417,23 @@ func TestParseServiceGraph_PatternWinsOverMissingUIDFallback(t *testing.T) {
 	})
 	res := parseServiceGraph(vec, "://", topo)
 
-	require.Len(t, res.ExternalNodes, 1)
-	ext := res.ExternalNodes[0]
-	assert.Equal(t, "external/http://api.example.com", ext.IDValue)
-	assert.Equal(t, "://", ext.LabelsValue["pattern"],
+	require.Len(t, res.OthersNodes, 1)
+	assert.Empty(t, res.ExternalNodes, "pattern rule wins; fallback must NOT run")
+	oth := res.OthersNodes[0]
+	assert.Equal(t, "others/http://api.example.com", oth.IDValue)
+	assert.Equal(t, "://", oth.LabelsValue["pattern"],
 		"pattern rule fired first; labels.pattern proves precedence over missing-UID fallback")
 }
 
-func TestParseServiceGraph_DedupeBetweenPatternAndFallback(t *testing.T) {
-	// Two series collapse to the same external/<label> ID:
-	//   A: matches pattern, non-empty UID → pattern rule fires (labels.pattern)
-	//   B: same human label, empty UID    → missing-UID fallback (labels={})
-	// Existing externals-map dedupe carries the new path: only ONE external
-	// node remains. The surviving labels payload is whichever observation
-	// won the dedupe — operators MUST NOT depend on a specific shape.
+func TestParseServiceGraph_OthersAndExternalCoexistInOneParse(t *testing.T) {
+	// Disjoint dedupe maps (section 33). One parse can produce BOTH an
+	// `others` node (via pattern rule) AND an `external` node (via missing-UID
+	// fallback) without interference — the two maps are independent.
+	//
+	// Note: for the SAME label string, the pattern rule always wins (resolution
+	// order 1 > 3). To exercise both code paths in a single parse, the two
+	// series carry different label values: series A's client matches the
+	// pattern; series B's client does not but has an empty UID.
 	betaPod := &graph.PodNode{
 		IDValue:     "cluster-beta/def",
 		LabelsValue: map[string]string{"cluster": "cluster-beta"},
@@ -447,7 +455,7 @@ func TestParseServiceGraph_DedupeBetweenPatternAndFallback(t *testing.T) {
 		},
 		model.Sample{
 			Metric: model.Metric{
-				"client":             "admin-cli",
+				"client":             "stray-caller",
 				"server":             "payments",
 				"cluster":            "cluster-alpha",
 				"client_k8s_pod_uid": "",
@@ -456,16 +464,14 @@ func TestParseServiceGraph_DedupeBetweenPatternAndFallback(t *testing.T) {
 			Value: 3,
 		},
 	)
-	res := parseServiceGraph(vec, "admin-cli", topo)
+	res := parseServiceGraph(vec, "admin", topo)
 
-	// Both series want external/admin-cli. Dedupe keeps exactly one node.
-	count := 0
-	for _, ext := range res.ExternalNodes {
-		if ext.IDValue == "external/admin-cli" {
-			count++
-		}
-	}
-	assert.Equal(t, 1, count, "pattern-matched and fallback-matched series MUST dedupe by external/<label> ID")
+	require.Len(t, res.OthersNodes, 1, "pattern-matched series produces one others node")
+	require.Len(t, res.ExternalNodes, 1, "missing-UID-fallback series produces one external node")
+	assert.Equal(t, "others/admin-cli", res.OthersNodes[0].IDValue)
+	assert.Equal(t, "admin", res.OthersNodes[0].LabelsValue["pattern"])
+	assert.Equal(t, "external/stray-caller", res.ExternalNodes[0].IDValue)
+	assert.Empty(t, res.ExternalNodes[0].LabelsValue, "external (fallback) carries empty labels")
 }
 
 // TestProperty_ParseServiceGraph_EveryEdgeHasNonEmptyEndpoints enforces the

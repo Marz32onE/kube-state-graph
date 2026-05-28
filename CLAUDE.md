@@ -114,26 +114,32 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   and the canonical input `<type>|<source>|<target>`. Stable across rebuilds —
   required for golden tests. Bumping the namespace UUID is a v2 break.
 - **Cluster-scoped IDs everywhere.** Pods: `<cluster>/<uid>`, K8s nodes:
-  `<cluster>/<node>`, PVCs: `<cluster>/<namespace>/<claim>`, externals:
-  `external/<value>`. Node names are not globally unique without the prefix.
-- **External-endpoint substitution rule** (`KSG_EXTERNAL_NAME_PATTERN`): when set
-  and the substring matches the upstream `client` or `server` label, that
-  endpoint becomes a `type="external"` node with `id="external/<value>"` and
-  the verbatim label as `name`. Per-endpoint independent — both sides of a
-  single edge can be evaluated separately. Edge `type` stays `pod-calls-pod`.
-  When the client side is external, the edge `labels.cluster` is omitted.
+  `<cluster>/<node>`, PVCs: `<cluster>/<namespace>/<claim>`, others:
+  `others/<value>`, externals: `external/<value>`. Node names are not globally
+  unique without the prefix.
+- **Others-endpoint pattern rule** (`KSG_OTHERS_NAME_PATTERN`): when set and
+  the substring matches the upstream `client` or `server` label, that endpoint
+  becomes a `type="others"` node with `id="others/<value>"`, `labels.pattern`
+  set to the configured substring, and the verbatim label as `name`. Per-
+  endpoint independent — both sides of a single edge can be evaluated
+  separately. Edge `type` stays `pod-calls-pod`. When the client side is
+  `others`, the edge `labels.cluster` is omitted.
 - **Missing pod-UID human-label fallback** (D27, always on): when
   `client_k8s_pod_uid` or `server_k8s_pod_uid` is empty AND the corresponding
   `client`/`server` label is non-empty, that endpoint is promoted to
   `external/<label>` (no cluster prefix; `labels={}`, no `pattern` key)
-  instead of dropping the edge. Per-endpoint resolution order:
-  (1) `KSG_EXTERNAL_NAME_PATTERN` match → external with `labels.pattern`;
+  instead of dropping the edge. The `external/<label>` ID space is
+  **disjoint** from the `others/<label>` ID space — separate dedupe maps,
+  separate node `type`. A label string matched by both code paths produces
+  two distinct nodes (intentional — declared third-party endpoints vs
+  producer-regression inferred endpoints carry different operational meaning;
+  see D27 / D18). Per-endpoint resolution order:
+  (1) `KSG_OTHERS_NAME_PATTERN` match → others with `labels.pattern`;
   (2) UID-based pod resolution / synth-pod fallback (only when UID is non-empty);
-  (3) missing-UID human-label fallback (this rule); (4) drop (both UID and label
-  empty). Edge `labels.cluster` rules are unchanged — omitted whenever the
-  client side resolves to an external node, whether via pattern or via this
-  fallback. The same `external/<label>` ID dedupes against pattern-matched
-  externals in the externals map.
+  (3) missing-UID human-label fallback (this rule) → external with `labels={}`;
+  (4) drop (both UID and label empty). Edge `labels.cluster` is omitted
+  whenever the client side resolves to a non-pod node, whether via the
+  pattern rule (`others`) or this fallback (`external`).
 - **Server-side pod resolution** uses `Topology.PodsByUID` — a global pod-UID
   index built from all loaded clusters. Service-graph metrics carry only the
   trace-source `cluster` (client side); the server side's cluster is recovered

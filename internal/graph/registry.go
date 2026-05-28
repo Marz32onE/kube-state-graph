@@ -47,9 +47,9 @@ var EdgeTypes = []EdgeTypeDefinition{
 	},
 	{
 		Type:            EdgeTypePodCallsPod,
-		Description:     "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). Endpoints may be 'external' nodes when KSG_EXTERNAL_NAME_PATTERN matches the upstream client/server label.",
-		SourceType:      []NodeType{NodeTypePod, NodeTypeExternal},
-		TargetType:      []NodeType{NodeTypePod, NodeTypeExternal},
+		Description:     "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). Endpoints may be 'others' nodes when KSG_OTHERS_NAME_PATTERN matches the upstream client/server label (D18), or 'external' nodes via the missing-UID human-label fallback (D27).",
+		SourceType:      []NodeType{NodeTypePod, NodeTypeOthers, NodeTypeExternal},
+		TargetType:      []NodeType{NodeTypePod, NodeTypeOthers, NodeTypeExternal},
 		Directed:        true,
 		MayCrossCluster: true,
 		Labels: []EdgeTypeLabel{

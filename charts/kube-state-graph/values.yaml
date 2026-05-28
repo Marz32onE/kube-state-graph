@@ -131,9 +131,11 @@ config:
   buildTimeout: ""
   # -- Per-request timeout for non-graph endpoints (KSG_API_TIMEOUT, e.g. "5s").
   apiTimeout: ""
-  # -- Substring used to flag external endpoints (KSG_EXTERNAL_NAME_PATTERN).
-  # e.g. "://" treats any client/server label containing it as an external node.
-  externalNamePattern: ""
+  # -- Substring used to flag others endpoints (KSG_OTHERS_NAME_PATTERN).
+  # e.g. "://" treats any client/server label containing it as an `others` node
+  # (operator-declared third-party endpoint, type="others"). Disjoint from
+  # the `external` type produced by the missing-UID human-label fallback (D27).
+  othersNamePattern: ""
   # -- Log level (KSG_LOG_LEVEL): debug, info, warn, error.
   logLevel: "info"
 

@@ -1,6 +1,8 @@
 version: "2"
 
 run:
+  concurrency: 4
+  allow-parallel: false
   timeout: 5m
   tests: true
 
@@ -34,6 +36,8 @@ linters:
     - testifylint
 
   settings:
+    gocognit:
+      min-complexity: 10
     exhaustive:
       default-signifies-exhaustive: true
     testifylint:

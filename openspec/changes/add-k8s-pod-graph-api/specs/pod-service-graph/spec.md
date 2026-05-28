@@ -59,41 +59,41 @@ The reader SHALL treat an empty or sparse service-graph dataset as a valid input
 - **WHEN** centralised VictoriaMetrics has no `traces_service_graph_*` series in the requested window but topology queries return data
 - **THEN** the build completes with a graph containing topology nodes, zero `pod-calls-pod` edges, and a 200 response
 
-### Requirement: External-endpoint substitution
+### Requirement: Others-endpoint pattern substitution
 
-The reader SHALL read a pattern substring from the env var `KSG_EXTERNAL_NAME_PATTERN` (also accepted as `--external-name-pattern`). The pattern SHALL default to the empty string, which disables the rule. When non-empty, for each service-graph series the reader SHALL evaluate the rule independently for the client side and the server side as follows:
+The reader SHALL read a pattern substring from the env var `KSG_OTHERS_NAME_PATTERN` (also accepted as `--others-name-pattern`). The pattern SHALL default to the empty string, which disables the rule. When non-empty, for each service-graph series the reader SHALL evaluate the rule independently for the client side and the server side as follows:
 
 1. Let `label_value` be the series' `client` (or `server`) label value.
-2. If `label_value` contains the pattern substring, treat that endpoint as an **external** node:
-   - `id`     = `external/<label_value>`
+2. If `label_value` contains the pattern substring, treat that endpoint as an **others** node:
+   - `id`     = `others/<label_value>`
    - `name`   = `<label_value>` (verbatim — no normalisation, no trimming, no scheme parsing)
-   - `type`   = `"external"`
-   - `labels` = `{ "pattern": "<KSG_EXTERNAL_NAME_PATTERN>" }`
+   - `type`   = `"others"`
+   - `labels` = `{ "pattern": "<KSG_OTHERS_NAME_PATTERN>" }`
 3. Otherwise, resolve the endpoint as a pod via `(client_cluster, client_k8s_pod_uid)` (or `(server_cluster, server_k8s_pod_uid)`) against topology, falling through to the synthesised pod node fallback when topology has no entry.
 
 When the pattern is empty (rule disabled), the reader SHALL NOT inspect the `client` / `server` labels for substitution and SHALL resolve all endpoints via pod UID.
 
-The decision is per endpoint: a single edge MAY have a pod source and an external target, an external source and a pod target, two pods, or two external nodes. The edge `type` SHALL remain `pod-calls-pod` regardless of endpoint kinds. For an external endpoint, the corresponding `client_cluster` (or `server_cluster`) value on `labels` SHALL be the empty string `""`.
+The decision is per endpoint: a single edge MAY have a pod source and an others target, an others source and a pod target, two pods, or two others nodes. The edge `type` SHALL remain `pod-calls-pod` regardless of endpoint kinds. When either endpoint resolves to an **others** node OR to an **external** node (via the missing-UID fallback below), the edge `labels.cluster` rule for the client side applies: present when the client side is a pod, omitted otherwise.
 
 #### Scenario: Pattern unset disables the rule
 
-- **WHEN** the server starts without `KSG_EXTERNAL_NAME_PATTERN` and the upstream contains a series with `client="http://api.example.com"`
-- **THEN** the resulting edge resolves the client endpoint via `(client_cluster, client_k8s_pod_uid)` and emits no external node
+- **WHEN** the server starts without `KSG_OTHERS_NAME_PATTERN` and the upstream contains a series with `client="http://api.example.com"`
+- **THEN** the resulting edge resolves the client endpoint via `(client_cluster, client_k8s_pod_uid)` and emits no others node
 
 #### Scenario: Client side matches pattern
 
-- **WHEN** the server is started with `KSG_EXTERNAL_NAME_PATTERN="://"` and the upstream contains a series with `client="http://api.example.com"`, `server="checkout"`, `cluster="cluster-alpha"`, `server_k8s_pod_uid="abc"` (resolving to a pod in topology with `cluster: "cluster-alpha"`)
-- **THEN** the resulting edge has `type: "pod-calls-pod"`, `source: "external/http://api.example.com"`, `target: "cluster-alpha/abc"`; the source node has `type: "external"`, `name: "http://api.example.com"`, `labels.pattern: "://"`, no `cluster` key under its `labels`; and the **edge** itself contains no `cluster` key under `labels` (the client side is external)
+- **WHEN** the server is started with `KSG_OTHERS_NAME_PATTERN="://"` and the upstream contains a series with `client="http://api.example.com"`, `server="checkout"`, `cluster="cluster-alpha"`, `server_k8s_pod_uid="abc"` (resolving to a pod in topology with `cluster: "cluster-alpha"`)
+- **THEN** the resulting edge has `type: "pod-calls-pod"`, `source: "others/http://api.example.com"`, `target: "cluster-alpha/abc"`; the source node has `type: "others"`, `name: "http://api.example.com"`, `labels.pattern: "://"`, no `cluster` key under its `labels`; and the **edge** itself contains no `cluster` key under `labels` (the client side is others)
 
 #### Scenario: Server side matches pattern
 
-- **WHEN** the server is started with `KSG_EXTERNAL_NAME_PATTERN="://"` and the upstream contains a series with `client="checkout"`, `server="https://payments.partner.example/api"`, `cluster="cluster-alpha"`, `client_k8s_pod_uid="abc"`
-- **THEN** the resulting edge has `target: "external/https://payments.partner.example/api"`; the target node has `type: "external"`, `name: "https://payments.partner.example/api"`; and the edge has `labels.cluster: "cluster-alpha"` (the client side is a pod in `cluster-alpha`)
+- **WHEN** the server is started with `KSG_OTHERS_NAME_PATTERN="://"` and the upstream contains a series with `client="checkout"`, `server="https://payments.partner.example/api"`, `cluster="cluster-alpha"`, `client_k8s_pod_uid="abc"`
+- **THEN** the resulting edge has `target: "others/https://payments.partner.example/api"`; the target node has `type: "others"`, `name: "https://payments.partner.example/api"`; and the edge has `labels.cluster: "cluster-alpha"` (the client side is a pod in `cluster-alpha`)
 
 #### Scenario: Both sides match pattern
 
 - **WHEN** the configured pattern is `"://"` and a series has both `client` and `server` containing `://`
-- **THEN** the resulting edge has both source and target as external nodes, the edge `type` is still `"pod-calls-pod"`, and the edge `labels` contain no `cluster` key
+- **THEN** the resulting edge has both source and target as others nodes, the edge `type` is still `"pod-calls-pod"`, and the edge `labels` contain no `cluster` key
 
 #### Scenario: Pattern does not match, falls through to pod resolution
 
@@ -104,7 +104,7 @@ The decision is per endpoint: a single edge MAY have a pod source and an externa
 
 When a service-graph series lacks a pod UID for an endpoint (`client_k8s_pod_uid` or `server_k8s_pod_uid` is empty or absent) AND the corresponding human-readable label (`client` or `server`) is non-empty, the reader SHALL promote that endpoint to an **external** node derived from the human label, instead of dropping the edge.
 
-This fallback fires AFTER the external-pattern rule (`KSG_EXTERNAL_NAME_PATTERN`) and BEFORE the synthesised-pod fallback. It is unconditionally on (no knob) and SHALL apply symmetrically to client and server sides.
+This fallback fires AFTER the others-pattern rule (`KSG_OTHERS_NAME_PATTERN`) and BEFORE the synthesised-pod fallback. It is unconditionally on (no knob) and SHALL apply symmetrically to client and server sides.
 
 For the affected endpoint, the reader SHALL produce a node with:
 
@@ -113,15 +113,15 @@ For the affected endpoint, the reader SHALL produce a node with:
 - `type`   = `"external"`
 - `labels` = `{}` (empty map — no `cluster` key, no `pattern` key)
 
-The `external/<label_value>` ID is intentionally identical in shape to IDs produced by the `KSG_EXTERNAL_NAME_PATTERN` rule. Two upstream series whose label values collapse to the same ID (whether produced by the pattern rule, the missing-UID fallback, or one of each) SHALL resolve to a single external node in the output.
+The `external/<label_value>` ID space is **disjoint** from the `others/<label_value>` ID space produced by the `KSG_OTHERS_NAME_PATTERN` rule. The two node types and their dedupe maps are independent: a label `admin-cli` matched by the pattern rule produces `others/admin-cli` (`type=others`); the same label string falling through the missing-UID fallback in another series produces `external/admin-cli` (`type=external`). Operators MAY see two nodes with the same `name` but different `type` and `id`.
 
-The edge `labels.cluster` rule is unchanged: present (set to the metric's `cluster` label) when the **client** side resolves to a pod; omitted when the client side is external — whether the client became external via the pattern rule or via this missing-UID fallback.
+The edge `labels.cluster` rule is unchanged: present (set to the metric's `cluster` label) when the **client** side resolves to a pod; omitted when the client side is non-pod — whether the client became `others` via the pattern rule or `external` via this missing-UID fallback.
 
 When BOTH the pod UID AND the human label are empty for an endpoint, the reader SHALL drop the edge (no identity remains to construct any node).
 
 The per-endpoint resolution order is:
 
-1. `KSG_EXTERNAL_NAME_PATTERN` substring match → external node (with `labels.pattern`).
+1. `KSG_OTHERS_NAME_PATTERN` substring match → others node (with `labels.pattern`).
 2. Pod-UID resolution against topology / synth-pod fallback (only when UID is non-empty).
 3. Missing-UID human-label fallback (this requirement; only when UID is empty AND label is non-empty).
 4. Drop (both UID and label empty).
@@ -148,18 +148,18 @@ The per-endpoint resolution order is:
 
 #### Scenario: Pattern rule wins over missing-UID fallback
 
-- **WHEN** `KSG_EXTERNAL_NAME_PATTERN="://"` is set and a series has `client="http://api.example.com"` with `client_k8s_pod_uid` also empty
-- **THEN** the client side resolves to `external/http://api.example.com` via the pattern rule with `labels.pattern: "://"` set; the missing-UID fallback is NOT consulted (the pattern rule already produced the external node)
+- **WHEN** `KSG_OTHERS_NAME_PATTERN="://"` is set and a series has `client="http://api.example.com"` with `client_k8s_pod_uid` also empty
+- **THEN** the client side resolves to `others/http://api.example.com` via the pattern rule with `labels.pattern: "://"` set; the missing-UID fallback is NOT consulted (the pattern rule already produced the others node)
 
 #### Scenario: Pattern unset, UID present — fallback does not fire
 
-- **WHEN** `KSG_EXTERNAL_NAME_PATTERN=""` and a series has `client="checkout"` with `client_k8s_pod_uid="abc"`
+- **WHEN** `KSG_OTHERS_NAME_PATTERN=""` and a series has `client="checkout"` with `client_k8s_pod_uid="abc"`
 - **THEN** the client side resolves via pod-UID lookup (with the synth-pod fallback on topology miss); the missing-UID fallback is NOT consulted (UID is non-empty)
 
-#### Scenario: Pattern-matched and fallback-matched series produce the same external node
+#### Scenario: Others and external nodes coexist within one parse
 
-- **WHEN** `KSG_EXTERNAL_NAME_PATTERN="admin"`, series A has `client="admin-cli"`, `client_k8s_pod_uid="some-uid"` (pattern matches, UID is non-empty but pattern wins), and series B has `client="admin-cli"`, `client_k8s_pod_uid=""` (UID empty, falls back)
-- **THEN** both series resolve their client side to the single node `id="external/admin-cli"`; the surviving node's `labels` are whichever the first observed series produced (the dedupe is by ID, not by labels — operators MUST NOT depend on a specific labels payload when both code paths reach the same ID)
+- **WHEN** `KSG_OTHERS_NAME_PATTERN="admin"`, series A has `client="admin-cli"`, `client_k8s_pod_uid="some-uid"` (pattern matches), and series B has `client="stray-caller"`, `client_k8s_pod_uid=""` (no pattern match; UID empty so the fallback fires)
+- **THEN** series A's client resolves to `id="others/admin-cli"` (`type="others"`, `labels.pattern="admin"`) and series B's client resolves to `id="external/stray-caller"` (`type="external"`, `labels={}`). Both nodes appear in the same response. (For a series whose label DOES match the pattern AND has empty UID, the pattern rule wins per the resolution order — the missing-UID fallback only fires when the pattern does not match.)
 
 ### Requirement: Synthesised pod node fallback
 

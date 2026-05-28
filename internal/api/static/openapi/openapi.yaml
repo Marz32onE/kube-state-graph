@@ -50,12 +50,14 @@ components:
                 - pod
                 - node
                 - pvc
+                - others
                 - external
             type: string
             x-enum-varnames:
                 - NodeTypePod
                 - NodeTypeK8sNode
                 - NodeTypePVC
+                - NodeTypeOthers
                 - NodeTypeExternal
         internal_api.ClusterInfo:
             properties:
@@ -493,7 +495,7 @@ paths:
                         type: string
                     type: array
                   style: form
-                - description: Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.
+                - description: Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, others, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.
                   in: query
                   name: name
                   schema:
@@ -504,7 +506,7 @@ paths:
                         type: string
                     type: array
                   style: form
-                - description: Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, externals `external/<value>`.
+                - description: Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, others `others/<value>`, externals `external/<value>`.
                   in: query
                   name: root
                   schema:

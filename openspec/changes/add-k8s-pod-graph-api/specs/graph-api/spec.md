@@ -52,10 +52,10 @@ The server SHALL pass caller-supplied `start` and `end` through to upstream Prom
 `GET /v1/graph` SHALL return a JSON document in Cytoscape.js shape: `{ apiVersion, clusters, elements: { nodes, edges } }`. The body SHALL NOT contain time-varying or echo-of-input fields, so identical inputs against the same upstream state produce byte-identical bodies.
 
 Each **node** SHALL be `{ data: { id, name, type, labels } }`:
-- `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`). For external nodes, `id` SHALL be `external/<label-value>` (no cluster prefix).
-- `name` SHALL be the human-readable pod / node / PVC name (used for the Grafana panel display label). For external nodes, `name` SHALL be the verbatim `client` or `server` label value from the source service-graph series.
-- `type` SHALL be one of the strings `"pod"`, `"node"`, `"pvc"`, `"external"`.
-- `labels` SHALL be a JSON object whose values are strings only (`map[string]string`). For pod / K8s node / PVC nodes it SHALL include at minimum a `cluster` entry; for pods and PVCs it SHALL also include a `namespace` entry; for pods it SHALL include `node` (the cluster-scoped node ID), and SHALL include `pod_ip` and `host_ip` whenever the upstream `kube_pod_info` series carried them; for K8s nodes it SHALL include `external_ip` when the upstream provided one. **For external nodes**, `labels` SHALL contain at least `pattern` (the configured `KSG_EXTERNAL_NAME_PATTERN` substring that matched) and SHALL NOT contain a `cluster` entry.
+- `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`). For others nodes (pattern-matched non-pod endpoints), `id` SHALL be `others/<label-value>` (no cluster prefix). For external nodes (missing-UID human-label fallback), `id` SHALL be `external/<label-value>` (no cluster prefix).
+- `name` SHALL be the human-readable pod / node / PVC name (used for the Grafana panel display label). For others / external nodes, `name` SHALL be the verbatim `client` or `server` label value from the source service-graph series.
+- `type` SHALL be one of the strings `"pod"`, `"node"`, `"pvc"`, `"others"`, `"external"`.
+- `labels` SHALL be a JSON object whose values are strings only (`map[string]string`). For pod / K8s node / PVC nodes it SHALL include at minimum a `cluster` entry; for pods and PVCs it SHALL also include a `namespace` entry; for pods it SHALL include `node` (the cluster-scoped node ID), and SHALL include `pod_ip` and `host_ip` whenever the upstream `kube_pod_info` series carried them; for K8s nodes it SHALL include `external_ip` when the upstream provided one. **For others nodes**, `labels` SHALL contain at least `pattern` (the configured `KSG_OTHERS_NAME_PATTERN` substring that matched) and SHALL NOT contain a `cluster` entry. **For external nodes**, `labels` SHALL be an empty object `{}` (no `pattern` key, no `cluster` key — externals are only produced by the missing-UID fallback).
 
 Each **edge** SHALL be `{ data: { id, type, source, target, labels } }`:
 - `id` SHALL be a UUID, RFC 4122 compliant, encoded as a lowercase canonical string.
@@ -85,10 +85,15 @@ Implementations SHALL NOT encode booleans or numbers as strings inside `labels`.
 - **WHEN** the response contains a PVC node
 - **THEN** its `data.type` equals `"pvc"`, its `data.id` matches `<cluster>/<namespace>/<claim>`, its `data.name` equals the claim name, and `data.labels.namespace` equals the PVC namespace
 
-#### Scenario: External node payload
+#### Scenario: Others node payload
 
-- **WHEN** the response contains an external node produced by the `KSG_EXTERNAL_NAME_PATTERN` substitution rule
-- **THEN** its `data.type` equals `"external"`, its `data.id` equals `external/<value>`, its `data.name` equals `<value>` (the verbatim service-graph `client` or `server` label that matched), `data.labels` contains a `pattern` key whose value is the configured substring, and `data.labels` does NOT contain a `cluster` key
+- **WHEN** the response contains an others node produced by the `KSG_OTHERS_NAME_PATTERN` substitution rule
+- **THEN** its `data.type` equals `"others"`, its `data.id` equals `others/<value>`, its `data.name` equals `<value>` (the verbatim service-graph `client` or `server` label that matched), `data.labels` contains a `pattern` key whose value is the configured substring, and `data.labels` does NOT contain a `cluster` key
+
+#### Scenario: External node payload (missing-UID fallback)
+
+- **WHEN** the response contains an external node produced by the missing-UID human-label fallback (a service-graph series whose `client_k8s_pod_uid` or `server_k8s_pod_uid` was empty but the corresponding `client`/`server` label was populated)
+- **THEN** its `data.type` equals `"external"`, its `data.id` equals `external/<value>`, its `data.name` equals `<value>`, and `data.labels` equals `{}` (no `pattern` key, no `cluster` key)
 
 #### Scenario: Edge payload references existing nodes
 
@@ -228,7 +233,7 @@ The server SHALL expose `GET /v1/clusters` that returns the list of clusters wit
 
 ### Requirement: Edge-type discovery endpoint
 
-The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header.
+The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-runs-on-node`, `pod-mounts-pvc`, and `pod-calls-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"others"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header.
 
 #### Scenario: Static catalogue
 
@@ -238,7 +243,7 @@ The server SHALL expose `GET /v1/edge-types` that returns the static catalogue o
 #### Scenario: pod-calls-pod marked may_cross_cluster
 
 - **WHEN** a client inspects the catalogue entry for `pod-calls-pod`
-- **THEN** its `may_cross_cluster` field is `true`, its `source_type` and `target_type` are arrays containing both `"pod"` and `"external"`, and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (representing the trace source cluster; cross-cluster status is detected by comparing the source/target nodes' `labels.cluster` rather than from edge labels)
+- **THEN** its `may_cross_cluster` field is `true`, its `source_type` and `target_type` are arrays containing `"pod"`, `"others"`, and `"external"`, and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (representing the trace source cluster; cross-cluster status is detected by comparing the source/target nodes' `labels.cluster` rather than from edge labels)
 
 ### Requirement: Cross-cluster edge representation
 
@@ -273,7 +278,7 @@ Every `data` object for a node in the Cytoscape response SHALL expose a top-leve
 
 - `type="pod"` nodes SHALL carry the pod's IP from `kube_pod_info.pod_ip` (single-element slice) when the source metric surfaces it, and omit the field otherwise.
 - `type="node"` nodes SHALL carry the K8s node's `ExternalIP` from `kube_node_status_addresses` (single-element slice) when present, and omit the field otherwise.
-- `type="pvc"` and `type="external"` nodes SHALL NOT emit the `ipaddress` field.
+- `type="pvc"`, `type="others"`, and `type="external"` nodes SHALL NOT emit the `ipaddress` field.
 
 The legacy `labels.pod_ip`, `labels.host_ip`, and `labels.external_ip` keys SHALL NOT appear on any node entry — they are replaced by the typed `ipaddress` attribute and the node entry respectively.
 
@@ -292,9 +297,9 @@ The legacy `labels.pod_ip`, `labels.host_ip`, and `labels.external_ip` keys SHAL
 - **WHEN** a pod's `kube_pod_info` series omits `pod_ip`, or a K8s node has no `ExternalIP` row in `kube_node_status_addresses`
 - **THEN** the corresponding node's `data` object does not include an `ipaddress` field
 
-#### Scenario: PVC and external nodes never carry ipaddress
+#### Scenario: PVC, others, and external nodes never carry ipaddress
 
-- **WHEN** the response contains nodes of `type="pvc"` or `type="external"`
+- **WHEN** the response contains nodes of `type="pvc"`, `type="others"`, or `type="external"`
 - **THEN** those node `data` objects do not include an `ipaddress` field
 
 ### Requirement: API-key authentication on `/v1/*` and `/debug/*`

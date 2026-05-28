@@ -17,11 +17,11 @@ func TestParse_DefaultsValid(t *testing.T) {
 
 func TestParse_FlagsOverrideEnv(t *testing.T) {
 	env := map[string]string{
-		"KSG_PROM_URL":              "http://env:9090",
-		"KSG_LISTEN_ADDR":           ":1111",
-		"KSG_BUILD_TIMEOUT":         "5s",
-		"KSG_API_TIMEOUT":           "2s",
-		"KSG_EXTERNAL_NAME_PATTERN": "://",
+		"KSG_PROM_URL":            "http://env:9090",
+		"KSG_LISTEN_ADDR":         ":1111",
+		"KSG_BUILD_TIMEOUT":       "5s",
+		"KSG_API_TIMEOUT":         "2s",
+		"KSG_OTHERS_NAME_PATTERN": "://",
 	}
 	cfg, err := Parse(
 		[]string{"--listen-addr=:2222", "--api-timeout=3s"},
@@ -32,7 +32,7 @@ func TestParse_FlagsOverrideEnv(t *testing.T) {
 	assert.Equal(t, ":2222", cfg.ListenAddr, "flag did not override env")
 	assert.Equal(t, 3*time.Second, cfg.APITimeout, "flag did not override env for api-timeout")
 	assert.Equal(t, 5*time.Second, cfg.BuildTimeout, "build-timeout env not honoured")
-	assert.Equal(t, "://", cfg.ExternalNamePattern, "env-only var not bound")
+	assert.Equal(t, "://", cfg.OthersNamePattern, "env-only var not bound")
 }
 
 func TestValidate_RejectsZeroAPITimeout(t *testing.T) {

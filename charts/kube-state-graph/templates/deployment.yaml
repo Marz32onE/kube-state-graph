@@ -95,9 +95,9 @@ spec:
             - name: KSG_API_TIMEOUT
               value: {{ .Values.config.apiTimeout | quote }}
             {{- end }}
-            {{- if .Values.config.externalNamePattern }}
-            - name: KSG_EXTERNAL_NAME_PATTERN
-              value: {{ .Values.config.externalNamePattern | quote }}
+            {{- if .Values.config.othersNamePattern }}
+            - name: KSG_OTHERS_NAME_PATTERN
+              value: {{ .Values.config.othersNamePattern | quote }}
             {{- end }}
             {{- if .Values.config.logLevel }}
             - name: KSG_LOG_LEVEL

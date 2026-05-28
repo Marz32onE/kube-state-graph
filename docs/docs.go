@@ -78,6 +78,7 @@ const docTemplate = `{
                     "pod",
                     "node",
                     "pvc",
+                    "others",
                     "external"
                 ],
                 "type": "string",
@@ -85,6 +86,7 @@ const docTemplate = `{
                     "NodeTypePod",
                     "NodeTypeK8sNode",
                     "NodeTypePVC",
+                    "NodeTypeOthers",
                     "NodeTypeExternal"
                 ]
             },
@@ -659,7 +661,7 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.",
+                        "description": "Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, others, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.",
                         "example": "checkout-7d9f6c8b8-abcde",
                         "in": "query",
                         "name": "name",
@@ -672,7 +674,7 @@ const docTemplate = `{
                         "style": "form"
                     },
                     {
-                        "description": "Cluster-scoped node ID anchoring a traversal. Format depends on type — pods ` + "`" + `\u003ccluster\u003e/\u003cuid\u003e` + "`" + `, nodes ` + "`" + `\u003ccluster\u003e/\u003cnode\u003e` + "`" + `, PVCs ` + "`" + `\u003ccluster\u003e/\u003cns\u003e/\u003cclaim\u003e` + "`" + `, externals ` + "`" + `external/\u003cvalue\u003e` + "`" + `.",
+                        "description": "Cluster-scoped node ID anchoring a traversal. Format depends on type — pods ` + "`" + `\u003ccluster\u003e/\u003cuid\u003e` + "`" + `, nodes ` + "`" + `\u003ccluster\u003e/\u003cnode\u003e` + "`" + `, PVCs ` + "`" + `\u003ccluster\u003e/\u003cns\u003e/\u003cclaim\u003e` + "`" + `, others ` + "`" + `others/\u003cvalue\u003e` + "`" + `, externals ` + "`" + `external/\u003cvalue\u003e` + "`" + `.",
                         "example": "prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab",
                         "in": "query",
                         "name": "root",

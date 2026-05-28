@@ -537,3 +537,58 @@ The response shape is changed so that every pod and K8s-node entry carries its o
 - [x] 32.D.2 `make docs` regenerates `internal/api/static/openapi/*` + `docs/swagger.*` cleanly with no ETag / 304 references remaining and the new `ipaddress` schema entry visible.
 - [ ] 32.D.3 `openspec validate "add-k8s-pod-graph-api"` passes after the spec rewrites.
 - [ ] 32.D.4 Manually launch the local rig + Scalar UI and confirm `/v1/graph` returns nodes carrying `ipaddress` (pod + node entries) and that no `ETag` header is set on graph routes.
+
+## 33. Split `others` (pattern) from `external` (missing-UID fallback) (capability: graph-api — modified, pod-service-graph — modified)
+
+Pattern-matched non-pod endpoints (operator-declared via `KSG_OTHERS_NAME_PATTERN`) and missing-UID inferred non-pod endpoints (producer regression fallback per D27) now live in disjoint namespaces with disjoint dedupe maps. The pattern rule emits `type="others"` with `id="others/<label>"`; the missing-UID fallback continues to emit `type="external"` with `id="external/<label>"`. The env var / flag / config field are renamed from `KSG_EXTERNAL_NAME_PATTERN` / `--external-name-pattern` / `ExternalNamePattern` to `KSG_OTHERS_NAME_PATTERN` / `--others-name-pattern` / `OthersNamePattern`. Rationale: the producer-regression signal (sudden growth of `type=external`) was diluted by steady-state declared endpoints; splitting keeps the alarm clean. See design.md D18 + D27.
+
+### 33.A Graph types
+
+- [ ] 33.A.1 `internal/graph/node.go`: add `NodeTypeOthers NodeType = "others"`. Add `OthersNode` struct mirroring `ExternalNode` (fields `IDValue`, `NameValue`, `LabelsValue`). Implement `ID()`, `Name()`, `Type()` (returns `NodeTypeOthers`), `Labels()`, `IPAddress()` (returns `nil`), `isGraphNode()`. Add `OthersID(value string) string { return "others/" + value }`.
+- [ ] 33.A.2 Update the `ExternalNode` doc-comment to clarify it represents only the missing-UID human-label fallback path (D27); the pattern-matched path now produces `OthersNode`.
+
+### 33.B Builder rewiring
+
+- [ ] 33.B.1 `internal/build/servicegraph.go`: add `OthersNodes []*graph.OthersNode` to `ServiceGraphResult`.
+- [ ] 33.B.2 Rename the `externalPattern` parameter on `ReadServiceGraph`, `parseServiceGraph`, `resolveClientEndpoint`, `resolveServerEndpoint` to `othersPattern`.
+- [ ] 33.B.3 In `parseServiceGraph`, allocate a second dedupe map: `others := map[string]*graph.OthersNode{}`. Pass it alongside `externals` into both resolver functions.
+- [ ] 33.B.4 In both `resolveClientEndpoint` and `resolveServerEndpoint`, change the pattern branch to insert into `others` with `id=graph.OthersID(humanLabel)`, `type="others"`, `labels={"pattern": othersPattern}`. The missing-UID fallback branch keeps inserting into `externals` unchanged.
+- [ ] 33.B.5 At the bottom of `parseServiceGraph`, populate `out.OthersNodes` from the `others` map in addition to `out.ExternalNodes` from `externals`.
+
+### 33.C Builder.assemble + main pipeline
+
+- [ ] 33.C.1 `internal/build/build.go::assemble`: include `sg.OthersNodes` in the total / iteration so others nodes flow into the assembled `[]graph.GraphNode`. Update the `total` size hint to account for them.
+- [ ] 33.C.2 `internal/build/build.go::Build`: pass `b.cfg.OthersNamePattern` to `ReadServiceGraph` (renamed from `b.cfg.ExternalNamePattern`).
+
+### 33.D Config + flag rename
+
+- [ ] 33.D.1 `internal/config/config.go`: rename `Config.ExternalNamePattern` → `Config.OthersNamePattern`. Update `Defaults()` field name. Update `Parse` to bind `--others-name-pattern` (replacing `--external-name-pattern`); update help text to reference others nodes. Update `applyEnv` to read `KSG_OTHERS_NAME_PATTERN` (replacing `KSG_EXTERNAL_NAME_PATTERN`).
+- [ ] 33.D.2 `cmd/kube-state-graph/main.go`: rename the `external_name_pattern_set` slog field to `others_name_pattern_set` and read `cfg.OthersNamePattern`.
+
+### 33.E Tests
+
+- [ ] 33.E.1 `internal/config/config_test.go`: replace `KSG_EXTERNAL_NAME_PATTERN` with `KSG_OTHERS_NAME_PATTERN`; rename `cfg.ExternalNamePattern` → `cfg.OthersNamePattern`; update assertion message.
+- [ ] 33.E.2 `internal/build/servicegraph_test.go`: rewrite pattern-rule tests to assert `id="others/<value>"`, `type="others"`, and that nodes land in `ServiceGraphResult.OthersNodes`. Rewrite the "pattern + fallback dedupe" test (was `TestParseServiceGraph_DedupeBetweenPatternAndFallback`) to assert that the two paths now produce two distinct nodes (`others/<label>` and `external/<label>`).
+- [ ] 33.E.3 `internal/integration/graph_e2e_test.go`: rename `cfg.ExternalNamePattern = "://"` → `cfg.OthersNamePattern = "://"`. Update any test that asserts on `type="external"` for a pattern-matched endpoint to expect `type="others"` and `id="others/<label>"`. Keep missing-UID-fallback tests on `type="external"`.
+- [ ] 33.E.4 `internal/graph/registry.go`: update `EdgeTypePodCallsPod`'s description to reference `KSG_OTHERS_NAME_PATTERN` (and mention both `others` + `external` endpoint kinds).
+- [ ] 33.E.5 Golden tests: regenerate any fixtures under `internal/api/testdata/golden/` whose payload includes pattern-matched endpoints (`type="external"` with `labels.pattern`) — those now serialise as `type="others"` with `id="others/<value>"`. Run `go test ./internal/api/ -update -run Golden` after the code change.
+
+### 33.F Docs + manifests
+
+- [ ] 33.F.1 Rename `docs/external-substitution.md` → `docs/others-substitution.md`; rewrite the body for the new node type and env var. Add a short section pointing to D27 for the missing-UID fallback (now a separate `type=external` node).
+- [ ] 33.F.2 `README.md` + `README.zh-tw.md`: update the env / flag table entries (`KSG_EXTERNAL_NAME_PATTERN` → `KSG_OTHERS_NAME_PATTERN`, `--external-name-pattern` → `--others-name-pattern`); update prose mentioning `external` nodes produced by the pattern to mention `others` instead.
+- [ ] 33.F.3 `docs/operations.md`: update the "Exporter compatibility contract" + any other section that mentions `KSG_EXTERNAL_NAME_PATTERN` or the `external`-via-pattern shape.
+- [ ] 33.F.4 `docs/api.md`: add `others` to the node `type` enum description; clarify the disjoint dedupe.
+- [ ] 33.F.5 `local/kind/manifests/30-api-server.yaml`: rename the env var.
+- [ ] 33.F.6 `charts/kube-state-graph/templates/deployment.yaml` + `charts/kube-state-graph/values.yaml`: rename the env var + the values key (`externalNamePattern` → `othersNamePattern` if such a key exists in `values.yaml`).
+- [ ] 33.F.7 `CLAUDE.md`: rewrite the "External-endpoint substitution rule" bullet to describe the split (pattern → others, fallback → external); update the resolution-order numbered list.
+
+### 33.G Swag / OpenAPI
+
+- [ ] 33.G.1 Update any swag `@Description` or `@Param` on `/v1/graph` / `/v1/graph/nodegraph` mentioning `KSG_EXTERNAL_NAME_PATTERN` or the `external` enum value for pattern-matched nodes. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
+
+### 33.H Validation
+
+- [ ] 33.H.1 `openspec validate "add-k8s-pod-graph-api"`.
+- [ ] 33.H.2 `make build`, `make vet`, `make test`, `make lint`.
+- [ ] 33.H.3 `make verify-mocks` — no interface signatures changed; should stay clean.

@@ -9,6 +9,7 @@ const (
 	NodeTypePod      NodeType = "pod"
 	NodeTypeK8sNode  NodeType = "node"
 	NodeTypePVC      NodeType = "pvc"
+	NodeTypeOthers   NodeType = "others"
 	NodeTypeExternal NodeType = "external"
 )
 
@@ -73,8 +74,26 @@ func (p *PVCNode) Labels() map[string]string { return p.LabelsValue }
 func (p *PVCNode) IPAddress() []string       { return nil }
 func (p *PVCNode) isGraphNode()              {}
 
-// ExternalNode represents a non-pod endpoint surfaced when the
-// KSG_EXTERNAL_NAME_PATTERN substring matches the upstream client/server label.
+// OthersNode represents a non-pod endpoint surfaced when the
+// KSG_OTHERS_NAME_PATTERN substring matches the upstream client/server label
+// (operator-declared third-party endpoint; see design.md D18).
+type OthersNode struct {
+	IDValue     string
+	NameValue   string
+	LabelsValue map[string]string
+}
+
+func (o *OthersNode) ID() string                { return o.IDValue }
+func (o *OthersNode) Name() string              { return o.NameValue }
+func (o *OthersNode) Type() NodeType            { return NodeTypeOthers }
+func (o *OthersNode) Labels() map[string]string { return o.LabelsValue }
+func (o *OthersNode) IPAddress() []string       { return nil }
+func (o *OthersNode) isGraphNode()              {}
+
+// ExternalNode represents a non-pod endpoint surfaced by the missing-UID
+// human-label fallback (D27): the service-graph producer dropped
+// client_k8s_pod_uid or server_k8s_pod_uid, but the human-readable
+// client/server label survived. Disjoint from OthersNode.
 type ExternalNode struct {
 	IDValue     string
 	NameValue   string
@@ -106,5 +125,8 @@ func PVCID(cluster, namespace, claim string) string {
 	return cluster + "/" + namespace + "/" + claim
 }
 
-// ExternalID returns the unprefixed external node ID.
+// OthersID returns the pattern-matched others node ID.
+func OthersID(value string) string { return "others/" + value }
+
+// ExternalID returns the missing-UID-fallback external node ID.
 func ExternalID(value string) string { return "external/" + value }

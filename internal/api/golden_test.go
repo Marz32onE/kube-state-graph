@@ -23,7 +23,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 	scenarios := map[string]graph.View{
 		"single-cluster":       buildSingleCluster(),
 		"two-cluster-cross":    buildTwoClusterCross(),
-		"with-external":        buildWithExternal(),
+		"with-others":          buildWithOthers(),
 		"name-filter":          buildNameFilter(),
 		"missing-uid-fallback": buildMissingUIDFallback(),
 	}
@@ -90,15 +90,15 @@ func buildTwoClusterCross() graph.View {
 	return graph.View{Nodes: []graph.GraphNode{a, b}, Edges: []*graph.Edge{cross}}
 }
 
-func buildWithExternal() graph.View {
+func buildWithOthers() graph.View {
 	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
-	ext := &graph.ExternalNode{IDValue: "external/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{"pattern": "://"}}
+	oth := &graph.OthersNode{IDValue: "others/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{"pattern": "://"}}
 	// Client side is a pod, so edge keeps labels.cluster = client cluster.
-	// Server side is external (no cluster).
-	edge := graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, ext.IDValue, map[string]string{
+	// Server side is `others` (pattern-matched, no cluster).
+	edge := graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, oth.IDValue, map[string]string{
 		"cluster": "cluster-alpha",
 	})
-	return graph.View{Nodes: []graph.GraphNode{pod, ext}, Edges: []*graph.Edge{edge}}
+	return graph.View{Nodes: []graph.GraphNode{pod, oth}, Edges: []*graph.Edge{edge}}
 }
 
 // buildMissingUIDFallback snapshots the D27 fallback shape: a service-graph

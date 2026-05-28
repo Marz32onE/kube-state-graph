@@ -72,7 +72,7 @@ scope and the partner pod lives in an out-of-scope cluster.
   "apiVersion": "v1",
   "clusters": ["cluster-alpha", "cluster-beta"],
   "elements": {
-    "nodes": [{"data": {"id": "<cluster>/<uid>", "name": "...", "type": "pod|node|pvc|external", "labels": {"cluster": "..."}}}],
+    "nodes": [{"data": {"id": "<cluster>/<uid>", "name": "...", "type": "pod|node|pvc|others|external", "labels": {"cluster": "..."}}}],
     "edges": [{"data": {"id": "<uuidv5>", "type": "...", "source": "...", "target": "...", "labels": {"cluster": "<trace-source-cluster>"}}}]
   }
 }

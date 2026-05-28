@@ -30,7 +30,7 @@ spec:
               value: "http://victoria-metrics.kube-state-graph.svc:8428"
             - name: KSG_LISTEN_ADDR
               value: ":8080"
-            - name: KSG_EXTERNAL_NAME_PATTERN
+            - name: KSG_OTHERS_NAME_PATTERN
               value: "://"
             - name: KSG_API_KEYS_FILE
               value: "/etc/kube-state-graph/api-keys/keys"

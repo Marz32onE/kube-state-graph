@@ -228,16 +228,16 @@ Service-graph counters are ingested as two monotonic samples (`t0` and `t1 = t0 
 
 | Object | Field | Type | Source / Notes |
 |---|---|---|---|
-| Node | `id` | string | Cluster-scoped composite. Pods: `<cluster>/<pod-uid>`. Nodes: `<cluster>/<node-name>`. PVCs: `<cluster>/<namespace>/<claim>`. **External**: `external/<label-value>` (no cluster). |
-| Node | `name` | string | Pod name / node name / PVC claim name. For external nodes, the verbatim `client` or `server` label value (e.g., `http://api.example.com`). Used as the display label in the Grafana panel. |
-| Node | `type` | string | One of `"pod"`, `"node"`, `"pvc"`, `"external"`. |
-| Node | `ipaddress` | `[]string` (`omitempty`) | Observed IP addresses for the node. Present on `type="pod"` (`kube_pod_info.pod_ip`) and `type="node"` (K8s node `ExternalIP` from `kube_node_status_addresses`). Omitted for `type="pvc"` and `type="external"`, and omitted on pod / node entries when the source metric does not surface an IP. The slice order is stable but not semantically ranked. |
-| Node | `labels` | `map[string]string` | String-only key/value bag. Pod / node / PVC nodes always include `cluster`, `namespace` (pods/PVCs), `node` (pods, cluster-scoped node ID). K8s pod / node labels are flattened in verbatim. IP addresses are **not** carried in `labels` — see the `ipaddress` row above. **External nodes** carry minimal labels (the configured `pattern` value under `pattern`); they do NOT carry `cluster`, since they are not cluster-scoped. New keys are additive. |
+| Node | `id` | string | Cluster-scoped composite. Pods: `<cluster>/<pod-uid>`. Nodes: `<cluster>/<node-name>`. PVCs: `<cluster>/<namespace>/<claim>`. **Others** (pattern-matched): `others/<label-value>` (no cluster). **External** (missing-UID fallback): `external/<label-value>` (no cluster). |
+| Node | `name` | string | Pod name / node name / PVC claim name. For others / external nodes, the verbatim `client` or `server` label value (e.g., `http://api.example.com`). Used as the display label in the Grafana panel. |
+| Node | `type` | string | One of `"pod"`, `"node"`, `"pvc"`, `"others"`, `"external"`. |
+| Node | `ipaddress` | `[]string` (`omitempty`) | Observed IP addresses for the node. Present on `type="pod"` (`kube_pod_info.pod_ip`) and `type="node"` (K8s node `ExternalIP` from `kube_node_status_addresses`). Omitted for `type="pvc"`, `type="others"`, `type="external"`, and omitted on pod / node entries when the source metric does not surface an IP. The slice order is stable but not semantically ranked. |
+| Node | `labels` | `map[string]string` | String-only key/value bag. Pod / node / PVC nodes always include `cluster`, `namespace` (pods/PVCs), `node` (pods, cluster-scoped node ID). K8s pod / node labels are flattened in verbatim. IP addresses are **not** carried in `labels` — see the `ipaddress` row above. **Others nodes** carry the configured `pattern` value under `pattern`; they do NOT carry `cluster`. **External nodes** carry an empty `labels` map (`{}`) — no `pattern`, no `cluster`. New keys are additive. |
 | Edge | `id` | string | UUIDv5 derived from a fixed namespace UUID and the canonical tuple `(type, source, target)`. Stable across builds for the same edge; format compliant with RFC 4122. |
 | Edge | `type` | string | One of the registered edge types in `/v1/edge-types` (e.g., `"pod-runs-on-node"`, `"pod-mounts-pvc"`, `"pod-calls-pod"`). |
 | Edge | `source` | string | Source node `id`. Always references a node present in the same response. |
 | Edge | `target` | string | Target node `id`. Always references a node present in the same response. |
-| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `cluster` (the trace source cluster, i.e. the client-side pod's cluster — omitted when the client is an external endpoint). For `pod-mounts-pvc`: `claim_name`, `storage_class`. For `pod-runs-on-node`: `scheduled_at`. New keys are additive. |
+| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `cluster` (the trace source cluster, i.e. the client-side pod's cluster — omitted when the client is a non-pod endpoint, i.e. `others` or `external`). For `pod-mounts-pvc`: `claim_name`, `storage_class`. For `pod-runs-on-node`: `scheduled_at`. New keys are additive. |
 
 **Strictly string-typed values.** `labels` is `map[string]string` for both nodes and edges. Non-string-typed data (numeric edge metrics such as `rate`, `p99_ms`, `error_rate`; boolean flags such as `cross_cluster` or `ghost`) is **deferred to a future typed struct field** on node/edge data. v1 does not encode booleans as `"true"`/`"false"` strings inside `labels`; consumers derive cross-cluster status for `pod-calls-pod` edges by comparing the edge's resolved source-node `labels.cluster` with the target-node `labels.cluster` (both nodes are guaranteed present in the same response).
 
@@ -396,9 +396,9 @@ The first five layers run on every PR via `go test ./...`. The Kind manual rig i
     },
     {
       "type": "pod-calls-pod",
-      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). Endpoints may be 'external' nodes when KSG_EXTERNAL_NAME_PATTERN matches the upstream client/server label (D18).",
-      "source_type": ["pod", "external"],
-      "target_type": ["pod", "external"],
+      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). Endpoints may be 'others' nodes when KSG_OTHERS_NAME_PATTERN matches the upstream client/server label (D18), or 'external' nodes via the missing-UID human-label fallback (D27).",
+      "source_type": ["pod", "others", "external"],
+      "target_type": ["pod", "others", "external"],
       "directed": true,
       "may_cross_cluster": true,
       "labels": [
@@ -443,7 +443,7 @@ Both options were considered and rejected for v1:
 
 **Cluster name handling.** Cluster names pass through as opaque strings. The server does no canonicalisation, no case-folding, and no length validation beyond the total URL length the HTTP stack already enforces. An unknown cluster name in `?cluster=` simply yields no nodes for that name — not an error.
 
-### D18. External-endpoint substitution
+### D18. Others-endpoint pattern substitution
 
 Service-graph metrics carry a Tempo-style pair of human-readable labels alongside the pod-UID labels:
 
@@ -452,41 +452,43 @@ Service-graph metrics carry a Tempo-style pair of human-readable labels alongsid
 
 By default the pod-service-graph reader resolves the client side via `(cluster, client_k8s_pod_uid)` and the server side via the global topology pod-UID index lookup of `server_k8s_pod_uid`, then uses the resulting pod's `name` for display. This loses dependencies whose remote end is not a pod (external HTTP APIs, managed databases, message queues, third-party SaaS, etc.) — pod UID is empty or arbitrary for those.
 
-To preserve such endpoints in the graph, the server takes a **pattern substring** from the env var `KSG_EXTERNAL_NAME_PATTERN` (also flag `--external-name-pattern`). When set, the reader performs per-endpoint substitution:
+To preserve such endpoints in the graph, the server takes a **pattern substring** from the env var `KSG_OTHERS_NAME_PATTERN` (also flag `--others-name-pattern`). When set, the reader performs per-endpoint substitution:
 
 ```
 for each service-graph series in the window, for endpoint side ∈ {client, server}:
   let label_value = the series' `client` or `server` label value
-  if KSG_EXTERNAL_NAME_PATTERN != "" and contains(label_value, KSG_EXTERNAL_NAME_PATTERN):
-    treat this endpoint as an external node
-      id    = "external/<label_value>"
+  if KSG_OTHERS_NAME_PATTERN != "" and contains(label_value, KSG_OTHERS_NAME_PATTERN):
+    treat this endpoint as an others node
+      id    = "others/<label_value>"
       name  = label_value
-      type  = "external"
-      labels = { "pattern": "<KSG_EXTERNAL_NAME_PATTERN>" }
+      type  = "others"
+      labels = { "pattern": "<KSG_OTHERS_NAME_PATTERN>" }
   else:
     treat this endpoint as a pod node, resolved via (cluster, pod-uid) → kube_pod_info → pod name
 ```
 
-Substitution is independent for client and server sides — a single `pod-calls-pod` edge can have any combination (`pod→pod`, `pod→external`, `external→pod`, `external→external`). The edge's `type` remains `pod-calls-pod`; only the source / target node `type` changes. The edge carries `labels.cluster` (the trace-source / client-side cluster) only when the **client** side is a pod; when the client side is an external endpoint, the edge `labels` map omits the `cluster` key entirely (external endpoints are not cluster-scoped).
+Substitution is independent for client and server sides — a single `pod-calls-pod` edge can have any combination (`pod→pod`, `pod→others`, `others→pod`, `others→others`). The edge's `type` remains `pod-calls-pod`; only the source / target node `type` changes. The edge carries `labels.cluster` (the trace-source / client-side cluster) only when the **client** side is a pod; when the client side is a non-pod node (`others` via this rule, or `external` via the D27 fallback), the edge `labels` map omits the `cluster` key entirely (non-pod endpoints are not cluster-scoped).
 
 Why a substring contains-check rather than a regex:
 
 - Operators typically configure a single discriminator like `://` (matches `http://...`, `https://...`, `redis://...`) or `@` (matches `user@host`) without authoring a regex.
 - Substring matching is unambiguous, has no escaping pitfalls, and benchmarks at hundreds of millions of operations per second so cost is negligible.
-- A future v1.x revision MAY add `KSG_EXTERNAL_NAME_REGEX` if real deployments need it; for v1, contains is enough.
+- A future v1.x revision MAY add `KSG_OTHERS_NAME_REGEX` if real deployments need it; for v1, contains is enough.
 
-External node ID stability:
+Others node ID stability:
 
-- The literal `client` / `server` value is appended verbatim after `external/`. Two different label values produce two different external nodes; two series with identical label values resolve to the same external node and edges to it merge correctly.
+- The literal `client` / `server` value is appended verbatim after `others/`. Two different label values produce two different others nodes; two series with identical label values resolve to the same others node and edges to it merge correctly.
 - The reader does not normalise (no lowercase, no whitespace trim, no scheme parsing). Producers control the label values; the API server is a faithful relay. This keeps semantics simple and matches Tempo's behaviour.
 
-Empty pattern (`KSG_EXTERNAL_NAME_PATTERN` unset or `""`) disables the rule entirely; behaviour reverts to pure pod-UID resolution.
+Empty pattern (`KSG_OTHERS_NAME_PATTERN` unset or `""`) disables the rule entirely; behaviour reverts to pure pod-UID resolution.
 
-- Why expose this as a config knob: external-endpoint conventions vary by deployment. URL-shaped clients/servers are common but not universal; the operator decides what counts as "external" by choosing the discriminator.
+- Why expose this as a config knob: non-pod-endpoint conventions vary by deployment. URL-shaped clients/servers are common but not universal; the operator decides what counts as "others" by choosing the discriminator.
+- Why a separate `others` node type instead of folding into `external`: the pattern rule (operator-declared) and the missing-UID fallback (D27, producer-regression signal) carry different semantics for the consumer. Operators alerting on a sudden growth of `type=external` nodes (producer regression) want a clean signal that is not polluted by the steady-state `type=others` set of declared third-party endpoints. Disjoint ID spaces (`others/<label>` vs `external/<label>`) and dedupe maps preserve this separation; the trade-off is that a label string matched by both code paths surfaces as two visually-distinct nodes with the same `name` (intentional — they have different provenance).
 - Alternatives considered:
   - Always treat both `client` and `server` as authoritative (rejected — defeats the pod-name resolution that is the point of this server).
   - Always introspect the value (URL parser, hostname extraction) (rejected — heuristic, brittle, language-specific).
   - Multiple patterns OR'd (rejected — over-engineered for v1; one pattern covers the typical case).
+  - Keep a single `external` type and a shared ID space across both rules (rejected — pattern-matched declared endpoints and missing-UID inferred endpoints have different operational meaning; merging them hides the producer-regression signal).
 
 ### D19. Bounded upstream cost
 
@@ -819,26 +821,26 @@ The chosen behaviour: when the pod UID for an endpoint is empty but the correspo
 
 Per-endpoint resolution order:
 
-1. `KSG_EXTERNAL_NAME_PATTERN` substring match → external (carries `labels.pattern`).
+1. `KSG_OTHERS_NAME_PATTERN` substring match → others (carries `labels.pattern`; `id=others/<label>`).
 2. Pod-UID lookup against topology / synthesised-pod fallback (only when UID is non-empty).
-3. Missing-UID human-label fallback (this decision; only when UID is empty AND human label is non-empty).
+3. Missing-UID human-label fallback (this decision; only when UID is empty AND human label is non-empty; produces external node — `id=external/<label>`, `labels={}`).
 4. Drop (both UID and label empty).
 
 Decision points:
 
 - **Always on, no knob.** Adding a config gate to revert to "drop edge" was considered and rejected — the prior drop behaviour was silent data loss, and operators already need an actionable signal when a producer regresses. A visible external node is strictly more useful than silence; if the resulting noise becomes a real problem for any deployment, a follow-up change can introduce a gate.
-- **Both sides, symmetric.** The same rule fires independently for client and server endpoints. A series with both UIDs missing and both labels present produces an `external→external` edge — consistent with the existing external-pattern rule's per-endpoint independence (D18).
-- **Reuses the `external/<label>` ID scheme.** Two series whose label values collide — one matched by `KSG_EXTERNAL_NAME_PATTERN`, the other surfaced via missing-UID fallback — resolve to the same node in the output. Intentional dedupe: the API consumer cares about the dependency edge, not its provenance.
-- **Edge `labels.cluster` rule unchanged.** When the client side is external (via pattern OR via this fallback), the edge `labels.cluster` is omitted. When the client side is still a pod and only the server fell back, the edge keeps `labels.cluster=<trace-source cluster>`.
+- **Both sides, symmetric.** The same rule fires independently for client and server endpoints. A series with both UIDs missing and both labels present produces an `external→external` edge — consistent with the others-pattern rule's per-endpoint independence (D18).
+- **Disjoint from the `others/<label>` ID scheme.** The fallback writes into the `external/...` namespace and a separate dedupe map; the pattern-matched `others/...` namespace is independent. A label string matched by both code paths surfaces as two distinct nodes (`others/<label>` and `external/<label>`) with the same `name`. This is intentional: declared third-party endpoints (operator-configured) and producer-regression inferred endpoints carry different operational meaning; merging them would hide the producer-regression signal a sudden growth in `type=external` provides.
+- **Edge `labels.cluster` rule unchanged.** When the client side is a non-pod (`others` via pattern OR `external` via this fallback), the edge `labels.cluster` is omitted. When the client side is still a pod and only the server fell back, the edge keeps `labels.cluster=<trace-source cluster>`.
 - **Drop only when both UID AND label are empty.** With no identity at all there is no node to emit. The edge is dropped silently (consistent with the v1 contract for fully-unidentified endpoints).
-- **No marker label on inferred externals.** Considered (`labels.source="missing_pod_uid"`) but rejected for v1 — adds a serialiser-visible discriminator the API consumer rarely needs, and makes dedupe semantics with pattern-matched externals (which carry `labels.pattern`) less predictable. A future revision MAY add it if observability into producer health becomes a priority.
+- **No marker label on inferred externals.** Considered (`labels.source="missing_pod_uid"`) but rejected for v1 — the disjoint `external/<label>` ID space and the empty `labels` payload already discriminate inferred externals from pattern-matched others. A future revision MAY add it if richer producer-health observability becomes a priority.
 
 Alternatives considered:
 
 - **Drop edge on missing UID (status quo)**: rejected — silent data loss; operators routinely lose dependencies under known Beyla / Alloy resource-attribute regressions, and have no in-API signal to chase the producer.
 - **Synthesise a pod node from the human label**: rejected — invents a pod identity that does not exist (no cluster, no UID, no namespace). The endpoint is not a pod; modelling it as one violates the assumption that pod IDs are `<cluster>/<uid>` and confuses traversal / filtering downstream.
 - **Gate behind a new env var (e.g., `KSG_FALLBACK_MISSING_UID`)**: rejected for v1 — adds an opt-in knob with no clearly preferable default (off = silent loss, on = visible). Simpler to make the more useful behaviour unconditional and revisit if real noise emerges.
-- **New separate `unresolved/<label>` ID space**: rejected — adds a second external-like node type to document, serialise, and filter, for a distinction (declared vs inferred) the API consumer rarely needs at v1 scale. Reuse of `external/` keeps the node-type vocabulary closed.
+- **Reuse the `others/<label>` ID space (single node type)**: rejected — the operator-declared `others` set and the producer-regression `external` set carry different operational meaning. A sudden growth of `type=external` nodes is the actionable signal that a producer dropped `k8s.pod.uid`; folding both code paths into a single type buries that signal under the steady-state declared set.
 - **Surface a fix-the-producer error response instead**: rejected — the API server is a faithful relay, not a producer validator. Operators learn about the producer regression by seeing many `external/*` nodes appear in the graph; a single response-shape signal would be both noisy (per-request) and weaker (no per-endpoint visibility).
 
 ### D28. Top-level `ipaddress` attribute on pod and K8s-node entries
@@ -874,7 +876,7 @@ Alternatives considered:
 - [OTLP collector outage stalls slog bridge or trace export] → Both exporters use bounded `BatchSpanProcessor` / `BatchLogProcessor` queues; on persistent collector failure, the SDK drops the oldest batches and surfaces the failure via the SDK's internal error handler (logged through stderr, not through the bridge to avoid feedback loops). Local stderr logs remain unaffected.
 - [Trace span explosion on debug endpoints] → `/debug/*` routes are traced; document that operators should avoid scripting curl loops over them in production. Mitigation is at the Collector via tail sampling.
 - [`db.statement` attribute leaks tenant info via PromQL label matchers] → Document; operators with stricter policy disable tracing or strip the attribute at the Collector.
-- [Missing-UID fallback floods graph with `external/*` nodes on producer regression] → A Beyla / Alloy regression that strips `k8s.pod.uid` resource attributes will now surface as a wave of inferred `external/<client>` and `external/<server>` nodes instead of silently dropped edges. This is intentional — the alternative was silent data loss — but operators must treat a sudden growth of `type="external"` node count as a signal to investigate the trace pipeline rather than the API. See D27.
+- [Missing-UID fallback floods graph with `external/*` nodes on producer regression] → A Beyla / Alloy regression that strips `k8s.pod.uid` resource attributes will now surface as a wave of inferred `external/<client>` and `external/<server>` nodes instead of silently dropped edges. This is intentional — the alternative was silent data loss — and is now visually distinct from the operator-declared `others/<label>` set (D18), so a sudden growth of `type="external"` node count is a clean signal to investigate the trace pipeline rather than the API. See D27.
 
 ## Migration Plan
 
@@ -890,5 +892,5 @@ Greenfield repository — no migration. Rollback is `git revert` of the merge co
 - ~~Fake-fixtures program shape: continuous Deployment with steady-state metrics vs YAML-driven snapshot replayer~~ — resolved: no fixtures program. Local rig uses real `kube-state-metrics`; integration tests (`internal/integration/`) ingest series directly via `POST /api/v1/import/prometheus` to a `testcontainers-go` VictoriaMetrics container.
 - Exact Grafana Node Graph dashboard JSON to ship in `deploy/grafana/` for visual verification, including a layout that highlights cross-cluster edges — defer to harness spec.
 - Whether `?format=` query parameter on `/v1/graph` is preferable to a separate `/v1/graph/nodegraph` route — defer to spec; current preference is the separate route.
-- Whether `KSG_EXTERNAL_NAME_PATTERN` should evolve to a regex (`KSG_EXTERNAL_NAME_REGEX`) or accept multiple comma-separated patterns — defer to v1.x based on real deployment feedback.
-- Whether external nodes should expose any additional `labels` (e.g., scheme parsed out of URL-shaped values) — defer; v1 keeps `labels.pattern` only.
+- Whether `KSG_OTHERS_NAME_PATTERN` should evolve to a regex (`KSG_OTHERS_NAME_REGEX`) or accept multiple comma-separated patterns — defer to v1.x based on real deployment feedback.
+- Whether others nodes should expose any additional `labels` (e.g., scheme parsed out of URL-shaped values) — defer; v1 keeps `labels.pattern` only.

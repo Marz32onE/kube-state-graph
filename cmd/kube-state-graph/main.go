@@ -70,7 +70,7 @@ func run() error {
 		"listen_addr", cfg.ListenAddr,
 		"build_timeout", cfg.BuildTimeout,
 		"api_timeout", cfg.APITimeout,
-		"external_name_pattern_set", cfg.ExternalNamePattern != "",
+		"others_name_pattern_set", cfg.OthersNamePattern != "",
 		"metric_prefix", cfg.MetricPrefix,
 		"otlp_enabled", telemetryProviders.Enabled,
 	)

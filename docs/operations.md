@@ -240,8 +240,8 @@ longer hard-required for an edge to appear in `/v1/graph`.
 
 | Label | Required? | Notes |
 |-------|-----------|-------|
-| `client`, `server` | yes (at least one per side) | Human-readable endpoint name. Used as the substitution input for `KSG_EXTERNAL_NAME_PATTERN` and as the fallback identity when the corresponding pod-UID dimension is empty. |
-| `client_k8s_pod_uid`, `server_k8s_pod_uid` | recommended | When populated, the reader resolves the endpoint to a pod via the global pod-UID index. When empty and the corresponding `client`/`server` label is non-empty, the endpoint surfaces as `external/<label>` (D27 missing-UID fallback). When BOTH the UID and the label are empty for an endpoint, the edge is dropped. |
+| `client`, `server` | yes (at least one per side) | Human-readable endpoint name. Used as the substitution input for `KSG_OTHERS_NAME_PATTERN` (→ `type=others`) and as the fallback identity when the corresponding pod-UID dimension is empty (→ `type=external`, D27). |
+| `client_k8s_pod_uid`, `server_k8s_pod_uid` | recommended | When populated, the reader resolves the endpoint to a pod via the global pod-UID index. When empty and the corresponding `client`/`server` label is non-empty, the endpoint surfaces as `external/<label>` (D27 missing-UID fallback — disjoint from the `others/<label>` ID space produced by the pattern rule). When BOTH the UID and the label are empty for an endpoint, the edge is dropped. |
 | `cluster` | yes | Trace-source / client-side cluster; required for the edge's `labels.cluster` field when the client side resolves to a pod. |
 | `client_k8s_namespace_name`, `server_k8s_namespace_name` | optional | Carried to synth pods when the UID-based lookup misses topology. |
 

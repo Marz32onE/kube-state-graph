@@ -103,8 +103,9 @@ series carries a single `cluster` external label representing the trace source
 at build time by joining `server_k8s_pod_uid` against the global topology
 pod-UID index — Kubernetes pod UIDs are unique across clusters in practice,
 so the lookup is unambiguous. Edges are only emitted when both endpoints
-resolve (to a known pod UID, or to an `external` node when the upstream
-`client`/`server` label matches `KSG_EXTERNAL_NAME_PATTERN`).
+resolve (to a known pod UID, to an `others` node when the upstream
+`client`/`server` label matches `KSG_OTHERS_NAME_PATTERN`, or to an
+`external` node via the missing pod-UID human-label fallback).
 
 ### Probes — diagnostics, not graph data
 
@@ -147,7 +148,7 @@ container.
 | `--listen-addr`                 | `KSG_LISTEN_ADDR`                | `:8080`              | HTTP listen address. |
 | `--build-timeout`               | `KSG_BUILD_TIMEOUT`              | `15s`                | Per-build context timeout for `/v1/graph` + `/v1/graph/nodegraph`. |
 | `--api-timeout`                 | `KSG_API_TIMEOUT`                | `5s`                 | Per-request timeout for non-graph endpoints with upstream calls (`/v1/clusters`, `/readyz`). |
-| `--external-name-pattern`       | `KSG_EXTERNAL_NAME_PATTERN`      | (empty)              | Substring; when matched on `client`/`server`, that endpoint becomes an `external` node. |
+| `--others-name-pattern`         | `KSG_OTHERS_NAME_PATTERN`        | (empty)              | Substring; when matched on `client`/`server`, that endpoint becomes an `others` node (operator-declared third-party endpoint). Disjoint from the `external` type produced by the missing-UID fallback (D27). |
 | `--api-keys-file`               | `KSG_API_KEYS_FILE`              | (empty)              | Path to a file holding accepted API keys (one per line, `#` comments allowed). Designed for K8s `Secret` mounts. Reloaded periodically. |
 | `--api-keys`                    | `KSG_API_KEYS`                   | (empty)              | Comma-separated literal keys. Dev only; ignored when `--api-keys-file` is set. |
 | `--api-keys-reload-interval`    | `KSG_API_KEYS_RELOAD_INTERVAL`   | `30s`                | How often `--api-keys-file` is re-read. Set to `0` to disable hot reload. |
@@ -158,7 +159,7 @@ container.
 
 - [API reference](docs/api.md)
 - [Multi-cluster setup](docs/multi-cluster.md)
-- [External-name substitution](docs/external-substitution.md)
+- [Others-name substitution](docs/others-substitution.md)
 - [Operations](docs/operations.md)
 
 ## Development
