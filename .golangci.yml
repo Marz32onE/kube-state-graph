@@ -2,7 +2,6 @@ version: "2"
 
 run:
   concurrency: 4
-  allow-parallel: false
   timeout: 5m
   tests: true
 
