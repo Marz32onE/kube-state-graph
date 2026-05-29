@@ -34,11 +34,31 @@ func genGraph(seed int64, clusters, podsPerCluster, extraEdges int) *Graph {
 		}
 	}
 
+	// One Service per cluster (D29). Added before the edge loop so podsOnly()
+	// still sees only pods.
+	for i := range clusters {
+		all = append(all, &ServiceNode{
+			IDValue:     ServiceID(clusterNames[i], "ns-0", "svc"),
+			NameValue:   "svc",
+			LabelsValue: map[string]string{"cluster": clusterNames[i], "namespace": "ns-0"},
+		})
+	}
+
 	edges := []*Edge{}
 	pods := podsOnly(all)
 	for _, p := range pods {
 		nodeID := p.Labels()["node"]
 		edges = append(edges, NewEdge(EdgeTypePodRunsOnNode, p.ID(), nodeID, map[string]string{}))
+	}
+	// service-selects-pod edge from each cluster's Service to a backing pod.
+	for i := range clusters {
+		svcID := ServiceID(clusterNames[i], "ns-0", "svc")
+		for _, p := range pods {
+			if p.Labels()["cluster"] == clusterNames[i] {
+				edges = append(edges, NewEdge(EdgeTypeServiceSelectsPod, svcID, p.ID(), map[string]string{"namespace": "ns-0"}))
+				break
+			}
+		}
 	}
 	for i := 0; i < extraEdges && len(pods) >= 2; i++ {
 		a := pods[r.Intn(len(pods))]
@@ -196,6 +216,26 @@ func TestProperty_NameFilterEveryNodeMatchesOrIsRehydratedPartner(t *testing.T) 
 			assert.Truef(t, incident[id],
 				"seed=%d: node %s in result but neither matches name nor is incident on a retained edge to a named match", seed, id)
 		}
+	}
+}
+
+func TestProperty_ServiceSelectsPodEdgesWellFormed(t *testing.T) {
+	for seed := int64(1); seed <= 25; seed++ {
+		g := genGraph(seed, 3, 5, 12)
+		count := 0
+		for _, e := range g.Edges {
+			if e.Type != EdgeTypeServiceSelectsPod {
+				continue
+			}
+			count++
+			src, srcOK := g.NodesByID[e.Source]
+			tgt, tgtOK := g.NodesByID[e.Target]
+			require.Truef(t, srcOK, "seed=%d: service-selects-pod source %s unresolved", seed, e.Source)
+			require.Truef(t, tgtOK, "seed=%d: service-selects-pod target %s unresolved", seed, e.Target)
+			assert.Equalf(t, NodeTypeService, src.Type(), "seed=%d: source must be a service node", seed)
+			assert.Equalf(t, NodeTypePod, tgt.Type(), "seed=%d: target must be a pod node", seed)
+		}
+		assert.Positivef(t, count, "seed=%d: expected at least one service-selects-pod edge", seed)
 	}
 }
 

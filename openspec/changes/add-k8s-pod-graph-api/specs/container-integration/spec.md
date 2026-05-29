@@ -84,7 +84,9 @@ The container-integration suite SHALL contain at least one test for each of the 
 
 - A single-cluster graph rendering with `pod-runs-on-node` edges.
 - A multi-cluster graph with at least one `pod-calls-pod` edge whose source-node `labels.cluster` differs from its target-node `labels.cluster` (cross-cluster edge recovered via the topology pod-UID index).
-- The `KSG_OTHERS_NAME_PATTERN` substitution producing an `others`-typed node.
+- A connection-string client/server label containing `"://"` that does NOT resolve to an in-cluster pod/service producing an `others`-typed node with `labels={}` (D29).
+- A headless-service connection string (`<pod>.<svc>.<ns>.svc.cluster.local`) resolving to a real pod node.
+- A ClusterIP-service connection string resolving to a `type=service` node plus `service-selects-pod` edges to its backing pods.
 - The missing pod-UID human-label fallback producing an `external`-typed node (D27).
 - ETag round-trip: an initial response yields an `ETag`; a follow-up request with `If-None-Match: <etag>` returns 304.
 - ETag determinism: two consecutive identical `GET /v1/graph` requests return byte-identical `ETag` headers (each request triggers an independent build; v1 has no result cache).

@@ -44,7 +44,7 @@ The bootstrap script SHALL install a VictoriaMetrics single-node deployment insi
 
 ### Requirement: Topology source = real kube-state-metrics
 
-The harness SHALL install a real `kube-state-metrics` Deployment inside the Kind cluster and configure VictoriaMetrics to scrape it. The harness SHALL NOT include a synthetic fixtures program; the local rig's purpose is end-to-end visual verification against real Kubernetes topology series, not fabricated ones. A relabel rule on the scrape config SHALL inject a `cluster=kind-local` external label so the API server treats the rig as a single-cluster source.
+The harness SHALL install a real `kube-state-metrics` Deployment inside the Kind cluster and configure VictoriaMetrics to scrape it. The harness SHALL NOT include a synthetic fixtures program; the local rig's purpose is end-to-end visual verification against real Kubernetes topology series, not fabricated ones. A relabel rule on the scrape config SHALL inject a `cluster=kind-local` external label so the API server treats the rig as a single-cluster source. The harness `kube-state-metrics` MUST also export services and endpointslices (KSM `--resources` includes `services,endpointslices`; RBAC grants `list`/`watch` for both) so connection-string service/headless resolution can be exercised.
 
 The harness SHALL also produce real `traces_service_graph_request_total` series for in-cluster traffic via a Grafana Beyla DaemonSet (eBPF auto-instrumentation) shipping OTLP spans to a Grafana Alloy Deployment whose `otelcol.connector.servicegraph` (configured with `dimensions=["k8s.pod.uid"]`) emits the metric with `client_k8s_pod_uid` and `server_k8s_pod_uid`, then remote-writes to VictoriaMetrics. The harness SHALL NOT ship a synthetic traffic generator; the existing in-cluster Go traffic (`kube-state-graph` scraping VictoriaMetrics, VictoriaMetrics scraping `kube-state-metrics`, Grafana querying `kube-state-graph`, etc.) is sufficient to populate paired client+server spans. Cross-cluster scenarios remain out of scope for the local rig and are exercised by `internal/integration/` tests against a `testcontainers-go` VictoriaMetrics container (see the `container-integration` capability), which directly ingest hand-crafted multi-cluster fixtures via `POST /api/v1/import/prometheus`.
 
@@ -60,17 +60,17 @@ The harness SHALL also produce real `traces_service_graph_request_total` series 
 
 ### Requirement: API server installed in the harness
 
-The harness SHALL install the `kube-state-graph` API server inside the Kind cluster, configured to point at the in-cluster VictoriaMetrics endpoint, and exposed via a NodePort or `kubectl port-forward` so the operator can reach it from the host. The harness SHALL set `KSG_OTHERS_NAME_PATTERN="://"` on the API server Deployment.
+The harness SHALL install the `kube-state-graph` API server inside the Kind cluster, configured to point at the in-cluster VictoriaMetrics endpoint, and exposed via a NodePort or `kubectl port-forward` so the operator can reach it from the host.
 
 #### Scenario: API server reachable
 
 - **WHEN** the bootstrap has completed and the operator port-forwards (or hits the NodePort for) the API service
 - **THEN** `GET /v1/livez` against the forwarded port returns 200
 
-#### Scenario: Others name pattern configured
+#### Scenario: No others name pattern env
 
 - **WHEN** an operator inspects the API server Deployment in the harness
-- **THEN** the env section contains `KSG_OTHERS_NAME_PATTERN` set to `"://"`
+- **THEN** the env section does NOT contain `KSG_OTHERS_NAME_PATTERN` (connection-string `"://"` detection is built-in)
 
 ### Requirement: Grafana Pod with provisioned dashboard
 

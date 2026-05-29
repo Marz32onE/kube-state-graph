@@ -65,7 +65,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 |---|---|---|---|
 | `traces_service_graph_request_total` | `pod-calls-pod` 邊（叢集內與跨叢集） | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` 等 | 選填（無 series 則無呼叫邊） |
 
-以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析（pod UID 已知；或符合設定的 `KSG_OTHERS_NAME_PATTERN` 而替換成 `others` 節點；或經 missing pod-UID human-label fallback 替換成 `external` 節點）時才輸出邊。
+以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析時才輸出邊。當某端的 pod-UID 標籤為空時，會用內建的**連線字串判斷**（無旗標可調）解析其 `client`／`server` 人類可讀標籤：含字面 `://` 的標籤視為 URL——叢集內 `<service>.<namespace>.svc` 名稱會成為 `type="service"` 節點（並隨需產生指向其後端 pod 的 `service-selects-pod` 邊），headless 的 `<pod>.<service>.<namespace>.svc` 名稱會解析回真實後端 pod，無法解析的 URL 則成為 `others` 節點；非 URL（不含 `://`）的標籤則經 missing pod-UID human-label fallback 成為 `external` 節點。詳見 [連線字串端點解析](docs/others-substitution.md)。
 
 ### 探針 — 診斷用，不屬於圖資料
 
@@ -94,7 +94,6 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 | `--listen-addr` | `KSG_LISTEN_ADDR` | `:8080` | HTTP 監聽位址。 |
 | `--build-timeout` | `KSG_BUILD_TIMEOUT` | `15s` | `/v1/graph` 與 `/v1/graph/nodegraph` 的單次建圖 context 逾時。 |
 | `--api-timeout` | `KSG_API_TIMEOUT` | `5s` | 非 graph 端點的 upstream 呼叫逾時（`/v1/clusters`、`/readyz`）。 |
-| `--others-name-pattern` | `KSG_OTHERS_NAME_PATTERN` | （空） | 子字串；`client`／`server` 符合時該端成 `others` 節點（operator 宣告之第三方端點）。與 missing-UID fallback 產生的 `external` 型別 disjoint（D27）。 |
 | `--api-keys-file` | `KSG_API_KEYS_FILE` | （空） | 接受的 API key 檔案路徑（每行一個，`#` 為註解）。為 K8s `Secret` 掛載而設計，會週期性重新讀取。 |
 | `--api-keys` | `KSG_API_KEYS` | （空） | 逗號分隔字面 key；僅 dev 用途，設了 `--api-keys-file` 即忽略。 |
 | `--api-keys-reload-interval` | `KSG_API_KEYS_RELOAD_INTERVAL` | `30s` | `--api-keys-file` 重新讀取頻率；`0` 關閉熱重載。 |
@@ -105,7 +104,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 - [API 參考](docs/api.md)（英文）
 - [多叢集部署](docs/multi-cluster.md)
-- [Others 名稱替換](docs/others-substitution.md)
+- [連線字串端點解析](docs/others-substitution.md)
 - [營運](docs/operations.md)
 
 ## 開發

@@ -87,7 +87,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 		}
 	}
 
-	sg, err := ReadServiceGraph(ctx, b.q, b.r, window, end, b.cfg.OthersNamePattern, topology)
+	sg, err := ReadServiceGraph(ctx, b.q, b.r, window, end, topology)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -148,9 +148,9 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 }
 
 func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*graph.Edge) {
-	// Nodes: pods + k8s nodes + pvcs + synthesised pods + others + externals.
+	// Nodes: pods + k8s nodes + pvcs + synthesised pods + services + others + externals.
 	total := len(topology.Pods) + len(topology.Nodes) + len(topology.PVCs) +
-		len(sg.SynthPods) + len(sg.OthersNodes) + len(sg.ExternalNodes)
+		len(sg.SynthPods) + len(sg.ServiceNodes) + len(sg.OthersNodes) + len(sg.ExternalNodes)
 	nodes := make([]graph.GraphNode, 0, total)
 	for _, p := range topology.Pods {
 		nodes = append(nodes, p)
@@ -163,6 +163,9 @@ func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*g
 	}
 	for _, p := range sg.SynthPods {
 		nodes = append(nodes, p)
+	}
+	for _, sv := range sg.ServiceNodes {
+		nodes = append(nodes, sv)
 	}
 	for _, o := range sg.OthersNodes {
 		nodes = append(nodes, o)

@@ -5,11 +5,13 @@ components:
                 - pod-runs-on-node
                 - pod-mounts-pvc
                 - pod-calls-pod
+                - service-selects-pod
             type: string
             x-enum-varnames:
                 - EdgeTypePodRunsOnNode
                 - EdgeTypePodMountsPVC
                 - EdgeTypePodCallsPod
+                - EdgeTypeServiceSelectsPod
         github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition:
             properties:
                 description:
@@ -50,6 +52,7 @@ components:
                 - pod
                 - node
                 - pvc
+                - service
                 - others
                 - external
             type: string
@@ -57,6 +60,7 @@ components:
                 - NodeTypePod
                 - NodeTypeK8sNode
                 - NodeTypePVC
+                - NodeTypeService
                 - NodeTypeOthers
                 - NodeTypeExternal
         internal_api.ClusterInfo:
@@ -380,7 +384,10 @@ paths:
                 |---|---|---|---|
                 | `pod-runs-on-node` | pod → node | yes | no |
                 | `pod-mounts-pvc` | pod → pvc | yes | no |
-                | `pod-calls-pod` | pod → pod \| external | yes | yes |
+                | `pod-calls-pod` | pod \| service \| others \| external → pod \| service \| others \| external | yes | yes |
+                | `service-selects-pod` | service → pod | yes | no |
+
+                A `pod-calls-pod` endpoint whose pod UID is empty and whose `client`/`server` label is a `://` connection string is resolved (detection hardcoded, no operator knob) to a `service` node, the real backing pod, or an `others` node; a non-URL missing-UID label resolves to an `external` node. `service-selects-pod` edges are materialised on demand from `service` nodes to their backing pods.
 
                 </details>
             parameters:
@@ -417,6 +424,10 @@ paths:
                 **Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, external).
 
                 **Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
+
+                **Node types**: `pod`, `node`, `pvc`, `service`, `others`, `external`. **Edge types**: `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`.
+
+                **Endpoint resolution**: for a `pod-calls-pod` endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): a `<service>.<namespace>` host yields a `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to each backing pod; a `<pod>.<service>.<namespace>` host resolves to the real backing pod; an unresolvable host yields an `others` node (`others/<value>`). A non-URL missing-UID label still yields an `external` node (`external/<value>`).
 
                 Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
 
@@ -491,11 +502,12 @@ paths:
                             - pod-runs-on-node
                             - pod-mounts-pvc
                             - pod-calls-pod
+                            - service-selects-pod
                         example: pod-calls-pod
                         type: string
                     type: array
                   style: form
-                - description: Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, others, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.
+                - description: Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, service, others, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters.
                   in: query
                   name: name
                   schema:
@@ -506,7 +518,7 @@ paths:
                         type: string
                     type: array
                   style: form
-                - description: Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, others `others/<value>`, externals `external/<value>`.
+                - description: Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, services `<cluster>/<ns>/<service>`, others `others/<value>`, externals `external/<value>`.
                   in: query
                   name: root
                   schema:
@@ -658,6 +670,7 @@ paths:
                             - pod-runs-on-node
                             - pod-mounts-pvc
                             - pod-calls-pod
+                            - service-selects-pod
                         example: pod-calls-pod
                         type: string
                     type: array

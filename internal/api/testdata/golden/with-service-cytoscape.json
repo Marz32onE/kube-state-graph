@@ -1,0 +1,70 @@
+{
+  "apiVersion": "v1",
+  "clusters": [
+    "cluster-alpha"
+  ],
+  "elements": {
+    "nodes": [
+      {
+        "data": {
+          "id": "cluster-alpha/p1",
+          "name": "checkout",
+          "type": "pod",
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "shop"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "cluster-alpha/shop/payments",
+          "name": "payments",
+          "type": "service",
+          "ipaddress": [
+            "10.0.0.5"
+          ],
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "shop"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "cluster-alpha/pay0",
+          "name": "payments-0",
+          "type": "pod",
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "shop"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "data": {
+          "id": "8c67d50f-d94a-5518-9a04-6a9ccd8f5711",
+          "type": "pod-calls-pod",
+          "source": "cluster-alpha/p1",
+          "target": "cluster-alpha/shop/payments",
+          "labels": {
+            "cluster": "cluster-alpha"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "c979a62f-33f8-5f78-a89a-03770c01c3cd",
+          "type": "service-selects-pod",
+          "source": "cluster-alpha/shop/payments",
+          "target": "cluster-alpha/pay0",
+          "labels": {
+            "namespace": "shop"
+          }
+        }
+      }
+    ]
+  }
+}

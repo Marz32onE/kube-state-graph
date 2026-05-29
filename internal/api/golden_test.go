@@ -24,6 +24,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 		"single-cluster":       buildSingleCluster(),
 		"two-cluster-cross":    buildTwoClusterCross(),
 		"with-others":          buildWithOthers(),
+		"with-service":         buildWithService(),
 		"name-filter":          buildNameFilter(),
 		"missing-uid-fallback": buildMissingUIDFallback(),
 	}
@@ -92,13 +93,29 @@ func buildTwoClusterCross() graph.View {
 
 func buildWithOthers() graph.View {
 	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
-	oth := &graph.OthersNode{IDValue: "others/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{"pattern": "://"}}
+	oth := &graph.OthersNode{IDValue: "others/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{}}
 	// Client side is a pod, so edge keeps labels.cluster = client cluster.
-	// Server side is `others` (pattern-matched, no cluster).
+	// Server side is `others` (an unresolved "://" connection string, D29;
+	// labels={}, no cluster).
 	edge := graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, oth.IDValue, map[string]string{
 		"cluster": "cluster-alpha",
 	})
 	return graph.View{Nodes: []graph.GraphNode{pod, oth}, Edges: []*graph.Edge{edge}}
+}
+
+// buildWithService snapshots the D29 connection-string service resolution:
+// a pod-calls-pod edge whose target is a `type="service"` node (resolved from
+// a `<service>.<namespace>.svc...` string, carrying cluster_ip on ipaddress),
+// plus a `service-selects-pod` edge fanning out to a backing pod.
+func buildWithService() graph.View {
+	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
+	svc := &graph.ServiceNode{IDValue: "cluster-alpha/shop/payments", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}, IPAddressValue: []string{"10.0.0.5"}}
+	pay0 := &graph.PodNode{IDValue: "cluster-alpha/pay0", NameValue: "payments-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
+	edges := []*graph.Edge{
+		graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, svc.IDValue, map[string]string{"cluster": "cluster-alpha"}),
+		graph.NewEdge(graph.EdgeTypeServiceSelectsPod, svc.IDValue, pay0.IDValue, map[string]string{"namespace": "shop"}),
+	}
+	return graph.View{Nodes: []graph.GraphNode{pod, svc, pay0}, Edges: edges}
 }
 
 // buildMissingUIDFallback snapshots the D27 fallback shape: a service-graph

@@ -36,6 +36,29 @@ type podObs struct {
 	podIP   string
 }
 
+// serviceKey identifies a Service by its cluster-scoped namespace/name (D29).
+type serviceKey struct{ cluster, namespace, service string }
+
+// podNameKey identifies a pod by its cluster-scoped namespace/name. Used for
+// the headless StatefulSet-convention fallback (pod-name == DNS hostname),
+// since kube-state-metrics does not expose spec.hostname (D29).
+type podNameKey struct{ cluster, namespace, pod string }
+
+// ServiceObs carries the kube_service_info facts needed to materialise a
+// ServiceNode on demand. ClusterIP is retained verbatim — the headless
+// sentinel "None" distinguishes a headless service from a ClusterIP one.
+type ServiceObs struct {
+	ClusterIP string
+}
+
+// EndpointObs is one resolved backing pod of a Service (from
+// kube_endpointslice_endpoints), plus the endpoint hostname used for headless
+// pod-hostname matching.
+type EndpointObs struct {
+	Pod      *graph.PodNode
+	Hostname string
+}
+
 // Topology is the typed result of reading kube-state-metrics-style series for
 // a single time window across all clusters in scope.
 type Topology struct {
@@ -54,15 +77,35 @@ type Topology struct {
 	// pod wins; downstream resolution would otherwise be ambiguous.
 	PodsByUID map[string]*graph.PodNode
 
+	// D29 connection-string resolution indexes. Built only when KSM exports
+	// services / endpointslices (and, for the slice→service join, allowlists
+	// the kubernetes.io/service-name label); empty otherwise. These are
+	// INDEXES ONLY — ServiceNodes and service-selects-pod edges are
+	// materialised on demand by the service-graph reader for referenced
+	// services, not emitted wholesale here.
+	//
+	//   ServicesByNameNS   — (cluster, namespace, service) → cluster_ip facts
+	//   EndpointsByService — (cluster, namespace, service) → backing pods
+	//   PodsByNameNS       — (cluster, namespace, pod-name) → pod
+	ServicesByNameNS   map[serviceKey]ServiceObs
+	EndpointsByService map[serviceKey][]EndpointObs
+	PodsByNameNS       map[podNameKey]*graph.PodNode
+
 	ClustersObserved []string // sorted unique cluster values
 }
 
-// ReadTopology runs the five topology queries in parallel and assembles the
+// ReadTopology runs the topology queries in parallel and assembles the
 // result. The Renderer carries the configurable upstream metric-name prefix
 // (see design.md D26) so deployments using a fork of kube-state-metrics or a
 // custom exporter that re-publishes KSM-shaped series can be supported.
+//
+// The service / endpointslice queries (D29) are best-effort: an upstream that
+// does not export them (older KSM, or KSM started without
+// --resources=services,endpointslices) yields empty indexes, and "://"
+// connection-string endpoints simply fall back to `others/<label>`.
 func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, window time.Duration, end time.Time) (Topology, error) {
 	var podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector
+	var svcVec, epEndpointsVec, epLabelsVec model.Vector
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -90,14 +133,29 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 		labelVec = v
 		return err
 	})
+	g.Go(func() error {
+		v, err := q.Instant(ctx, string(promql.QServiceInfo), r.Render(promql.QServiceInfo, window), end)
+		svcVec = v
+		return err
+	})
+	g.Go(func() error {
+		v, err := q.Instant(ctx, string(promql.QEndpointSliceEndpoints), r.Render(promql.QEndpointSliceEndpoints, window), end)
+		epEndpointsVec = v
+		return err
+	})
+	g.Go(func() error {
+		v, err := q.Instant(ctx, string(promql.QEndpointSliceLabels), r.Render(promql.QEndpointSliceLabels, window), end)
+		epLabelsVec = v
+		return err
+	})
 	if err := g.Wait(); err != nil {
 		return Topology{}, fmt.Errorf("topology fan-out: %w", err)
 	}
 
-	return parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec), nil
+	return parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec), nil
 }
 
-func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topology {
+func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec model.Vector) Topology {
 	clusters := map[string]struct{}{}
 
 	// External IP map: (cluster, node-name) -> IP.
@@ -189,6 +247,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 
 	pods := make([]*graph.PodNode, 0, len(podVec))
 	podsByUID := map[string]*graph.PodNode{}
+	podsByNameNS := map[podNameKey]*graph.PodNode{}
 	addPodToIndex := func(uid string, pod *graph.PodNode) {
 		if uid == "" {
 			return
@@ -237,6 +296,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		}
 		pods = append(pods, canonicalPod)
 		addPodToIndex(canonical.uid, canonicalPod)
+		podsByNameNS[podNameKey(k)] = canonicalPod
 	}
 
 	// PVCs + pod-PVC bindings.
@@ -284,6 +344,75 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 		clusters[cluster] = struct{}{}
 	}
 
+	// Services (D29). kube_service_info carries cluster_ip; "None" means headless.
+	servicesByNameNS := map[serviceKey]ServiceObs{}
+	for _, s := range svcVec {
+		cluster := bucketCluster(string(s.Metric["cluster"]))
+		ns := string(s.Metric["namespace"])
+		svc := string(s.Metric["service"])
+		if svc == "" {
+			continue
+		}
+		servicesByNameNS[serviceKey{cluster, ns, svc}] = ServiceObs{
+			ClusterIP: string(s.Metric["cluster_ip"]),
+		}
+		clusters[cluster] = struct{}{}
+	}
+
+	// EndpointSlice -> owning Service name, via the kubernetes.io/service-name
+	// label kube-state-metrics flattens to label_kubernetes_io_service_name
+	// (requires the operator to allowlist it; absent -> the slice's endpoints
+	// stay unmapped and the service falls back to others/<label> downstream).
+	type sliceKey struct{ cluster, namespace, slice string }
+	sliceToService := map[sliceKey]string{}
+	for _, s := range epLabelsVec {
+		cluster := bucketCluster(string(s.Metric["cluster"]))
+		ns := string(s.Metric["namespace"])
+		slice := string(s.Metric["endpointslice"])
+		svc := string(s.Metric["label_kubernetes_io_service_name"])
+		if slice == "" || svc == "" {
+			continue
+		}
+		sliceToService[sliceKey{cluster, ns, slice}] = svc
+		clusters[cluster] = struct{}{}
+	}
+
+	// EndpointsByService: resolve each endpoint's backing pod via
+	// (cluster, targetref_namespace, targetref_name) against the loaded pods,
+	// keyed by the owning service recovered from the slice->service map. The
+	// per-endpoint hostname is retained for headless pod-hostname matching.
+	endpointsByService := map[serviceKey][]EndpointObs{}
+	for _, s := range epEndpointsVec {
+		cluster := bucketCluster(string(s.Metric["cluster"]))
+		ns := string(s.Metric["namespace"])
+		slice := string(s.Metric["endpointslice"])
+		svc, ok := sliceToService[sliceKey{cluster, ns, slice}]
+		if !ok {
+			continue
+		}
+		if kind := string(s.Metric["targetref_kind"]); kind != "" && kind != "Pod" {
+			continue
+		}
+		targetNS := string(s.Metric["targetref_namespace"])
+		if targetNS == "" {
+			targetNS = ns
+		}
+		targetName := string(s.Metric["targetref_name"])
+		if targetName == "" {
+			continue
+		}
+		pod, ok := podsByNameNS[podNameKey{cluster, targetNS, targetName}]
+		if !ok {
+			continue
+		}
+		key := serviceKey{cluster, ns, svc}
+		endpointsByService[key] = append(endpointsByService[key], EndpointObs{
+			Pod:      pod,
+			Hostname: string(s.Metric["hostname"]),
+		})
+		clusters[cluster] = struct{}{}
+	}
+
 	clusterList := make([]string, 0, len(clusters))
 	for c := range clusters {
 		clusterList = append(clusterList, c)
@@ -291,12 +420,15 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector) Topo
 	sort.Strings(clusterList)
 
 	return Topology{
-		Pods:             pods,
-		Nodes:            nodes,
-		PVCs:             pvcs,
-		PodPVCs:          bindings,
-		PodsByUID:        podsByUID,
-		ClustersObserved: clusterList,
+		Pods:               pods,
+		Nodes:              nodes,
+		PVCs:               pvcs,
+		PodPVCs:            bindings,
+		PodsByUID:          podsByUID,
+		ServicesByNameNS:   servicesByNameNS,
+		EndpointsByService: endpointsByService,
+		PodsByNameNS:       podsByNameNS,
+		ClustersObserved:   clusterList,
 	}
 }
 

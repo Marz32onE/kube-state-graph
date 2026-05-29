@@ -21,9 +21,7 @@
           "id": "others/http://api.example.com",
           "name": "http://api.example.com",
           "type": "others",
-          "labels": {
-            "pattern": "://"
-          }
+          "labels": {}
         }
       }
     ],

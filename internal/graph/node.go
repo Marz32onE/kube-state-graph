@@ -9,6 +9,7 @@ const (
 	NodeTypePod      NodeType = "pod"
 	NodeTypeK8sNode  NodeType = "node"
 	NodeTypePVC      NodeType = "pvc"
+	NodeTypeService  NodeType = "service"
 	NodeTypeOthers   NodeType = "others"
 	NodeTypeExternal NodeType = "external"
 )
@@ -18,7 +19,8 @@ const (
 // Implementations expose the canonical wire fields directly so the API
 // serialiser can iterate without type switches. IPAddress carries the
 // observed IPv4/IPv6 strings for nodes that have them (pods → pod_ip,
-// K8s nodes → ExternalIP); other node kinds return nil.
+// K8s nodes → ExternalIP, services → cluster_ip); other node kinds
+// return nil.
 type GraphNode interface {
 	ID() string
 	Name() string
@@ -74,6 +76,26 @@ func (p *PVCNode) Labels() map[string]string { return p.LabelsValue }
 func (p *PVCNode) IPAddress() []string       { return nil }
 func (p *PVCNode) isGraphNode()              {}
 
+// ServiceNode represents a Kubernetes Service surfaced when a service-graph
+// connection string (`<service>.<namespace>.svc.<domain>`) resolves to an
+// in-cluster Service via `kube_service_info` (see design.md D29). Its backing
+// pods are wired with `service-selects-pod` edges. IPAddressValue carries the
+// service's `cluster_ip` (single-element slice) when it is not the headless
+// sentinel `"None"`; headless services carry nil.
+type ServiceNode struct {
+	IDValue        string
+	NameValue      string
+	LabelsValue    map[string]string
+	IPAddressValue []string
+}
+
+func (s *ServiceNode) ID() string                { return s.IDValue }
+func (s *ServiceNode) Name() string              { return s.NameValue }
+func (s *ServiceNode) Type() NodeType            { return NodeTypeService }
+func (s *ServiceNode) Labels() map[string]string { return s.LabelsValue }
+func (s *ServiceNode) IPAddress() []string       { return s.IPAddressValue }
+func (s *ServiceNode) isGraphNode()              {}
+
 // OthersNode represents a non-pod endpoint surfaced when the
 // KSG_OTHERS_NAME_PATTERN substring matches the upstream client/server label
 // (operator-declared third-party endpoint; see design.md D18).
@@ -123,6 +145,11 @@ func K8sNodeID(cluster, name string) string { return cluster + "/" + name }
 // PVCID returns the cluster-scoped PVC ID.
 func PVCID(cluster, namespace, claim string) string {
 	return cluster + "/" + namespace + "/" + claim
+}
+
+// ServiceID returns the cluster-scoped Service ID (mirrors PVC keying).
+func ServiceID(cluster, namespace, service string) string {
+	return cluster + "/" + namespace + "/" + service
 }
 
 // OthersID returns the pattern-matched others node ID.

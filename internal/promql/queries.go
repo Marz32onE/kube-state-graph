@@ -23,6 +23,12 @@ const (
 	QServiceGraphTotal Query = "traces_service_graph_request_total"
 	QClusterDiscovery  Query = "cluster_discovery"
 	QUpProbe           Query = "up"
+
+	// Service / endpointslice topology (D29 connection-string resolution).
+	// KSM-shaped, so prefix-aware via Renderer.
+	QServiceInfo            Query = "kube_service_info"
+	QEndpointSliceEndpoints Query = "kube_endpointslice_endpoints"
+	QEndpointSliceLabels    Query = "kube_endpointslice_labels"
 )
 
 // ClusterDiscoveryLookback is the fixed lookback used by /v1/clusters
@@ -58,6 +64,12 @@ func (r Renderer) Render(q Query, window time.Duration) string {
 		return fmt.Sprintf(`last_over_time(%skube_pod_spec_volumes_persistentvolumeclaims_info[%s])`, r.Prefix, w)
 	case QNodeLabels:
 		return fmt.Sprintf(`last_over_time(%skube_node_labels[%s])`, r.Prefix, w)
+	case QServiceInfo:
+		return fmt.Sprintf(`last_over_time(%skube_service_info[%s])`, r.Prefix, w)
+	case QEndpointSliceEndpoints:
+		return fmt.Sprintf(`last_over_time(%skube_endpointslice_endpoints[%s])`, r.Prefix, w)
+	case QEndpointSliceLabels:
+		return fmt.Sprintf(`last_over_time(%skube_endpointslice_labels[%s])`, r.Prefix, w)
 	case QServiceGraphTotal:
 		// Service-graph metrics come from Alloy/Tempo, not kube-state-metrics;
 		// the configurable prefix deliberately does NOT apply here. The metric

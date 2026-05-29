@@ -27,7 +27,7 @@ func TestParseTopology_PodRestartCollapsesToLatestUID(t *testing.T) {
 		}
 	}
 	vec := sampleVec(pod("uid-1", 100), pod("uid-2", 200))
-	tp := parseTopology(vec, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1, "older UID must be discarded; only newest survives")
 	assert.Equal(t, "cluster-alpha/uid-2", tp.Pods[0].ID(), "newest UID must be canonical pod")
 }
@@ -41,7 +41,7 @@ func TestParseTopology_MissingClusterBucketed(t *testing.T) {
 			"node":      "worker-0",
 		},
 	})
-	tp := parseTopology(vec, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	assert.Equal(t, "unknown", tp.Pods[0].Labels()["cluster"])
 	assert.Contains(t, tp.ClustersObserved, "unknown")
@@ -60,7 +60,7 @@ func TestParseTopology_PodIPAttribute(t *testing.T) {
 		},
 		Value: 1,
 	})
-	tp := parseTopology(vec, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	pod := tp.Pods[0]
 	assert.Equal(t, []string{"10.244.0.42"}, pod.IPAddress(),
@@ -104,7 +104,7 @@ func TestParseTopology_MergesSameUIDPartialLabels(t *testing.T) {
 			Value: 1, Timestamp: 100,
 		},
 	)
-	tp := parseTopology(vec, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	pod := tp.Pods[0]
 	assert.Equal(t, []string{"10.244.0.42"}, pod.IPAddress(),
@@ -124,7 +124,7 @@ func TestParseTopology_PodIPAbsentWhenMetricMissing(t *testing.T) {
 		},
 		Value: 1,
 	})
-	tp := parseTopology(vec, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	assert.Nil(t, tp.Pods[0].IPAddress(), "IPAddress should be nil when pod_ip is absent")
 }
@@ -140,7 +140,7 @@ func TestParseTopology_K8sNodeLabelsFlattened(t *testing.T) {
 			"label_kubernetes_io_arch":          "amd64",
 		},
 	})
-	tp := parseTopology(nil, nodeVec, addrVec, nil, labelVec)
+	tp := parseTopology(nil, nodeVec, addrVec, nil, labelVec, nil, nil, nil)
 	require.Len(t, tp.Nodes, 1)
 	n := tp.Nodes[0]
 	assert.Equal(t, []string{"203.0.113.10"}, n.IPAddress(),
@@ -181,4 +181,54 @@ func TestUnflattenLabel_HeuristicLimits(t *testing.T) {
 			t.Errorf("unflattenLabel(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
+}
+
+// TestParseTopology_ServiceAndEndpointSliceIndexes — D29 connection-string
+// resolution indexes: kube_service_info → ServicesByNameNS (cluster_ip retained,
+// including the headless "None" sentinel); kube_endpointslice_labels +
+// kube_endpointslice_endpoints → EndpointsByService (slice→service via
+// label_kubernetes_io_service_name, endpoint→pod via targetref); kube_pod_info
+// → PodsByNameNS.
+func TestParseTopology_ServiceAndEndpointSliceIndexes(t *testing.T) {
+	podVec := sampleVec(
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "pod": "payments-0", "uid": "p1", "node": "w0", "pod_ip": "10.0.1.1"}},
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "pod": "payments-1", "uid": "p2", "node": "w1", "pod_ip": "10.0.1.2"}},
+	)
+	svcVec := sampleVec(
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "service": "payments", "cluster_ip": "10.96.0.5"}},
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "service": "mongo", "cluster_ip": "None"}}, // headless
+	)
+	epLabelsVec := sampleVec(
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "label_kubernetes_io_service_name": "payments"}},
+	)
+	epEndpointsVec := sampleVec(
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "targetref_kind": "Pod", "targetref_name": "payments-0", "targetref_namespace": "pay", "hostname": "payments-0"}},
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "targetref_kind": "Pod", "targetref_name": "payments-1", "targetref_namespace": "pay", "hostname": "payments-1"}},
+	)
+
+	tp := parseTopology(podVec, nil, nil, nil, nil, svcVec, epEndpointsVec, epLabelsVec)
+
+	require.Contains(t, tp.ServicesByNameNS, serviceKey{"c-a", "pay", "payments"})
+	assert.Equal(t, "10.96.0.5", tp.ServicesByNameNS[serviceKey{"c-a", "pay", "payments"}].ClusterIP)
+	require.Contains(t, tp.ServicesByNameNS, serviceKey{"c-a", "pay", "mongo"})
+	assert.Equal(t, "None", tp.ServicesByNameNS[serviceKey{"c-a", "pay", "mongo"}].ClusterIP,
+		"headless cluster_ip=None must be retained so the resolver can distinguish it")
+
+	eps := tp.EndpointsByService[serviceKey{"c-a", "pay", "payments"}]
+	require.Len(t, eps, 2, "both backing pods must resolve")
+	assert.ElementsMatch(t, []string{"c-a/p1", "c-a/p2"}, []string{eps[0].Pod.ID(), eps[1].Pod.ID()})
+
+	require.Contains(t, tp.PodsByNameNS, podNameKey{"c-a", "pay", "payments-0"})
+	assert.Equal(t, "c-a/p1", tp.PodsByNameNS[podNameKey{"c-a", "pay", "payments-0"}].ID())
+}
+
+// TestParseTopology_NoServiceSeriesYieldsEmptyIndexes — absence of
+// service/endpointslice series (KSM without those resources) yields empty
+// indexes and never errors; PodsByNameNS is still built from kube_pod_info.
+func TestParseTopology_NoServiceSeriesYieldsEmptyIndexes(t *testing.T) {
+	podVec := sampleVec(model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "pod": "p", "uid": "u", "node": "w"}})
+	tp := parseTopology(podVec, nil, nil, nil, nil, nil, nil, nil)
+	assert.Empty(t, tp.ServicesByNameNS)
+	assert.Empty(t, tp.EndpointsByService)
+	assert.Len(t, tp.PodsByNameNS, 1)
 }

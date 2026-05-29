@@ -1,0 +1,73 @@
+{
+  "apiVersion": "v1",
+  "nodes_fields": [
+    {
+      "name": "id",
+      "type": "string"
+    },
+    {
+      "name": "title",
+      "type": "string"
+    },
+    {
+      "name": "subTitle",
+      "type": "string"
+    },
+    {
+      "name": "mainStat",
+      "type": "string"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "cluster-alpha/p1",
+      "mainStat": "pod",
+      "subTitle": "cluster-alpha · shop",
+      "title": "checkout"
+    },
+    {
+      "id": "cluster-alpha/shop/payments",
+      "mainStat": "service",
+      "subTitle": "cluster-alpha · shop",
+      "title": "payments"
+    },
+    {
+      "id": "cluster-alpha/pay0",
+      "mainStat": "pod",
+      "subTitle": "cluster-alpha · shop",
+      "title": "payments-0"
+    }
+  ],
+  "edges_fields": [
+    {
+      "name": "id",
+      "type": "string"
+    },
+    {
+      "name": "source",
+      "type": "string"
+    },
+    {
+      "name": "target",
+      "type": "string"
+    },
+    {
+      "name": "mainStat",
+      "type": "string"
+    }
+  ],
+  "edges": [
+    {
+      "id": "8c67d50f-d94a-5518-9a04-6a9ccd8f5711",
+      "mainStat": "pod-calls-pod",
+      "source": "cluster-alpha/p1",
+      "target": "cluster-alpha/shop/payments"
+    },
+    {
+      "id": "c979a62f-33f8-5f78-a89a-03770c01c3cd",
+      "mainStat": "service-selects-pod",
+      "source": "cluster-alpha/shop/payments",
+      "target": "cluster-alpha/pay0"
+    }
+  ]
+}

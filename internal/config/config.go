@@ -21,7 +21,6 @@ type Config struct {
 	ListenAddr            string
 	BuildTimeout          time.Duration
 	APITimeout            time.Duration
-	OthersNamePattern     string
 	APIKeysFile           string
 	APIKeys               string
 	APIKeysReloadInterval time.Duration
@@ -43,7 +42,6 @@ func Defaults() Config {
 		ListenAddr:            ":8080",
 		BuildTimeout:          15 * time.Second,
 		APITimeout:            5 * time.Second,
-		OthersNamePattern:     "",
 		APIKeysFile:           "",
 		APIKeys:               "",
 		APIKeysReloadInterval: 30 * time.Second,
@@ -63,7 +61,6 @@ func Parse(args []string, lookup LookupEnvFunc) (Config, error) {
 	fs.StringVar(&cfg.ListenAddr, "listen-addr", cfg.ListenAddr, "HTTP listen address.")
 	fs.DurationVar(&cfg.BuildTimeout, "build-timeout", cfg.BuildTimeout, "Per-build context timeout for /v1/graph and /v1/graph/nodegraph.")
 	fs.DurationVar(&cfg.APITimeout, "api-timeout", cfg.APITimeout, "Per-request context timeout for non-graph endpoints with upstream calls (/v1/clusters, /readyz).")
-	fs.StringVar(&cfg.OthersNamePattern, "others-name-pattern", cfg.OthersNamePattern, "Substring; when set and matched against client/server label values, that endpoint becomes an `others`-typed node (operator-declared third-party endpoint). Disjoint from the missing-UID `external` fallback (D27).")
 	fs.StringVar(&cfg.APIKeysFile, "api-keys-file", cfg.APIKeysFile, "Path to a file holding accepted API keys (one per line, # comments allowed). Reloaded periodically. Takes precedence over --api-keys.")
 	fs.StringVar(&cfg.APIKeys, "api-keys", cfg.APIKeys, "Comma-separated list of accepted API keys. Used when --api-keys-file is unset.")
 	fs.DurationVar(&cfg.APIKeysReloadInterval, "api-keys-reload-interval", cfg.APIKeysReloadInterval, "How often to re-read --api-keys-file. Set to 0 to disable hot reload.")
@@ -97,7 +94,6 @@ func applyEnv(cfg *Config, lookup LookupEnvFunc) {
 	getStr("KSG_LISTEN_ADDR", &cfg.ListenAddr)
 	getDur("KSG_BUILD_TIMEOUT", &cfg.BuildTimeout)
 	getDur("KSG_API_TIMEOUT", &cfg.APITimeout)
-	getStr("KSG_OTHERS_NAME_PATTERN", &cfg.OthersNamePattern)
 	getStr("KSG_API_KEYS_FILE", &cfg.APIKeysFile)
 	getStr("KSG_API_KEYS", &cfg.APIKeys)
 	getDur("KSG_API_KEYS_RELOAD_INTERVAL", &cfg.APIKeysReloadInterval)

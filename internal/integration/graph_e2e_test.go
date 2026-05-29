@@ -172,16 +172,55 @@ func (s *GraphSuite) TestNameFilter_UnknownReturnsEmpty() {
 	s.Contains(bodyStr, `"edges":[]`)
 }
 
-func (s *GraphSuite) TestOthersNodeProducedByPattern() {
-	srv := s.StartAPIServer(func(cfg *config.Config) {
-		cfg.OthersNamePattern = "://"
-
-	})
+func (s *GraphSuite) TestConnStringUnresolvableProducesOthersNode() {
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	s.Contains(string(body), `"type":"others"`)
 	s.Contains(string(body), `"name":"https://payments.partner.example/api"`)
+}
+
+// TestConnStringServiceResolvesToServiceNodeWithBackingPods exercises the full
+// D29 connection-string pipeline end-to-end against a real VM: kube_service_info
+// + kube_endpointslice_{labels,endpoints} are read into the topology indexes,
+// a checkout→https://payments-svc.shop.svc.cluster.local/api call (empty server
+// UID) resolves the server to a type="service" node, and a service-selects-pod
+// edge fans out to the backing "cart" pod (uid alpha-2, from the standard
+// fixture). These extra series are ingested on top of SetupTest's standard set
+// under the per-test discriminator.
+func (s *GraphSuite) TestConnStringServiceResolvesToServiceNodeWithBackingPods() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP kube_service_info dummy
+kube_service_info{cluster="cluster-alpha",namespace="shop",service="payments-svc",cluster_ip="10.96.0.9",test=%q} 1 %d
+kube_endpointslice_labels{cluster="cluster-alpha",namespace="shop",endpointslice="payments-svc-x1",label_kubernetes_io_service_name="payments-svc",test=%q} 1 %d
+kube_endpointslice_endpoints{cluster="cluster-alpha",namespace="shop",endpointslice="payments-svc-x1",targetref_kind="Pod",targetref_name="cart",targetref_namespace="shop",hostname="cart",test=%q} 1 %d
+traces_service_graph_request_total{client="checkout",server="https://payments-svc.shop.svc.cluster.local/api",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="https://payments-svc.shop.svc.cluster.local/api",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t1, disc, t1, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	s.Require().True(s.WaitForSeries(`kube_service_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested kube_service_info")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// Service node materialised from the connection string.
+	s.Contains(bodyStr, `"type":"service"`, "ClusterIP connection string must resolve to a service node")
+	s.Contains(bodyStr, `"id":"cluster-alpha/shop/payments-svc"`)
+	s.Contains(bodyStr, `"10.96.0.9"`, "service node carries cluster_ip on ipaddress")
+	// pod-calls-pod edge points the client pod at the service node.
+	s.Contains(bodyStr, `"target":"cluster-alpha/shop/payments-svc"`)
+	// service-selects-pod edge fans out to the backing pod (cart = alpha-2).
+	s.Contains(bodyStr, `"type":"service-selects-pod"`)
+	s.Contains(bodyStr, `"target":"cluster-alpha/alpha-2"`,
+		"service-selects-pod edge resolves the backing cart pod via endpointslice targetref")
 }
 
 func (s *GraphSuite) TestClustersDiscovery() {

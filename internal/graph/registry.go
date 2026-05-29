@@ -47,13 +47,24 @@ var EdgeTypes = []EdgeTypeDefinition{
 	},
 	{
 		Type:            EdgeTypePodCallsPod,
-		Description:     "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). Endpoints may be 'others' nodes when KSG_OTHERS_NAME_PATTERN matches the upstream client/server label (D18), or 'external' nodes via the missing-UID human-label fallback (D27).",
-		SourceType:      []NodeType{NodeTypePod, NodeTypeOthers, NodeTypeExternal},
-		TargetType:      []NodeType{NodeTypePod, NodeTypeOthers, NodeTypeExternal},
+		Description:     "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). An endpoint whose client/server label is a '://' connection string is resolved to a 'service' node or a real pod when it names an in-cluster Kubernetes Service / headless pod, and otherwise to an 'others' node (D29); endpoints with a missing pod UID and a non-URL label become 'external' nodes via the human-label fallback (D27).",
+		SourceType:      []NodeType{NodeTypePod, NodeTypeService, NodeTypeOthers, NodeTypeExternal},
+		TargetType:      []NodeType{NodeTypePod, NodeTypeService, NodeTypeOthers, NodeTypeExternal},
 		Directed:        true,
 		MayCrossCluster: true,
 		Labels: []EdgeTypeLabel{
 			{Name: "cluster", ValueType: "string"},
+		},
+	},
+	{
+		Type:            EdgeTypeServiceSelectsPod,
+		Description:     "A Kubernetes Service routes to a backing pod, derived from kube_endpointslice_endpoints joined to topology pods (D29). Materialised on demand only for services referenced by a '://' connection-string endpoint. Always intra-cluster.",
+		SourceType:      []NodeType{NodeTypeService},
+		TargetType:      []NodeType{NodeTypePod},
+		Directed:        true,
+		MayCrossCluster: false,
+		Labels: []EdgeTypeLabel{
+			{Name: "namespace", ValueType: "string", Description: "Namespace of the service and its backing pod (optional)."},
 		},
 	},
 }

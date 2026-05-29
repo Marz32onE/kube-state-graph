@@ -212,7 +212,7 @@ Validation: the prefix must match the Prometheus metric-name charset `^[a-zA-Z_:
 
 The prefix targets the metric-name **prefix** only. Everything else is a fixed contract a compatible exporter MUST honour:
 
-- **Metric-name suffix**: the topology reader queries the six families listed below (after stripping the prefix). An exporter that exposes the same data under a different suffix (e.g. `myorg_pods` instead of `myorg_kube_pod_info`) is NOT supported by the current knob.
+- **Metric-name suffix**: the topology reader queries the families listed below (after stripping the prefix). An exporter that exposes the same data under a different suffix (e.g. `myorg_pods` instead of `myorg_kube_pod_info`) is NOT supported by the current knob.
 - **Label-name set**: each family must publish the labels the reader joins on. See the per-family list below.
 
 | Query identifier | Series the reader queries (with prefix `P`) | Required labels |
@@ -222,7 +222,31 @@ The prefix targets the metric-name **prefix** only. Everything else is a fixed c
 | `kube_node_status_addresses` | `Pkube_node_status_addresses{type="ExternalIP"}` | `cluster`, `node`, `type`, `address` |
 | `kube_pod_spec_volumes_persistentvolumeclaims_info` | `Pkube_pod_spec_volumes_persistentvolumeclaims_info` | `cluster`, `namespace`, `pod`, `persistentvolumeclaim` (or `claim_name`), optional `volume` |
 | `kube_node_labels` | `Pkube_node_labels` | `cluster`, `node`, plus any `label_*` flattened Kubernetes labels |
+| `kube_service_info` | `Pkube_service_info` | `cluster`, `namespace`, `service`, `cluster_ip` (`"None"` ⇒ headless ⇒ no `ipaddress`) |
+| `kube_endpointslice_endpoints` | `Pkube_endpointslice_endpoints` | `cluster`, `namespace`, `endpointslice`, `address`, `hostname`, `targetref_kind`, `targetref_name`, `targetref_namespace` |
+| `kube_endpointslice_labels` | `Pkube_endpointslice_labels` | `cluster`, `namespace`, `endpointslice`, `label_kubernetes_io_service_name` |
 | `cluster_discovery` (`/v1/clusters`) | `group by (cluster) (last_over_time(Pkube_node_info[1h]))` | `cluster` |
+
+`KSG_METRIC_PREFIX` **does** apply to `kube_service_info`,
+`kube_endpointslice_endpoints`, and `kube_endpointslice_labels` (they are
+kube-state-metrics-shaped families). It does **NOT** apply to
+`traces_service_graph_request_total` or `up{}` — see "Out of scope" below.
+
+#### EndpointSlice allowlist requirement
+
+The three Service families back the connection-string `type="service"`
+resolution (see [Connection-string endpoint resolution](others-substitution.md)).
+The slice → service join reads `label_kubernetes_io_service_name` off
+`kube_endpointslice_labels`, which kube-state-metrics only emits when its
+`--metric-labels-allowlist` includes `endpointslices=[kubernetes.io/service-name]`:
+
+```
+--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name]
+```
+
+This label is **not** exposed by default. Without it, KSG cannot associate
+EndpointSlices with their owning Service, so `service-selects-pod` edges will be
+missing even though the `kube_service_info` series is present.
 
 ### Out of scope for the prefix knob
 
@@ -240,8 +264,8 @@ longer hard-required for an edge to appear in `/v1/graph`.
 
 | Label | Required? | Notes |
 |-------|-----------|-------|
-| `client`, `server` | yes (at least one per side) | Human-readable endpoint name. Used as the substitution input for `KSG_OTHERS_NAME_PATTERN` (→ `type=others`) and as the fallback identity when the corresponding pod-UID dimension is empty (→ `type=external`, D27). |
-| `client_k8s_pod_uid`, `server_k8s_pod_uid` | recommended | When populated, the reader resolves the endpoint to a pod via the global pod-UID index. When empty and the corresponding `client`/`server` label is non-empty, the endpoint surfaces as `external/<label>` (D27 missing-UID fallback — disjoint from the `others/<label>` ID space produced by the pattern rule). When BOTH the UID and the label are empty for an endpoint, the edge is dropped. |
+| `client`, `server` | yes (at least one per side) | Human-readable endpoint name. When the corresponding pod-UID dimension is empty, this label is the resolution input: a `://` connection string resolves to a `type="service"` node / backing pod / `type="others"` node per the [connection-string grammar](others-substitution.md); a non-URL label surfaces as `type="external"` (D27). |
+| `client_k8s_pod_uid`, `server_k8s_pod_uid` | recommended | When populated, the reader resolves the endpoint to a pod via the global pod-UID index (this branch wins over connection-string parsing). When empty, the `client`/`server` label is resolved instead: a `://` connection string → `type="service"` / backing pod / `others/<label>`; a non-URL label → `external/<label>` (D27 missing-UID fallback). The `service/`, `others/`, and `external/` ID spaces are disjoint. When BOTH the UID and the label are empty for an endpoint, the edge is dropped. |
 | `cluster` | yes | Trace-source / client-side cluster; required for the edge's `labels.cluster` field when the client side resolves to a pod. |
 | `client_k8s_namespace_name`, `server_k8s_namespace_name` | optional | Carried to synth pods when the UID-based lookup misses topology. |
 

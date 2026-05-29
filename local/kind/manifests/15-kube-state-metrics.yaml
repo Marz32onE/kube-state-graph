@@ -1,7 +1,9 @@
 ---
 # kube-state-metrics scoped down to the metrics kube-state-graph actually
-# consumes from a real cluster: pod-info, node-info, and node-labels.
-# Other resources/metrics are disabled to keep the local rig small. The
+# consumes from a real cluster: pod-info, node-info, node-labels, pvc-info,
+# service-info, and endpointslice endpoints/labels (the latter three back the
+# D29 service-resolution path). Other resources/metrics are disabled to keep
+# the local rig small. The
 # `cluster` label is injected by the VM scrape relabel rule (see
 # 10-victoria-metrics.yaml — "kube-state-metrics" job).
 apiVersion: v1
@@ -16,7 +18,10 @@ metadata:
   name: kube-state-metrics
 rules:
   - apiGroups: [""]
-    resources: ["pods", "nodes", "persistentvolumeclaims"]
+    resources: ["pods", "nodes", "persistentvolumeclaims", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -54,12 +59,15 @@ spec:
         - name: kube-state-metrics
           image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
           args:
-            - "--resources=pods,nodes,persistentvolumeclaims"
-            - "--metric-allowlist=kube_pod_info,kube_node_info,kube_node_labels,kube_pod_spec_volumes_persistentvolumeclaims_info"
+            - "--resources=pods,nodes,persistentvolumeclaims,services,endpointslices"
+            - "--metric-allowlist=kube_pod_info,kube_node_info,kube_node_labels,kube_pod_spec_volumes_persistentvolumeclaims_info,kube_service_info,kube_endpointslice_endpoints,kube_endpointslice_labels"
             # Surface every node label as a metric label so the topology reader
             # sees them. Without this the kube_node_labels series only carries
-            # whatever is on the node-info join.
-            - "--metric-labels-allowlist=nodes=[*]"
+            # whatever is on the node-info join. The endpointslices allowlist
+            # exposes kubernetes.io/service-name as label_kubernetes_io_service_name
+            # on kube_endpointslice_labels — REQUIRED for the slice->service join
+            # (D29); KSM does NOT emit it by default.
+            - "--metric-labels-allowlist=nodes=[*],endpointslices=[kubernetes.io/service-name]"
           ports:
             - containerPort: 8080
               name: http
