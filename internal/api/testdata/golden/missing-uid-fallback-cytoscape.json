@@ -7,9 +7,18 @@
     "nodes": [
       {
         "data": {
+          "id": "cluster/cluster-alpha",
+          "name": "cluster-alpha",
+          "type": "cluster",
+          "labels": {}
+        }
+      },
+      {
+        "data": {
           "id": "cluster-alpha/p1",
           "name": "checkout",
           "type": "pod",
+          "parent": "cluster/cluster-alpha",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"

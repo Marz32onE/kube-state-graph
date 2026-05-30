@@ -705,3 +705,31 @@ Per design D30. The `servicegraph` connector emits **virtual peers** for endpoin
 - [x] 35.E.1 `openspec validate "add-k8s-pod-graph-api"`.
 - [x] 35.E.2 `make build`, `make vet`, `make test`, `make lint`.
 - [x] 35.E.3 `make verify-mocks` — no interface signatures change; should stay clean.
+
+## 36. Cytoscape compound node grouping (`cluster > node > pod`) (capability: graph-api)
+
+Per design D31. The Cytoscape `/v1/graph` serialiser groups nodes into compound containers via Cytoscape's `data.parent`: `cluster > node > pod`, with services / PVCs as cluster-level siblings (NOT pod containers). Presentation-only — `serialiseCytoscape` is the only production change; the core graph, sealed types, `graph.Project`, property tests, and the Grafana Node Graph serialiser are untouched. `pod-runs-on-node` edges are suppressed from the Cytoscape edge set (the nesting expresses them) but retained everywhere else (core graph, traversal, `/v1/edge-types`, Grafana Node Graph). The pod→node parent is sourced from the pod's `labels.node` (a contract field), not the edge, so it survives edge-type projection. See design.md D31.
+
+### 36.A Serialiser
+
+- [x] 36.A.1 `internal/api/serialise.go`: add `Parent string` with tag `json:"parent,omitempty"` to `cytoscapeNodeData` (placed after `Type`, before `IPAddress`).
+- [x] 36.A.2 `internal/api/serialise.go`: in `serialiseCytoscape`, synthesise one `type="cluster"` group node (`id="cluster/<cluster>"`, `name="<cluster>"`, `labels={}`, no parent, no ipaddress) per distinct non-empty `labels.cluster` on an emitted node; emit them FIRST, sorted by cluster name (determinism, D6). Add `import "sort"`.
+- [x] 36.A.3 `internal/api/serialise.go`: assign `data.parent` — pod → `labels.node` when that node id is present in the view, else `cluster/<cluster>` (non-empty cluster), else `""`; node / service / pvc → `cluster/<cluster>`; others / external / cluster → `""`. Build a `present` set of view node ids so a pod never references a node absent from `elements.nodes`.
+- [x] 36.A.4 `internal/api/serialise.go`: in the Cytoscape edge loop, skip `graph.EdgeTypePodRunsOnNode`. Retain all other edge types. Do NOT modify `serialiseGrafanaNodeGraph` (it keeps the edge and emits no cluster nodes).
+
+### 36.B Tests + golden
+
+- [x] 36.B.1 `internal/api/serialise_compound_test.go`: unit tests — cluster-node synthesis, `cluster > node > pod` parent chain, svc / pvc → cluster, pod fallback to cluster when its node is absent, others / external no parent, unknown-cluster pod (`labels.cluster=""`) no parent, cluster nodes sorted first, and Grafana-unaffected (keeps the runs-on edge, emits no cluster node).
+- [x] 36.B.2 Golden: regenerate `*-cytoscape.json` fixtures (`go test ./internal/api/ -update -run Golden`) — they gain the synthetic cluster group node + `data.parent` fields and drop `pod-runs-on-node` edges. The `*-nodegraph.json` fixtures MUST be byte-unchanged (Grafana serialiser untouched) — verify with `git diff`.
+
+### 36.C Docs
+
+- [x] 36.C.1 `CLAUDE.md`: note the Cytoscape compound grouping (presentation-only, `data.parent`, synthetic `cluster` node, `pod-runs-on-node` suppressed in Cytoscape only / kept in Grafana) in the serialiser / response-shape sections.
+- [x] 36.C.2 `docs/api.md`: document the `data.parent` field, the synthetic `type="cluster"` node, and that `pod-runs-on-node` is shown via nesting in Cytoscape and via an edge in Grafana.
+- [x] 36.C.3 Swag / OpenAPI: add the optional `parent` field and the `cluster` node `type` enum to the documented Cytoscape node schema; run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
+
+### 36.D Validation
+
+- [x] 36.D.1 `openspec validate "add-k8s-pod-graph-api"`.
+- [x] 36.D.2 `make build`, `make vet`, `make test`, `make lint`.
+- [x] 36.D.3 `make verify-mocks` — no interface signatures change; should stay clean.

@@ -72,7 +72,7 @@ scope and the partner pod lives in an out-of-scope cluster.
   "apiVersion": "v1",
   "clusters": ["cluster-alpha", "cluster-beta"],
   "elements": {
-    "nodes": [{"data": {"id": "<cluster>/<uid>", "name": "...", "type": "pod|node|pvc|others|external", "labels": {"cluster": "..."}}}],
+    "nodes": [{"data": {"id": "<cluster>/<uid>", "name": "...", "type": "cluster|pod|node|pvc|service|others|external", "parent": "<container-id>", "labels": {"cluster": "..."}}}],
     "edges": [{"data": {"id": "<uuidv5>", "type": "...", "source": "...", "target": "...", "labels": {"cluster": "<trace-source-cluster>"}}}]
   }
 }
@@ -88,6 +88,18 @@ cost is delegated to upstream VictoriaMetrics search limits
 
 `labels` is strictly `map[string]string`. Numeric metrics are deferred to a
 future typed struct field (see the design doc, D9).
+
+**Compound nodes (Cytoscape only).** The Cytoscape response groups nodes into
+compound containers via an optional `data.parent` field: `cluster > node > pod`
+(a pod nests in its K8s node, the node in its cluster), with services and PVCs
+as cluster-level siblings (`cluster > service`, `cluster > pvc`). A synthetic
+`type="cluster"` group node (`id="cluster/<name>"`, `labels={}`, no `ipaddress`)
+is emitted per cluster so `parent` references resolve. Because the nesting
+already expresses "pod runs on node", `pod-runs-on-node` edges are **omitted**
+from the Cytoscape `elements.edges` (they remain in `/v1/graph/nodegraph`, in
+`/v1/edge-types`, and in traversal / name-filtering). This is presentation-only:
+the Grafana Node Graph response (`/v1/graph/nodegraph`) carries no `parent`, no
+cluster node, and keeps the `pod-runs-on-node` edge (see the design doc, D31).
 
 Service-graph peers whose `client` / `server` label is exactly `user` or
 `unknown` — the `servicegraph` connector's virtual nodes for uninstrumented

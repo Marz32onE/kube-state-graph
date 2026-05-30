@@ -966,6 +966,45 @@ Why / Alternatives considered:
 - **Make the sentinel set configurable** (rejected — consistent with D29's no-knob stance; two literals cover the connector's emitted sentinels, and a regex / list knob re-introduces exactly the tuning burden D29 removed).
 - **Case-insensitive / substring match** (rejected — anchored exact match avoids false positives against legitimate names like a `user-service`, and the connector emits the lowercase literals only).
 
+### D31. Cytoscape compound node grouping (`cluster > node > pod`), presentation-only
+
+The Cytoscape `/v1/graph` serialiser groups nodes into compound (parent / child) containers via Cytoscape's `data.parent` field, so a renderer draws pods inside their K8s node and nodes / services / PVCs inside their cluster. This is a **presentation-only** concern: it lives entirely in `serialiseCytoscape` and touches neither the core `*Graph`, the sealed `GraphNode` types, `graph.Project`, the property tests, nor the Grafana Node Graph serialiser.
+
+**Containment hierarchy** — a single strict tree, because Cytoscape allows each node exactly one parent:
+
+- `cluster > node > pod` — a synthetic `type="cluster"` group node contains the K8s nodes; each K8s node contains the pods that run on it.
+- `cluster > service`, `cluster > pvc` — services and PVCs are cluster-level **siblings** of K8s nodes. They are NOT compound parents of pods: a Kubernetes Service spans multiple nodes and a pod can back multiple Services, so service→pod containment is many-to-many and cannot map to a single-parent tree. The pod ↔ service / pod ↔ pvc relationships stay as edges (`pod-to-service` / `service-selects-pod` / `pod-mounts-pvc`).
+- `others` / `external` endpoints have no cluster identity → no parent (top-level).
+
+**Synthetic cluster group nodes.** Cytoscape's `data.parent` must reference a node present in `elements.nodes`, so the serialiser emits one `{ data: { id: "cluster/<name>", name: "<name>", type: "cluster", labels: {} } }` group node per distinct `labels.cluster` value observed on an emitted node — no `parent`, no `ipaddress`. They are synthesised in the serialiser only (they are not `GraphNode`s) and never appear in the Grafana output. Emitted first, sorted by cluster name, for body determinism (D6).
+
+**`data.parent` assignment** (a new `parent` field on the Cytoscape node `data`, `omitempty`):
+
+- `pod` → its K8s node id, taken from the pod's `labels.node` (the cluster-scoped node id), when that node is present in the response; else its cluster group `cluster/<cluster>`; else (unknown / empty cluster) no parent.
+- `node` / `service` / `pvc` → `cluster/<labels.cluster>`.
+- `others` / `external` / `cluster` → no parent.
+
+The pod→node parent derives from the pod's own `labels.node` attribute (a contract field in `graph-api`), NOT from the `pod-runs-on-node` edge, so it survives edge-type projection.
+
+**`pod-runs-on-node` omitted from the Cytoscape edge set.** Because `cluster > node > pod` nesting already expresses "pod runs on node", the Cytoscape serialiser drops `pod-runs-on-node` edges from `elements.edges` (they would be redundant with the containment). The edge is NOT removed from the core graph: it stays registered in `graph.EdgeTypes`, is produced by the builder, participates in `graph.Project` traversal / name-filter (e.g. `?name=<node>` → pods that run on it; `?root=<node>&direction=in`), and is still emitted by the Grafana Node Graph serialiser (which cannot nest, so the edge is its only representation of pod→node). Only the Cytoscape presentation suppresses it. The other relationship edges (`pod-mounts-pvc`, `service-selects-pod`, `pod-to-service`, `pod-calls-pod`) are NOT containment in this tree and stay as edges in both serialisers.
+
+**Grafana Node Graph is unchanged.** The Node Graph API datasource has no compound-node concept, so the Grafana serialiser ignores `parent`, synthesises no cluster nodes, and keeps every edge (including `pod-runs-on-node`). pod→node, pod→service, etc. remain visible there as edges.
+
+**Determinism (D6).** Cluster group nodes are emitted in sorted order ahead of the real nodes (themselves already sorted by `SortNodes` under projection); `parent` is a pure function of node attributes; the body shape stays `{apiVersion, clusters, elements}`. Byte-identical output for identical `(window, filters, upstream-data)`.
+
+Why:
+
+- Compound grouping is the single highest-value readability win for the Cytoscape view — operators see the cluster / node / pod hierarchy at a glance instead of a flat mesh — and Cytoscape renders it natively from `data.parent`.
+- Keeping it presentation-only avoids polluting the load-bearing `graph.Project` and property invariants with edgeless group nodes (a `ClusterNode` in the core graph would never be reached by root-anchored BFS and would dangle), and leaves Grafana untouched.
+- Sourcing the pod→node parent from `labels.node` (not the edge) keeps nesting correct even when `?edge_type=` projects the runs-on edge away.
+
+Alternatives considered:
+
+- **`ClusterNode` as a sealed `GraphNode` in the core graph** (rejected — edgeless group nodes break root-anchored BFS in `graph.Project` and force special-casing in traversal, property invariants, and the Grafana serialiser, for no gain over synthesising them in the one serialiser that needs them).
+- **`cluster > node > service > pod` (service nested under node)** (rejected — a Service spans nodes and a pod backs multiple Services; forcing it into the tree fragments service identity per node and breaks the single `pod-to-service` target + the on-demand service dedupe of D29).
+- **Keep `pod-runs-on-node` in the Cytoscape edge set too** (rejected — the edge and the nesting double-represent the same fact; an edge from a pod to its enclosing node box is visual noise. The edge is retained everywhere else — core graph, traversal, Grafana — only suppressed in the Cytoscape presentation).
+- **Drop `pod-runs-on-node` from the core graph / registry entirely** (rejected — Grafana would lose pod→node completely with no nesting fallback, and `graph.Project` traversal / `?name=<node>` would break; the relationship must survive for non-Cytoscape consumers).
+
 ## Risks / Trade-offs
 
 - [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost.

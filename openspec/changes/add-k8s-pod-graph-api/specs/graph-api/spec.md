@@ -54,7 +54,8 @@ The server SHALL pass caller-supplied `start` and `end` through to upstream Prom
 Each **node** SHALL be `{ data: { id, name, type, labels } }`:
 - `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs / services (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`; services: `<cluster>/<namespace>/<service>`). For others nodes (unresolvable connection-string endpoints), `id` SHALL be `others/<label-value>` (no cluster prefix). For external nodes (missing-UID human-label fallback), `id` SHALL be `external/<label-value>` (no cluster prefix).
 - `name` SHALL be the human-readable pod / node / PVC / service name (used for the Grafana panel display label). For others / external nodes, `name` SHALL be the verbatim `client` or `server` label value from the source service-graph series.
-- `type` SHALL be one of the strings `"pod"`, `"node"`, `"pvc"`, `"service"`, `"others"`, `"external"`.
+- `type` SHALL be one of the strings `"pod"`, `"node"`, `"pvc"`, `"service"`, `"others"`, `"external"`. The Cytoscape serialiser additionally synthesises `"cluster"` group nodes for compound nesting (see "Cytoscape compound node grouping"); these appear ONLY in the Cytoscape response, never in the Grafana Node Graph response.
+- `data` MAY carry an optional `parent` field (`omitempty`) referencing the `id` of the node's Cytoscape compound container — see "Cytoscape compound node grouping". The Grafana Node Graph response SHALL NOT carry a `parent` field.
 - `labels` SHALL be a JSON object whose values are strings only (`map[string]string`). For pod / K8s node / PVC / service nodes it SHALL include at minimum a `cluster` entry; for pods, PVCs, and services it SHALL also include a `namespace` entry; for pods it SHALL include `node` (the cluster-scoped node ID), and SHALL include `pod_ip` and `host_ip` whenever the upstream `kube_pod_info` series carried them; for K8s nodes it SHALL include `external_ip` when the upstream provided one. **For others nodes**, `labels` SHALL be an empty object `{}` (no `pattern` key, no `cluster` key). **For external nodes**, `labels` SHALL be an empty object `{}` (no `pattern` key, no `cluster` key — externals are only produced by the missing-UID fallback).
 
 Each **edge** SHALL be `{ data: { id, type, source, target, labels } }`:
@@ -482,3 +483,54 @@ The test SHALL run on every PR via `go test ./...` and SHALL fail when annotatio
 
 - **WHEN** a contributor removes a Gin route but leaves the corresponding `// @Router` annotation in place (and forgets to regenerate the spec)
 - **THEN** running `go test ./internal/api/` fails with a clear message naming the orphan documented path
+
+### Requirement: Cytoscape compound node grouping
+
+`GET /v1/graph` (Cytoscape shape only) SHALL express the cluster / node / pod hierarchy as Cytoscape compound nodes via an optional `data.parent` field, and SHALL synthesise one group node per cluster. This is a presentation concern of the Cytoscape serialiser; it SHALL NOT affect the Grafana Node Graph response (`GET /v1/graph/nodegraph`), the core graph, projection, or traversal.
+
+The serialiser SHALL emit, for each distinct `labels.cluster` value present on an emitted node, one synthetic group node `{ data: { id: "cluster/<cluster>", name: "<cluster>", type: "cluster", labels: {} } }` with no `parent` and no `ipaddress`. These group nodes SHALL be emitted before the other nodes, ordered by cluster name, so the body stays byte-deterministic.
+
+Each non-group node's `data.parent` SHALL be assigned as:
+
+- `type="pod"` → the pod's K8s node id (its `labels.node` value) when that node is present in the same response; else `cluster/<labels.cluster>` when the pod has a non-empty cluster; else omitted.
+- `type="node"`, `type="service"`, `type="pvc"` → `cluster/<labels.cluster>`.
+- `type="others"`, `type="external"` → omitted (no cluster identity).
+
+The `parent` field SHALL use `omitempty` semantics (absent when there is no parent). Services and PVCs SHALL NOT be compound parents of pods (a Service spans nodes and a pod may back multiple Services; those relationships remain edges).
+
+The Cytoscape serialiser SHALL OMIT `pod-runs-on-node` edges from `elements.edges`, because the `cluster > node > pod` nesting already expresses that relationship. The `pod-runs-on-node` edge type SHALL remain registered in `/v1/edge-types`, SHALL still be produced into the core graph, SHALL still participate in projection / traversal / name-filtering, and SHALL still be emitted by `GET /v1/graph/nodegraph` (Grafana cannot nest). Other relationship edges (`pod-mounts-pvc`, `service-selects-pod`, `pod-to-service`, `pod-calls-pod`) SHALL be retained in the Cytoscape output.
+
+#### Scenario: Cluster group node synthesised
+
+- **WHEN** the graph contains any node with `labels.cluster="cluster-alpha"`
+- **THEN** the Cytoscape response contains a node `{ data: { id: "cluster/cluster-alpha", name: "cluster-alpha", type: "cluster", labels: {} } }` with no `parent` field
+
+#### Scenario: cluster > node > pod nesting
+
+- **WHEN** a pod node carries `labels.node="cluster-alpha/worker-0"` and the K8s node `cluster-alpha/worker-0` is in the response
+- **THEN** the pod's `data.parent` equals `"cluster-alpha/worker-0"` and the K8s node's `data.parent` equals `"cluster/cluster-alpha"`
+
+#### Scenario: pod-runs-on-node edge omitted from Cytoscape but kept in Grafana
+
+- **WHEN** the graph contains a `pod-runs-on-node` edge
+- **THEN** that edge does NOT appear in the Cytoscape `elements.edges`, but it DOES appear in the `GET /v1/graph/nodegraph` `edges` array
+
+#### Scenario: pod falls back to cluster parent when its node is not in scope
+
+- **WHEN** a pod carries `labels.node="cluster-alpha/worker-0"` but that K8s node is not present in the response (e.g. filtered out)
+- **THEN** the pod's `data.parent` equals `"cluster/cluster-alpha"`
+
+#### Scenario: service and PVC parented to cluster, not containing pods
+
+- **WHEN** the response contains a `type="service"` node and a `type="pvc"` node in `cluster-alpha`
+- **THEN** each has `data.parent="cluster/cluster-alpha"`, and neither is the `parent` of any pod
+
+#### Scenario: others and external nodes have no parent
+
+- **WHEN** the response contains a `type="others"` or `type="external"` node
+- **THEN** that node's `data` has no `parent` field, and no cluster group node is synthesised for an endpoint carrying no `cluster` label
+
+#### Scenario: Grafana Node Graph unaffected by compound
+
+- **WHEN** a client requests `GET /v1/graph/nodegraph`
+- **THEN** the response contains no `type="cluster"` node and no `cluster/<name>` id, carries no `parent` concept, and retains the `pod-runs-on-node` edge in its `edges` array

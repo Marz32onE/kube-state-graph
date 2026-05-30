@@ -157,3 +157,8 @@ func OthersID(value string) string { return "others/" + value }
 
 // ExternalID returns the missing-UID-fallback external node ID.
 func ExternalID(value string) string { return "external/" + value }
+
+// Reserved: the "cluster/" ID prefix is owned by the Cytoscape presentation
+// layer (api.clusterParentID, design.md D31) for synthetic compound group
+// nodes. Those are NOT GraphNodes and are never minted here — do not reuse the
+// prefix for a real node kind.

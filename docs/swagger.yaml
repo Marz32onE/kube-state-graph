@@ -143,6 +143,8 @@ components:
                     type: object
                 name:
                     type: string
+                parent:
+                    type: string
                 type:
                     type: string
             type: object

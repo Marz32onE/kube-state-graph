@@ -214,6 +214,9 @@ const docTemplate = `{
                     "name": {
                         "type": "string"
                     },
+                    "parent": {
+                        "type": "string"
+                    },
                     "type": {
                         "type": "string"
                     }

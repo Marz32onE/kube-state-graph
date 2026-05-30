@@ -7,9 +7,18 @@
     "nodes": [
       {
         "data": {
+          "id": "cluster/cluster-alpha",
+          "name": "cluster-alpha",
+          "type": "cluster",
+          "labels": {}
+        }
+      },
+      {
+        "data": {
           "id": "cluster-alpha/worker-0",
           "name": "worker-0",
           "type": "node",
+          "parent": "cluster/cluster-alpha",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -20,6 +29,7 @@
           "id": "cluster-alpha/p1",
           "name": "checkout",
           "type": "pod",
+          "parent": "cluster-alpha/worker-0",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -28,16 +38,6 @@
         }
       }
     ],
-    "edges": [
-      {
-        "data": {
-          "id": "781eb391-3e20-5ebf-9b56-36d42bf6d687",
-          "type": "pod-runs-on-node",
-          "source": "cluster-alpha/p1",
-          "target": "cluster-alpha/worker-0",
-          "labels": {}
-        }
-      }
-    ]
+    "edges": []
   }
 }
