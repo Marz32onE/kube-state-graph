@@ -241,9 +241,11 @@ clean:
 
 ## Container image build / push.
 ##
-## Login to your registry first:  docker login $(REGISTRY)
-## Single-arch local build (host arch). Tags both VERSION and the
-## :dev tag the local kind rig pins via imagePullPolicy=Never.
+## Single-arch LOCAL build (host arch). Feeds docker-load-kind / docker-run /
+## docker-docs and tags the :dev tag the local kind rig pins via
+## imagePullPolicy=Never. This image is NEVER pushed to a registry — a
+## host-arch image would not run on differently-architected nodes. Publish
+## with `make docker-push` (multi-arch) instead.
 docker-build:
 	docker build $(DOCKER_BUILD_ARGS) \
 		-f $(DOCKERFILE) \
@@ -252,15 +254,18 @@ docker-build:
 		-t $(LOCAL_TAG) \
 		.
 
-## Push the single-arch image built by docker-build to the registry.
-## Run `docker login` (or `make docker-build && docker login`) first.
-docker-push: docker-build
-	docker push $(IMAGE):$(VERSION)
-	docker push $(IMAGE):latest
+## Publish to a registry. This is the ONLY publish path and it is ALWAYS
+## multi-arch (delegates to docker-buildx) so a push can never be accidentally
+## single-arch. Run `docker login $(REGISTRY)` first.
+docker-push: docker-buildx
 
-## Multi-arch build + push using buildx. Requires `docker buildx` and a
-## builder that supports the target platforms (run once:
-##   docker buildx create --name ksg --use --bootstrap).
+## Multi-arch build + push using buildx ($(PLATFORMS)). No QEMU needed: the
+## build stage pins --platform=$$BUILDPLATFORM and Go cross-compiles via
+## GOARCH with CGO disabled, and the distroless runtime stage only COPYs.
+## Requires `docker buildx` and a builder able to export a multi-platform
+## manifest. Docker Desktop with the containerd image store works as-is;
+## otherwise create a docker-container builder once:
+##   docker buildx create --name ksg --use --bootstrap
 docker-buildx:
 	docker buildx build $(DOCKER_BUILD_ARGS) \
 		--platform $(PLATFORMS) \
