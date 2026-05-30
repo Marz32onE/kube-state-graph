@@ -85,7 +85,7 @@ parseGraphRequest        ── validates start/end (RFC 3339 or Unix seconds); 
 context.WithTimeout(ctx, --build-timeout)   ── graph endpoints only; deadline exceeded → 504 timeout
    └─ Builder.Build(ctx, window, end)
          ├─ ReadTopology  (errgroup of 5 PromQL queries in parallel)
-         ├─ ReadServiceGraph (1 PromQL, joined with topology)
+         ├─ ReadServiceGraph (1 PromQL, `user`/`unknown` peers excluded at selector — D30; joined with topology)
          └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
    (no in-process concurrency cap; HPA + Pod resource limits handle load shedding)
    ▼
@@ -158,6 +158,23 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   `labels.cluster` is omitted whenever the client side resolves to a non-pod node,
   whether via the connection-string rule (`service` / `others`) or this fallback
   (`external`).
+- **Sentinel-endpoint exclusion at the query layer** (D30, hardcoded — no knob):
+  the `servicegraph` connector emits virtual peers for endpoints it cannot pair
+  to an instrumented span — an uninstrumented caller as `client="user"`, an
+  unresolved peer as `"unknown"`. The service-graph selector drops these
+  **upstream** via anchored negative matchers —
+  `rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unknown"}[w])`
+  — so the series never reach the resolver: no node (`pod` / synth / `service` /
+  `others` / `external`) and no edge is produced for a `user` / `unknown` peer.
+  PromQL `!~` is fully anchored, so the match is **exact** and **case-sensitive**
+  (a `http://user/...` connection string is NOT excluded — it is not equal to
+  `user`). Applied to both `client` and `server` (either side matching drops the
+  series). This is a fixed selector contract on the `client` / `server` labels
+  only — it does NOT touch the `cluster="unknown"` bucketing (a different label).
+  The matcher fragment lives in `promql.serviceGraphSentinelSelector`; the
+  `QServiceGraphTotal` constant stays the bare metric name so `query_name`
+  self-metric / span dimensions are unchanged. Deferred numeric service-graph
+  metrics MUST reuse the same fragment when added.
 - **Server-side pod resolution** uses `Topology.PodsByUID` — a global pod-UID
   index built from all loaded clusters. Service-graph metrics carry only the
   trace-source `cluster` (client side); the server side's cluster is recovered
@@ -166,7 +183,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   label) follow the missing-UID fallback above; UIDs present but unknown
   to topology become synth pods with `cluster=""` (server-side cluster
   unknown).
-- **No filters pushed to PromQL.** Each build loads every cluster present in upstream VictoriaMetrics. Caller-supplied filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at projection time over the freshly built `*Graph`. Bounded query cost is delegated to upstream VictoriaMetrics search limits.
+- **No filters pushed to PromQL.** Each build loads every cluster present in upstream VictoriaMetrics. Caller-supplied filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at projection time over the freshly built `*Graph`. Bounded query cost is delegated to upstream VictoriaMetrics search limits. The one fixed exception is the D30 sentinel matcher (`client!~"user|unknown",server!~"user|unknown"`) on the service-graph selector — it is a **request-invariant metric-selection contract**, not a caller filter, so it never varies per request and does not break the projection-over-graph contract a future cache relies on.
 - **`/v1/edge-types` reads from `graph.EdgeTypes` only** — a single in-code
   registry shared with the builder. Adding an edge type = update both the
   builder and the registry in the same change; the API can never list a type

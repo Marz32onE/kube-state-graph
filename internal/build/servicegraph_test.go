@@ -12,6 +12,17 @@ import (
 	"github.com/marz32one/kube-state-graph/internal/graph"
 )
 
+// Sentinel-peer exclusion note (design.md D30): the servicegraph connector's
+// virtual peers (client / server ∈ {"user", "unknown"}) are dropped at the
+// PromQL QUERY layer via anchored matchers on the QServiceGraphTotal selector
+// (see internal/promql/queries.go + queries_test.go), NOT inside
+// parseServiceGraph. These tests therefore do not exercise sentinel filtering
+// at the parse level — a sentinel label handed directly to parseServiceGraph is
+// (correctly) still resolved, because excluded series never reach the parser in
+// production. End-to-end exclusion is proven against a real VictoriaMetrics in
+// internal/integration (TestSentinelPeersExcludedAtQueryLayer). Do NOT add a
+// parse-level sentinel filter here; it belongs upstream in the selector.
+
 func sampleTopology() Topology {
 	alphaPod := &graph.PodNode{
 		IDValue:     "cluster-alpha/abc",

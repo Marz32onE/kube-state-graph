@@ -10,7 +10,7 @@ The pod-service-graph reader SHALL build edges from service-graph metrics scrape
 
 Each series carries exactly one `cluster` external label, applied by the trace pipeline that produced it (typically Tempo's metrics-generator running in a single source cluster). The reader SHALL treat that `cluster` value as the **client-side cluster** — the cluster originating the call — and SHALL resolve the client pod via `(cluster, client_k8s_pod_uid)`. The server-side pod SHALL be resolved by looking up `server_k8s_pod_uid` against a global pod-UID index built from topology (Kubernetes pod UIDs are unique across clusters in practice). When the server UID matches a topology pod, the resolved pod's own `cluster` value provides the server-side cluster for the edge `target` ID.
 
-Edges SHALL be derived by computing `rate(...[<window>]) @ <end>` over each counter. The `client` and `server` string labels are consumed by the connection-string endpoint resolution rule (see "Connection-string endpoint resolution") and the missing pod-UID human-label fallback, and are otherwise ignored for pod-resolved endpoints.
+Edges SHALL be derived by computing `rate(...[<window>]) @ <end>` over each counter. The `client` and `server` string labels are consumed by the connection-string endpoint resolution rule (see "Connection-string endpoint resolution") and the missing pod-UID human-label fallback, and are otherwise ignored for pod-resolved endpoints. Before any endpoint resolution runs, the reader SHALL exclude virtual sentinel peers at the query layer (see "Virtual sentinel endpoint exclusion (user / unknown)"); excluded series never reach the resolution stages below.
 
 #### Scenario: Edge produced from non-zero rate
 
@@ -21,6 +21,50 @@ Edges SHALL be derived by computing `rate(...[<window>]) @ <end>` over each coun
 
 - **WHEN** `rate(traces_service_graph_request_total{...})` evaluates to exactly zero for a series in the window
 - **THEN** no edge is emitted for that series
+
+### Requirement: Virtual sentinel endpoint exclusion (user / unknown)
+
+The reader SHALL exclude any `traces_service_graph_request_total` series whose `client` label OR `server` label is exactly `"user"` or exactly `"unknown"`. These are **virtual peers** emitted by the service-graph producer (the OpenTelemetry / Alloy / Tempo `servicegraph` connector) for endpoints it cannot pair to an instrumented span — an uninstrumented caller surfaces as `client="user"`, an unresolved peer as `"unknown"` — and they carry no pod UID and represent no pod, service, or declared external dependency the API should surface.
+
+The exclusion SHALL be applied **at the PromQL query layer** via anchored negative label matchers on the series selector — `client!~"user|unknown"` and `server!~"user|unknown"` — so the excluded series are never returned by upstream VictoriaMetrics and never reach endpoint resolution. The reader SHALL NOT fetch-then-drop these series in Go.
+
+Matching semantics:
+
+- **Exact, fully anchored**: the PromQL `!~` regex is anchored to the entire label value, so only a label whose *whole* value is `user` or `unknown` is excluded. A connection-string value such as `"http://user/path"` is NOT excluded (its value is not exactly `user`) and proceeds to connection-string resolution unchanged.
+- **Case-sensitive**: `User`, `UNKNOWN`, and other case variants are NOT excluded.
+- **Both sides, independently**: a series is excluded when EITHER `client` OR `server` equals a sentinel value.
+- **Fixed set, no knob**: the sentinel set `{"user", "unknown"}` is compiled in. There is NO configuration surface (env var / flag / config field) to change it.
+
+This exclusion is distinct from — and SHALL NOT affect — the `cluster="unknown"` bucketing applied to series missing a `cluster` external label (a different label on a different dimension): the sentinel matchers are evaluated ONLY against the `client` and `server` endpoint labels.
+
+Because the excluded series never arrive, no endpoint resolution runs for them: no pod, synthesised-pod, `service`, `others`, or `external` node is materialised for a `user` / `unknown` sentinel peer, and no edge touching such a peer is emitted.
+
+When the deferred numeric service-graph metrics (`traces_service_graph_request_failed_total`, `traces_service_graph_request_server_seconds_bucket`) are queried in a future spec revision, the same `client` / `server` sentinel matchers SHALL be applied to their selectors so the edge set stays consistent across metric families.
+
+#### Scenario: Series with client `user` is excluded at the query layer
+
+- **WHEN** upstream holds a `traces_service_graph_request_total` series with `client="user"`, `server="checkout"`, `server_k8s_pod_uid="abc"`
+- **THEN** the service-graph query selector includes `client!~"user|unknown"`, VictoriaMetrics does not return the series, and the graph contains no edge for it and no node named `user`
+
+#### Scenario: Series with server `unknown` is excluded
+
+- **WHEN** upstream holds a series with `client="checkout"`, `client_k8s_pod_uid="abc"`, `server="unknown"`, `server_k8s_pod_uid=""`
+- **THEN** the series is excluded by `server!~"user|unknown"`, and the graph contains no edge for it and no node named `unknown`
+
+#### Scenario: Both endpoints are sentinels
+
+- **WHEN** a series has `client="user"` and `server="unknown"`
+- **THEN** the series is excluded (either matcher alone suffices) and no edge is emitted
+
+#### Scenario: Connection-string value containing `user` is not excluded
+
+- **WHEN** a series has `server="http://user/api"`, `server_k8s_pod_uid=""` (the value contains, but is not equal to, `user`)
+- **THEN** the series is NOT excluded (the matcher is fully anchored), and connection-string endpoint resolution proceeds normally for that endpoint
+
+#### Scenario: `cluster="unknown"` bucketing is unaffected
+
+- **WHEN** a series is missing its `cluster` external label and is bucketed to `cluster="unknown"`, while its `client` and `server` labels are real service names with resolvable pod UIDs
+- **THEN** the series is NOT excluded by the sentinel matchers (they match only `client` / `server`, never `cluster`), and the edge is emitted under `cluster="unknown"` exactly as before
 
 ### Requirement: Edge cluster label
 

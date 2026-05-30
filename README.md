@@ -113,6 +113,12 @@ unresolvable URL becomes an `others` node. A non-URL label (no `://`) becomes
 an `external` node via the missing pod-UID human-label fallback. See
 [Connection-string resolution](docs/others-substitution.md).
 
+The `servicegraph` connector's **virtual peers** — `client="user"` (an
+uninstrumented caller) and `unknown` (an unresolved peer) — are dropped at the
+query layer (`client!~"user|unknown",server!~"user|unknown"`) and never appear
+as nodes or edges. The match is exact and case-sensitive, so a `://` host that
+merely *contains* `user` is unaffected.
+
 ### Probes — diagnostics, not graph data
 
 | PromQL | Purpose |

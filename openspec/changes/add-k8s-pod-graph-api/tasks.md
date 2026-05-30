@@ -673,3 +673,35 @@ Per design D29. The configurable substring-match knob (`KSG_OTHERS_NAME_PATTERN`
 - [x] 34.I.1 `openspec validate "add-k8s-pod-graph-api"`.
 - [x] 34.I.2 `make build`, `make vet`, `make test`, `make lint`.
 - [x] 34.I.3 `make verify-mocks` — `promql.Querier` / `auth.Validator` / `clock.Clock` signatures are unchanged; if the new `Topology` indexes touch any mocked interface, regenerate and commit. Otherwise should stay clean.
+
+## 35. Exclude virtual sentinel endpoints (`user` / `unknown`) at the query layer (capability: pod-service-graph)
+
+Per design D30. The `servicegraph` connector emits **virtual peers** for endpoints it cannot pair to an instrumented span — an uninstrumented caller as `client="user"`, an unresolved peer as `"unknown"`. These carry no pod UID and resolve to no actionable node. Drop any `traces_service_graph_request_total` series whose `client` OR `server` label is exactly `"user"` or `"unknown"`, **at the PromQL query layer** via anchored negative matchers (`client!~"user|unknown",server!~"user|unknown"`) rather than fetch-then-drop in Go. Matching is exact (fully anchored), case-sensitive, both-sides-independent, and the sentinel set is compiled in (no knob, consistent with D29). The matcher is a fixed metric-selection refinement — NOT a caller-supplied filter — so it does not violate the "no filters pushed to PromQL" rule (it never varies per request). It targets ONLY the `client` / `server` endpoint labels and does not affect the `cluster="unknown"` bucketing. See design.md D30 + D29 + D2/D7.
+
+### 35.A Service-graph query selector
+
+- [x] 35.A.1 `internal/promql/queries.go::Renderer.Render`: change the `QServiceGraphTotal` arm from `rate(traces_service_graph_request_total[%s])` to `rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unknown"}[%s])`. Keep the bare `QServiceGraphTotal` constant value (`"traces_service_graph_request_total"`) UNCHANGED so the `query` / `query_name` self-metric and `kube_state_graph.query_name` span dimensions stay stable (D25 / D26). The metric-name prefix (D26) still does NOT apply to this metric — only the label matchers are added.
+- [x] 35.A.2 `internal/promql/queries.go`: extract the sentinel matcher fragment as a documented package constant (e.g. `const serviceGraphSentinelSelector = `client!~"user|unknown",server!~"user|unknown"``) and reference it from the `Render` arm, so the deferred numeric-metric selectors (`traces_service_graph_request_failed_total`, `traces_service_graph_request_server_seconds_bucket`) reuse the identical fragment when they land (D30 forward note). Add a comment explaining the anchored / exact / case-sensitive semantics and the empty-UID-co-occurrence rationale.
+
+### 35.B Tests
+
+- [x] 35.B.1 `internal/promql/queries_test.go`: assert `Renderer{}.Render(QServiceGraphTotal, window)` emits the two anchored matchers verbatim; assert a non-empty-prefix `Renderer{Prefix: "o11y_"}` leaves the service-graph metric name bare (`traces_service_graph_request_total`, no prefix) while still carrying the matchers; assert the `QServiceGraphTotal` constant value itself is unchanged (bare metric name).
+- [x] 35.B.2 `internal/build/servicegraph_test.go`: add a comment / guard documenting that `parseServiceGraph` itself does NOT filter sentinel labels — exclusion is upstream at the query layer, so a `client="user"` series handed directly to `parseServiceGraph` is (correctly) still parsed. The behavioural contract for exclusion lives at the promql layer (35.B.1) and is proven end-to-end at the integration layer (35.B.3). Do NOT add a parse-level sentinel filter.
+- [x] 35.B.3 `internal/integration/graph_e2e_test.go`: ingest into the testcontainers VictoriaMetrics a normal `traces_service_graph_request_total` series (both UIDs resolvable) plus (a) a series with `client="user"`, (b) a series with `server="unknown"`, and (c) a series with `server="http://user/api"` (empty `server_k8s_pod_uid`). Query `/v1/graph` and assert: the normal series produces its edge; (a) and (b) produce NO edge and NO `user` / `unknown` node (real VictoriaMetrics evaluates the anchored matcher); (c) is NOT excluded and surfaces as an `others` (or resolved) endpoint — proving the anchored match does not catch substrings.
+- [x] 35.B.4 Golden: scan existing fixtures under `internal/api/testdata/golden/` for any scenario whose mock upstream injects a `client` / `server` value of exactly `user` or `unknown` — none are expected (component / golden tests drive a `MockQuerier`, which returns vectors directly and is unaffected by the query-string matcher), so golden output should be unchanged. If any fixture does inject such a value, decide per-fixture whether to keep it (component tests bypass the query layer) or update it; re-run `go test ./internal/api/ -update -run Golden` only if a deliberate shape change results. Record the outcome in the PR.
+
+### 35.C Docs
+
+- [x] 35.C.1 `CLAUDE.md`: add a load-bearing-design-rule bullet for the sentinel exclusion (query-layer, fixed `{user, unknown}` set, anchored exact / case-sensitive match on `client` / `server` only, distinct from `cluster="unknown"` bucketing). Update the "No filters pushed to PromQL" bullet to carve out this fixed, request-invariant selector refinement. Mention it in the `ReadServiceGraph` line of the request-lifecycle diagram / prose.
+- [x] 35.C.2 `docs/operations.md` "Exporter compatibility contract": note that `client` / `server ∈ {user, unknown}` series are excluded at the query layer (the connector's virtual nodes for uninstrumented / unresolved peers), so they never appear in the graph; document `user` / `unknown` as reserved sentinel values on the `client` / `server` dimension and that ingress visibility for uninstrumented callers is intentionally not surfaced in v1.
+- [x] 35.C.3 `README.md` + `README.zh-tw.md` + `docs/api.md`: where the service-graph behaviour / node types are described, note that uninstrumented `user` ingress and `unknown` peers are dropped (no node / edge), and that this is fixed (no knob) in v1.
+
+### 35.D Swag / OpenAPI
+
+- [x] 35.D.1 No response-schema change (no new node `type`, edge type, or field — node / edge counts merely shrink). Confirm no swag `@Description` / `@Param` requires editing; if a `/v1/graph` description enumerates which endpoints are surfaced, optionally add the sentinel-exclusion note and run `make docs` to regenerate `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`. Otherwise this is a no-op.
+
+### 35.E Validation
+
+- [x] 35.E.1 `openspec validate "add-k8s-pod-graph-api"`.
+- [x] 35.E.2 `make build`, `make vet`, `make test`, `make lint`.
+- [x] 35.E.3 `make verify-mocks` — no interface signatures change; should stay clean.

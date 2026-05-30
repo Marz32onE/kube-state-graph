@@ -35,6 +35,32 @@ const (
 // discovery. Sized to absorb transient KSM scrape gaps; not configurable.
 const ClusterDiscoveryLookback = time.Hour
 
+// serviceGraphSentinelSelector excludes the servicegraph connector's virtual
+// peers from the service-graph series at the query layer (design.md D30): an
+// uninstrumented caller surfaces as client="user", an unresolved peer as
+// "unknown". These carry no pod UID and resolve to no actionable node.
+//
+// PromQL / MetricsQL `!~` is a fully-anchored RE2 match, so this drops a series
+// only when the WHOLE client/server value is exactly "user" or "unknown"
+// (case-sensitive). A connection-string label like "http://user/..." is NOT
+// excluded (it is not equal to "user"), so D29 resolution is unaffected. The
+// two matchers are ANDed in the selector, so a series is dropped when EITHER
+// endpoint is a sentinel. The set is fixed — no operator knob (consistent with
+// D29's removal of KSG_OTHERS_NAME_PATTERN).
+//
+// Dropping the WHOLE series is safe (no empty-UID gating needed): by the
+// connector's contract a sentinel client/server value never co-occurs with a
+// populated *_k8s_pod_uid — the virtual node exists precisely because there was
+// no instrumented (hence no pod-identified) peer — so no real pod-resolved edge
+// is ever discarded by this matcher.
+//
+// When the deferred numeric service-graph metrics
+// (traces_service_graph_request_failed_total,
+// traces_service_graph_request_server_seconds_bucket) are queried in a future
+// revision, they MUST reuse this fragment so the edge set stays consistent
+// across metric families.
+const serviceGraphSentinelSelector = `client!~"user|unknown",server!~"user|unknown"`
+
 // Renderer renders Query templates to PromQL strings, optionally prepending
 // Prefix to every kube-state-metrics-shaped metric name. The prefix is
 // additive — it is not applied to the service-graph metric
@@ -76,7 +102,12 @@ func (r Renderer) Render(q Query, window time.Duration) string {
 		// carries a single `cluster` label representing the trace source
 		// (client-side) cluster; server-side cluster is recovered at build time
 		// via the topology pod-UID index, not via PromQL.
-		return fmt.Sprintf(`rate(traces_service_graph_request_total[%s])`, w)
+		//
+		// The fixed sentinel matcher (D30) drops the connector's virtual
+		// `user` / `unknown` peers upstream. It is a metric-selection contract,
+		// identical for every request — NOT a caller-supplied filter — so it
+		// does not violate the "no filters pushed to PromQL" rule (D2 / D7).
+		return fmt.Sprintf(`rate(traces_service_graph_request_total{%s}[%s])`, serviceGraphSentinelSelector, w)
 	case QClusterDiscovery:
 		return fmt.Sprintf(`group by (cluster) (last_over_time(%skube_node_info[%s]))`, r.Prefix, w)
 	case QUpProbe:

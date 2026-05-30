@@ -89,6 +89,12 @@ cost is delegated to upstream VictoriaMetrics search limits
 `labels` is strictly `map[string]string`. Numeric metrics are deferred to a
 future typed struct field (see the design doc, D9).
 
+Service-graph peers whose `client` / `server` label is exactly `user` or
+`unknown` — the `servicegraph` connector's virtual nodes for uninstrumented
+callers and unresolved peers — are excluded upstream and never appear as nodes
+or edges (see the design doc, D30). The match is exact and case-sensitive, so a
+`://` connection string whose host merely *contains* `user` is unaffected.
+
 ### Headers
 
 - `ETag: "<sha256-of-body>"` — strong validator (RFC 9110 §8.8.3) computed over the response body.

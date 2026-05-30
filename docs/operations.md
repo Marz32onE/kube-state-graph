@@ -269,6 +269,18 @@ longer hard-required for an edge to appear in `/v1/graph`.
 | `cluster` | yes | Trace-source / client-side cluster; required for the edge's `labels.cluster` field when the client side resolves to a pod. |
 | `client_k8s_namespace_name`, `server_k8s_namespace_name` | optional | Carried to synth pods when the UID-based lookup misses topology. |
 
+Series whose `client` or `server` label is exactly `user` or `unknown` are the
+`servicegraph` connector's **virtual peers** — an uninstrumented caller
+(`client="user"`) or an unresolved peer (`"unknown"`). They are **excluded at
+the query layer** via anchored matchers (`client!~"user|unknown",server!~"user|unknown"`)
+and never appear as nodes or edges (design.md D30). The match is exact and
+case-sensitive — a `://` connection string whose host merely *contains* `user`
+(e.g. `http://user/api`) is unaffected — and it targets only the `client` /
+`server` labels, never the `cluster="unknown"` bucketing. `user` and `unknown`
+are therefore reserved sentinel values on these two dimensions; visibility of
+uninstrumented end-user / external ingress is intentionally not surfaced in v1
+(there is no knob to re-enable it).
+
 A sudden bloom of `type="external"` nodes whose names look like internal
 workloads is a signal to investigate the trace pipeline (Beyla resource
 detector, Alloy `k8sattributes` processor) — not the API. Before D27, such

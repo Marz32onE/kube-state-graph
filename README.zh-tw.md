@@ -67,6 +67,8 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析時才輸出邊。當某端的 pod-UID 標籤為空時，會用內建的**連線字串判斷**（無旗標可調）解析其 `client`／`server` 人類可讀標籤：含字面 `://` 的標籤視為 URL——叢集內 `<service>.<namespace>.svc` 名稱會成為 `type="service"` 節點（並隨需產生指向其後端 pod 的 `service-selects-pod` 邊），headless 的 `<pod>.<service>.<namespace>.svc` 名稱會解析回真實後端 pod，無法解析的 URL 則成為 `others` 節點；非 URL（不含 `://`）的標籤則經 missing pod-UID human-label fallback 成為 `external` 節點。詳見 [連線字串端點解析](docs/others-substitution.md)。
 
+`servicegraph` connector 產生的**虛擬節點**——`client="user"`（未被 instrument 的呼叫端）與 `unknown`（無法解析的對端）——會在 query 層直接排除（`client!~"user|unknown",server!~"user|unknown"`），不會出現為任何節點或邊。比對為精確且大小寫敏感，因此 host 只是「包含」`user` 的 `://` 連線字串不受影響。
+
 ### 探針 — 診斷用，不屬於圖資料
 
 | PromQL | 用途 |

@@ -21,6 +21,25 @@ func TestRender_ServiceGraphTotal(t *testing.T) {
 	assert.NotContains(t, got, "server_cluster")
 }
 
+// TestRender_ServiceGraphExcludesSentinelPeers pins design.md D30: the
+// service-graph selector drops the servicegraph connector's virtual peers
+// (uninstrumented caller "user", unresolved peer "unknown") at the query
+// layer via anchored negative matchers on the client and server labels. The
+// match is exact (RE2 is fully anchored) and case-sensitive, so a connection
+// string such as "http://user/..." is NOT excluded.
+func TestRender_ServiceGraphExcludesSentinelPeers(t *testing.T) {
+	got := Render(QServiceGraphTotal, time.Minute)
+	assert.Equal(t, `rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unknown"}[1m])`, got)
+	assert.Contains(t, got, `client!~"user|unknown"`)
+	assert.Contains(t, got, `server!~"user|unknown"`)
+
+	// The Query constant itself MUST stay the bare metric name so the
+	// `query` / `query_name` self-metric + span dimensions stay stable across
+	// deployments (design.md D25 / D26); only the rendered PromQL gains the
+	// matchers.
+	assert.Equal(t, "traces_service_graph_request_total", string(QServiceGraphTotal))
+}
+
 func TestRender_NodeAddressesIncludesExternalIPSelector(t *testing.T) {
 	got := Render(QNodeAddresses, time.Minute)
 	assert.Contains(t, got, `type="ExternalIP"`)
@@ -58,7 +77,7 @@ func TestRenderer_PrefixApplied(t *testing.T) {
 func TestRenderer_PrefixNotAppliedToServiceGraphOrUp(t *testing.T) {
 	r := Renderer{Prefix: "o11y_"}
 	sg := r.Render(QServiceGraphTotal, time.Minute)
-	assert.Equal(t, "rate(traces_service_graph_request_total[1m])", sg)
+	assert.Equal(t, `rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unknown"}[1m])`, sg)
 	assert.NotContains(t, sg, "o11y_", "prefix must NOT apply to service-graph metric")
 
 	up := r.Render(QUpProbe, 0)

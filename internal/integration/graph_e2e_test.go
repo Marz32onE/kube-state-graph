@@ -223,6 +223,58 @@ traces_service_graph_request_total{client="checkout",server="https://payments-sv
 		"service-selects-pod edge resolves the backing cart pod via endpointslice targetref")
 }
 
+// TestSentinelPeersExcludedAtQueryLayer exercises design.md D30 end-to-end
+// against a real VM: the servicegraph connector's virtual peers (client="user",
+// server="unknown") are dropped by the anchored selector matchers
+// (client!~"user|unknown",server!~"user|unknown") so they never reach the API.
+// Crucially the raw sentinel series ARE ingested into VM (asserted below), so a
+// missing node proves the QUERY matcher excluded them — not that the data was
+// absent. A connection string whose host merely CONTAINS "user"
+// ("http://user/api") is NOT excluded (the match is fully anchored), proving
+// the matcher is exact rather than substring.
+func (s *GraphSuite) TestSentinelPeersExcludedAtQueryLayer() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP traces_service_graph_request_total dummy
+traces_service_graph_request_total{client="user",server="checkout",cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="user",server="checkout",cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 120 %d
+traces_service_graph_request_total{client="checkout",server="unknown",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="unknown",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+traces_service_graph_request_total{client="checkout",server="http://user/api",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="http://user/api",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t0, disc, t1, disc, t0, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+
+	// Prove VM actually holds the sentinel series (so a later absent node is
+	// the matcher's doing, not missing data) and that the substring series
+	// produces a non-zero rate the API build will pick up.
+	s.Require().True(
+		s.WaitForSeries(`traces_service_graph_request_total{client="user",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested sentinel client=\"user\" series")
+	s.Require().True(
+		s.WaitForSeries(`rate(traces_service_graph_request_total{server="http://user/api",test=`+strconv.Quote(disc)+`}[5m]) > 0`, fixedNow, 30*time.Second),
+		"VM did not observe non-zero rate for the http://user/api series")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// Sentinel peers are excluded at the query layer: no node, no edge.
+	s.NotContains(bodyStr, `external/user`, "client=\"user\" virtual peer must be excluded upstream")
+	s.NotContains(bodyStr, `external/unknown`, "server=\"unknown\" virtual peer must be excluded upstream")
+	s.NotContains(bodyStr, `"name":"user"`, "no node named user should appear")
+	s.NotContains(bodyStr, `"name":"unknown"`, "no node named unknown should appear")
+
+	// The anchored matcher does NOT catch a host that merely contains "user":
+	// http://user/api survives and resolves to an others node.
+	s.Contains(bodyStr, `"name":"http://user/api"`,
+		"connection string containing (but not equal to) user must survive the anchored matcher")
+}
+
 func (s *GraphSuite) TestClustersDiscovery() {
 	// Discovery handler evaluates "now" via the injected Clock. Pin it to
 	// fixedNow so the 1h discovery lookback covers the statically-timestamped
