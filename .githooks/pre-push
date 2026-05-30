@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#
+# Version-controlled git hook. Enabled by `make init-hooks`, which points
+# core.hooksPath at this .githooks/ directory.
+#
+# Mirrors the GitHub Actions CI pipeline (.github/workflows/ci.yml) so a push
+# cannot fail CI for anything reproducible locally: lint, vuln, test (race +
+# shuffle), docs-drift, mocks-drift. Runs once per push, not per commit.
+# Bypass with `git push --no-verify`.
+set -euo pipefail
+
+echo ">> pre-push: running full local CI (make ci) ..."
+exec make ci

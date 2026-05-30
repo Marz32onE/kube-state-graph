@@ -1,4 +1,4 @@
-.PHONY: build test vet lint vuln cover docs check-docs refresh-docs-ui kind-up kind-down kind-redeploy kind-restart local-up local-down local-redeploy local-restart local-smoke smoke clean \
+.PHONY: build test vet lint vuln ci cover docs check-docs refresh-docs-ui kind-up kind-down kind-redeploy kind-restart local-up local-down local-redeploy local-restart local-smoke smoke clean \
         docker-build docker-push docker-buildx docker-load-kind docker-run docker-docs docker-docs-stop \
         init init-go init-tools init-hooks doctor mocks verify-mocks tools-versions \
         helm-lint helm-template helm-install-kind helm-uninstall-kind
@@ -30,7 +30,7 @@ DOCKER_BUILD_ARGS := \
 ##   make init          # one-shot: go mod download + dev tools + (optional) hooks
 ##   make init-go       # only: go mod download / tidy verify
 ##   make init-tools    # only: install host-level dev binaries (golangci-lint, govulncheck)
-##   make init-hooks    # optional: install pre-commit hook (gofmt + vet + lint)
+##   make init-hooks    # optional: enable .githooks/ (pre-commit gofmt+vet, pre-push make ci)
 ##   make doctor        # report toolchain versions & missing pieces
 ##
 ## Go-based tools tracked via go.mod `tool` directive (Go 1.24+) are invoked
@@ -47,7 +47,7 @@ init: init-go init-tools
 	@echo ""
 	@echo "Local dev environment ready."
 	@echo "  make doctor         # verify toolchain"
-	@echo "  make init-hooks     # (optional) install pre-commit hook"
+	@echo "  make init-hooks     # (optional) enable .githooks (pre-commit + pre-push CI)"
 
 init-go:
 	@echo ">> go mod download"
@@ -84,22 +84,19 @@ init-tools:
 	@echo ">> mockery (via go tool — no install needed)"
 	@go tool mockery --version 2>/dev/null | tail -1 | awk '{print "  " $$0}' || echo "  WARN: 'go tool mockery' failed; check go.mod tool directive."
 
-## Install a project-local pre-commit hook running gofmt + vet + lint on the
-## staged Go files. Idempotent: overwrites existing hook with our managed one.
+## Enable the version-controlled git hooks under .githooks/ by pointing
+## core.hooksPath at that directory. pre-commit runs gofmt + vet on staged Go
+## files; pre-push runs the full CI mirror (`make ci`). The hook scripts live
+## in git (reviewable, team-consistent) — this target only flips the per-repo
+## core.hooksPath setting (which is not itself version-controlled). Idempotent.
+## Bypass any hook ad hoc with `git commit/push --no-verify`.
 init-hooks:
 	@if [ ! -d .git ]; then echo "not a git repo; skipping"; exit 0; fi
-	@mkdir -p .git/hooks
-	@printf '%s\n' \
-	    '#!/usr/bin/env bash' \
-	    'set -euo pipefail' \
-	    'files=$$(git diff --cached --name-only --diff-filter=ACM | grep "\\.go$$" || true)' \
-	    '[ -z "$$files" ] && exit 0' \
-	    'unformatted=$$(gofmt -l $$files || true)' \
-	    'if [ -n "$$unformatted" ]; then echo "gofmt: $$unformatted"; exit 1; fi' \
-	    'go vet ./... || exit 1' \
-	    > .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
-	@echo "installed .git/hooks/pre-commit (gofmt + vet)"
+	@chmod +x .githooks/pre-commit .githooks/pre-push
+	@git config core.hooksPath .githooks
+	@echo "configured core.hooksPath -> .githooks"
+	@echo "  pre-commit: gofmt + vet (staged Go files)"
+	@echo "  pre-push  : make ci (lint + vuln + test + docs + mocks)"
 
 doctor:
 	@echo "go         : $$(go version 2>/dev/null || echo MISSING)"
@@ -156,6 +153,13 @@ vuln:
 	else \
 	    go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...; \
 	fi
+
+## Full local CI mirror — runs the same checks as the five GitHub Actions jobs
+## in .github/workflows/ci.yml (lint, vuln, test, docs-drift, mocks-drift), in
+## order. Invoked by the pre-push hook (see `make init-hooks`). Run directly to
+## reproduce CI locally before pushing.
+ci: lint vuln test check-docs verify-mocks
+	@echo "ci: all checks passed (lint + vuln + test + docs + mocks)"
 
 cover:
 	go test ./... -coverprofile=coverage.out -covermode=atomic

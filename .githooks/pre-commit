@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# Version-controlled git hook. Enabled by `make init-hooks`, which points
+# core.hooksPath at this .githooks/ directory.
+#
+# Fast, staged-file-only checks so commits stay snappy. The full CI mirror
+# (lint + vuln + test + docs + mocks) runs in the pre-push hook instead.
+# Bypass with `git commit --no-verify`.
+set -euo pipefail
+
+files=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+[ -z "$files" ] && exit 0
+
+unformatted=$(gofmt -l $files || true)
+if [ -n "$unformatted" ]; then
+	echo "pre-commit: these files need gofmt:" >&2
+	echo "$unformatted" | sed 's/^/  /' >&2
+	echo "fix with: gofmt -w $unformatted" >&2
+	exit 1
+fi
+
+go vet ./...
