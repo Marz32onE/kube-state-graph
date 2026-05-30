@@ -36,7 +36,7 @@ testcontainers-go VictoriaMetrics container.
 # `go tool mockery` — no separate install step.
 make init                                   # one-shot: init-go + init-tools
 make doctor                                 # report toolchain versions / missing pieces
-make init-hooks                             # optional: pre-commit gofmt + go vet hook
+make init-hooks                             # optional: pre-commit gofmt+lint+quick-test, pre-push CI mirror
 
 # Build / test loop
 make build                                  # ./bin/kube-state-graph

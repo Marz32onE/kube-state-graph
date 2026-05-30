@@ -30,7 +30,7 @@ DOCKER_BUILD_ARGS := \
 ##   make init          # one-shot: go mod download + dev tools + (optional) hooks
 ##   make init-go       # only: go mod download / tidy verify
 ##   make init-tools    # only: install host-level dev binaries (golangci-lint, govulncheck)
-##   make init-hooks    # optional: enable .githooks/ (pre-commit gofmt+vet, pre-push make ci)
+##   make init-hooks    # optional: enable .githooks/ (pre-commit gofmt+lint+quick-test, pre-push make ci)
 ##   make doctor        # report toolchain versions & missing pieces
 ##
 ## Go-based tools tracked via go.mod `tool` directive (Go 1.24+) are invoked
@@ -85,8 +85,9 @@ init-tools:
 	@go tool mockery --version 2>/dev/null | tail -1 | awk '{print "  " $$0}' || echo "  WARN: 'go tool mockery' failed; check go.mod tool directive."
 
 ## Enable the version-controlled git hooks under .githooks/ by pointing
-## core.hooksPath at that directory. pre-commit runs gofmt + vet on staged Go
-## files; pre-push runs the full CI mirror (`make ci`). The hook scripts live
+## core.hooksPath at that directory. pre-commit runs gofmt (staged Go files) +
+## golangci-lint + a quick unit-test pass (no race/shuffle, no integration);
+## pre-push runs the full CI mirror (`make ci`). The hook scripts live
 ## in git (reviewable, team-consistent) — this target only flips the per-repo
 ## core.hooksPath setting (which is not itself version-controlled). Idempotent.
 ## Bypass any hook ad hoc with `git commit/push --no-verify`.
@@ -95,7 +96,7 @@ init-hooks:
 	@chmod +x .githooks/pre-commit .githooks/pre-push
 	@git config core.hooksPath .githooks
 	@echo "configured core.hooksPath -> .githooks"
-	@echo "  pre-commit: gofmt + vet (staged Go files)"
+	@echo "  pre-commit: gofmt (staged) + golangci-lint + quick unit tests"
 	@echo "  pre-push  : make ci (lint + vuln + test + docs + mocks)"
 
 doctor:

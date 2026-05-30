@@ -3,14 +3,17 @@
 # Version-controlled git hook. Enabled by `make init-hooks`, which points
 # core.hooksPath at this .githooks/ directory.
 #
-# Fast, staged-file-only checks so commits stay snappy. The full CI mirror
-# (lint + vuln + test + docs + mocks) runs in the pre-push hook instead.
-# Bypass with `git commit --no-verify`.
+# Quick checks so a commit is unlikely to fail CI: gofmt on staged files,
+# golangci-lint, and a fast unit-test pass. The slow bits — the race detector,
+# shuffled ordering, the Docker-backed integration suite, vuln, and docs/mocks
+# drift — run in the pre-push CI mirror, not here. Skipped when no Go files are
+# staged. Bypass with `git commit --no-verify`.
 set -euo pipefail
 
 files=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
 [ -z "$files" ] && exit 0
 
+# 1. gofmt — staged files only; the fastest gate runs first.
 unformatted=$(gofmt -l $files || true)
 if [ -n "$unformatted" ]; then
 	echo "pre-commit: these files need gofmt:" >&2
@@ -19,4 +22,20 @@ if [ -n "$unformatted" ]; then
 	exit 1
 fi
 
-go vet ./...
+# 2. lint — golangci-lint's govet linter subsumes a standalone `go vet`. Fall
+#    back to plain vet when the linter isn't installed (e.g. a fresh clone), so
+#    a missing dev tool never blocks a commit; pre-push/CI still enforces lint.
+if command -v golangci-lint >/dev/null 2>&1; then
+	golangci-lint run --timeout=5m
+else
+	echo "pre-commit: golangci-lint not installed; falling back to go vet" >&2
+	go vet ./...
+fi
+
+# 3. quick unit tests — no -race/-shuffle and excluding the Docker-backed
+#    integration suite, so commits stay snappy. The pre-push hook runs the full
+#    race + shuffle + integration suite via `make ci`. (golangci-lint above
+#    typechecks every package's test files, so integration compile errors are
+#    still caught here.)
+pkgs=$(go list ./... | grep -v '/internal/integration$' || true)
+go test $pkgs -count=1
