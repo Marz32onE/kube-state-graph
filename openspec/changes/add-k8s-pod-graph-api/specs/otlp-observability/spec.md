@@ -69,7 +69,7 @@ When a handler returns a non-2xx status, the middleware SHALL set the span statu
 
 Each parallel PromQL query in the topology and service-graph errgroups SHALL run inside its own child span named `prometheus.query` with attributes `db.system=prometheus`, `db.statement=<rendered PromQL string>`, and `kube_state_graph.query_name=<one of: kube_pod_info | kube_node_info | kube_node_status_addresses | kube_pod_spec_volumes_persistentvolumeclaims_info | kube_node_labels | traces_service_graph_request_total | …>`. The PromQL HTTP client SHALL inject W3C `traceparent` headers into outbound VictoriaMetrics requests using the global propagator.
 
-Projection and serialisation SHALL each run inside their own child spans named `kube-state-graph.project` and `kube-state-graph.serialise`, carrying the post-projection `graph.node.count` and `graph.edge.count` and the chosen serialiser format (`cytoscape` or `nodegraph`) as `kube_state_graph.serialiser`.
+Projection and serialisation SHALL each run inside their own child spans named `kube-state-graph.project` and `kube-state-graph.serialise`, carrying the post-projection `graph.node.count` and `graph.edge.count` and the serialiser format (`cytoscape`) as `kube_state_graph.serialiser`.
 
 When any PromQL query, projection, or serialisation step fails, the corresponding span SHALL record the error via `span.RecordError(err)` and set the span status to `Error`.
 

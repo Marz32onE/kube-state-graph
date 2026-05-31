@@ -33,7 +33,7 @@ import (
 //	@Description
 //	@Description	**Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
 //	@Description
-//	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `others`, `external`. **Edge types**: `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`.
+//	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `others`, `external`. **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`.
 //	@Description
 //	@Description	**Endpoint resolution**: for a `pod-calls-pod` endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): a `<service>.<namespace>` host yields a `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to each backing pod; a `<pod>.<service>.<namespace>` host resolves to the real backing pod; an unresolvable host yields an `others` node (`others/<value>`). A non-URL missing-UID label still yields an `external` node (`external/<value>`).
 //	@Description
@@ -51,7 +51,6 @@ import (
 //	@Description	      { "data": { "id": "prod-eu/ip-10-0-1-23",     "type": "node", "name": "ip-10-0-1-23.ec2.internal", "labels": { "cluster": "prod-eu" } } }
 //	@Description	    ],
 //	@Description	    "edges": [
-//	@Description	      { "data": { "id": "...uuidv5...", "type": "pod-runs-on-node", "source": "prod-eu/8f8d4f1a-...-89ab", "target": "prod-eu/ip-10-0-1-23", "labels": {} } },
 //	@Description	      { "data": { "id": "...uuidv5...", "type": "pod-calls-pod",   "source": "prod-eu/8f8d4f1a-...-89ab", "target": "prod-us/a1b2c3d4-...-7654", "labels": { "cluster": "prod-eu" } } }
 //	@Description	    ]
 //	@Description	  }
@@ -65,7 +64,7 @@ import (
 //	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined). Names match the upstream `cluster` label."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed Kubernetes namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
-//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod,service-selects-pod)	example(pod-calls-pod)
+//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-mounts-pvc,pod-calls-pod,service-selects-pod)	example(pod-calls-pod)
 //	@Param			name		query		[]string	false	"Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, service, others, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
 //	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, services `<cluster>/<ns>/<service>`, others `others/<value>`, externals `external/<value>`."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
 //	@Param			depth		query		int			false	"BFS traversal depth in hops. Range `0..6`. Defaults to `2` when `root` is set, ignored otherwise."	minimum(0)	maximum(6)	default(2)	example(2)
@@ -94,80 +93,6 @@ func (s *Server) handleGraph(c *gin.Context) {
 		return serialiseCytoscape(g, view)
 	}, view)
 	s.writeJSON(c, body, "cytoscape")
-}
-
-// ----- /v1/graph/nodegraph (Grafana) ----------------------------------------
-
-// handleNodeGraph returns the same graph as /v1/graph in Grafana Node Graph
-// datasource shape.
-//
-//	@Summary		Get multi-cluster graph (Grafana Node Graph datasource)
-//	@Description	Same underlying graph as `/v1/graph` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: `nodes_fields[]`, `nodes[]`, `edges_fields[]`, `edges[]`.
-//	@Description
-//	@Description	Filtering and traversal semantics are identical to `/v1/graph` — see that endpoint for full details.
-//	@Description
-//	@Description	Example: `GET /v1/graph/nodegraph?start=1746442800&end=1746446400&cluster=prod-eu&edge_type=pod-calls-pod&root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab&depth=3&direction=out`
-//	@Description
-//	@Description	<details><summary><b>Sample response</b></summary>
-//	@Description
-//	@Description	```json
-//	@Description	{
-//	@Description	  "apiVersion": "v1",
-//	@Description	  "nodes_fields": [
-//	@Description	    { "name": "id",    "type": "string" },
-//	@Description	    { "name": "title", "type": "string" },
-//	@Description	    { "name": "subtitle", "type": "string" }
-//	@Description	  ],
-//	@Description	  "nodes": [
-//	@Description	    { "id": "prod-eu/8f8d4f1a-...-89ab", "title": "checkout-7d9f6c8b8-abcde", "subtitle": "pod" }
-//	@Description	  ],
-//	@Description	  "edges_fields": [
-//	@Description	    { "name": "id",     "type": "string" },
-//	@Description	    { "name": "source", "type": "string" },
-//	@Description	    { "name": "target", "type": "string" }
-//	@Description	  ],
-//	@Description	  "edges": [
-//	@Description	    { "id": "...uuidv5...", "source": "prod-eu/8f8d4f1a-...-89ab", "target": "prod-us/a1b2c3d4-...-7654" }
-//	@Description	  ]
-//	@Description	}
-//	@Description	```
-//	@Description
-//	@Description	</details>
-//	@Tags			graph
-//	@Produce		json
-//	@Param			start		query		string		true	"Window start. RFC 3339 or Unix seconds."	example(2026-05-05T11:00:00Z)
-//	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start."	example(2026-05-05T12:00:00Z)
-//	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined)."	collectionFormat(multi)	example(prod-eu)
-//	@Param			namespace	query		[]string	false	"Restrict to listed namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
-//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-runs-on-node,pod-mounts-pvc,pod-calls-pod,service-selects-pod)	example(pod-calls-pod)
-//	@Param			name		query		[]string	false	"Restrict to nodes whose name matches exactly across every node type. Repeatable."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
-//	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. See /v1/graph for ID formats per type."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
-//	@Param			depth		query		int			false	"BFS traversal depth `0..6`. Defaults to `2` when `root` is set."	minimum(0)	maximum(6)	default(2)	example(2)
-//	@Param			direction	query		string		false	"Traversal direction. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
-//	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
-//	@Success		200			{object}	grafanaBody
-//	@Failure		400			{object}	errorBody	"Invalid parameters"
-//	@Failure		401			{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
-//	@Failure		502			{object}	errorBody	"Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
-//	@Failure		504			{object}	errorBody	"Build exceeded --build-timeout (RFC 9110 §15.6.5)"
-//	@Security		ApiKeyAuth
-//	@Router			/v1/graph/nodegraph [get]
-func (s *Server) handleNodeGraph(c *gin.Context) {
-	req, errBody := s.parseGraphRequest(c)
-	if errBody != nil {
-		return
-	}
-	g, err := s.runBuild(c.Request.Context(), req)
-	if err != nil {
-		mapBuildError(c, err)
-		return
-	}
-
-	view := s.projectWithSpan(c.Request.Context(), g, req.scope)
-	body := s.serialiseWithSpan(c.Request.Context(), "nodegraph", func() any {
-		return serialiseGrafanaNodeGraph(view)
-	}, view)
-	s.writeJSON(c, body, "nodegraph")
 }
 
 // projectWithSpan wraps graph.Project in a `kube-state-graph.project` span.
@@ -324,7 +249,6 @@ func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 //	@Description
 //	@Description	| type | source → target | directed | cross-cluster |
 //	@Description	|---|---|---|---|
-//	@Description	| `pod-runs-on-node` | pod → node | yes | no |
 //	@Description	| `pod-mounts-pvc` | pod → pvc | yes | no |
 //	@Description	| `pod-calls-pod` | pod \| service \| others \| external → pod \| service \| others \| external | yes | yes |
 //	@Description	| `service-selects-pod` | service → pod | yes | no |

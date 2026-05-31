@@ -26,8 +26,7 @@ cluster N: kube-state-metrics ──┤
   `[start, end]` time range.
 - Joins them into a multi-cluster graph keyed by cluster-scoped pod UIDs and
   node names.
-- Returns the graph as either Cytoscape.js JSON (`/v1/graph`) or Grafana Node
-  Graph datasource shape (`/v1/graph/nodegraph`).
+- Returns the graph as Cytoscape.js JSON (`/v1/graph`).
 - Exposes cluster discovery (`/v1/clusters`) and a static edge-type catalogue
   (`/v1/edge-types`).
 - Builds the graph on every request — v1 ships **no in-process result cache**,
@@ -84,7 +83,7 @@ per source cluster).
 
 | Metric | Used for | Labels read | Required? |
 |---|---|---|---|
-| `kube_pod_info` | Pod nodes; pod-runs-on-node edges | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip` (→ `data.ipaddress`; `host_ip` not exported) | **Yes** |
+| `kube_pod_info` | Pod nodes (`node` label drives Cytoscape `cluster > node > pod` compound nesting) | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip` (→ `data.ipaddress`; `host_ip` not exported) | **Yes** |
 | `kube_node_info` | K8sNode nodes | `cluster`, `node` | **Yes** |
 | `kube_node_status_addresses{type="ExternalIP"}` | Node external IP (→ `data.ipaddress`) | `cluster`, `node`, `address` | Optional |
 | `kube_node_labels` | Node label propagation (`kubernetes.io/*` etc.) | `cluster`, `node`, `label_*` | Optional |
@@ -133,27 +132,18 @@ merely *contains* `user` is unaffected.
 
 | Edge type | Source metric(s) |
 |---|---|
-| `pod-runs-on-node` | `kube_pod_info` (pod's `node` label) |
 | `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
 | `pod-calls-pod` | `traces_service_graph_request_total` |
+| `service-selects-pod` | `traces_service_graph_request_total` (connection-string resolution + `kube_endpointslice_*` join) |
 
-### Local rig coverage
+### Multi-cluster and cross-cluster coverage
 
-The in-tree `local/kind/` rig scrapes a real Kind cluster via kube-state-metrics
-(`kube_pod_info`, `kube_node_info`, `kube_node_labels`,
-`kube_pod_spec_volumes_persistentvolumeclaims_info`) and produces
-`traces_service_graph_request_total` locally via a Grafana Beyla DaemonSet that
-auto-instruments pods in the `kube-state-graph` namespace and ships OTLP spans
-to a Grafana Alloy Deployment. Alloy's `otelcol.connector.servicegraph`
-(configured with `dimensions=["k8s.pod.uid"]`) promotes Beyla's per-pod resource
-attribute to `client_k8s_pod_uid` + `server_k8s_pod_uid` and remote-writes to
-VictoriaMetrics, so `pod-calls-pod` edges show up in the local rig's
-`/v1/graph` response — driven by the existing in-cluster Go traffic
-(`kube-state-graph → VictoriaMetrics → kube-state-metrics`, Grafana →
-kube-state-graph, etc.) without any synthetic traffic generator. Cross-cluster
-paths (which a single Kind cluster cannot demonstrate) remain covered by
+Cross-cluster paths and service-graph scenarios are covered by
 `internal/integration/` tests against a `testcontainers-go` VictoriaMetrics
-container.
+container. The suite spins up a real VictoriaMetrics, pushes hand-crafted
+fixture series via `POST /api/v1/import/prometheus`, and drives the in-process
+API — this is the sole verification path for multi-cluster, cross-cluster, and
+service-graph behaviour.
 
 ## Configuration
 
@@ -161,7 +151,7 @@ container.
 |---------------------------------|----------------------------------|----------------------|-------|
 | `--prom-url`                    | `KSG_PROM_URL`                   | `http://localhost:8428` | VictoriaMetrics Prometheus-compatible endpoint. |
 | `--listen-addr`                 | `KSG_LISTEN_ADDR`                | `:8080`              | HTTP listen address. |
-| `--build-timeout`               | `KSG_BUILD_TIMEOUT`              | `15s`                | Per-build context timeout for `/v1/graph` + `/v1/graph/nodegraph`. |
+| `--build-timeout`               | `KSG_BUILD_TIMEOUT`              | `15s`                | Per-build context timeout for `/v1/graph`. |
 | `--api-timeout`                 | `KSG_API_TIMEOUT`                | `5s`                 | Per-request timeout for non-graph endpoints with upstream calls (`/v1/clusters`, `/readyz`). |
 | `--api-keys-file`               | `KSG_API_KEYS_FILE`              | (empty)              | Path to a file holding accepted API keys (one per line, `#` comments allowed). Designed for K8s `Secret` mounts. Reloaded periodically. |
 | `--api-keys`                    | `KSG_API_KEYS`                   | (empty)              | Comma-separated literal keys. Dev only; ignored when `--api-keys-file` is set. |
@@ -188,7 +178,7 @@ tracked via go.mod's `tool` directive (Go 1.24+) and invoked through
 
 ```bash
 make init           # go mod download + dev tools
-make doctor         # verify toolchain (go, golangci-lint, govulncheck, mockery, docker, kind)
+make doctor         # verify toolchain (go, golangci-lint, govulncheck, mockery, docker)
 make init-hooks     # (optional) install pre-commit hook (gofmt + go vet)
 ```
 
@@ -203,9 +193,6 @@ make test           # unit + component + golden + property + integration (Docker
 make lint           # golangci-lint
 make vuln           # govulncheck
 make cover          # coverage profile
-make kind-up        # bootstrap integration cluster
-make smoke          # run smoke test against running harness
-make kind-down      # tear down
 ```
 
 ### Mocks (mockery)
@@ -233,7 +220,6 @@ files — the `mocks-drift` CI job blocks merges otherwise.
 | Component | `internal/api/*_test.go` | None — `MockQuerier` injected via interface; `httptest.NewServer` only wraps the server-under-test, never fakes upstream. |
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | None. Run with `-update` to refresh snapshots. |
 | Integration | `internal/integration/*` | **Docker required.** testcontainers-go spins a real VictoriaMetrics container; `SkipIfDockerUnavailable` skips locally without Docker. CI runs the full suite. |
-| Manual rig | `local/kind/smoke.sh` | Kind cluster — local only, never run by CI. |
 
 The boundary between unit and integration is strict: anything that touches a
 TCP socket fronting an upstream service is integration. Unit tests must run

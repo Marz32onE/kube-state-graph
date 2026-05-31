@@ -10,14 +10,12 @@ const docTemplate = `{
         "schemas": {
             "github_com_marz32one_kube-state-graph_internal_graph.EdgeType": {
                 "enum": [
-                    "pod-runs-on-node",
                     "pod-mounts-pvc",
                     "pod-calls-pod",
                     "service-selects-pod"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
-                    "EdgeTypePodRunsOnNode",
                     "EdgeTypePodMountsPVC",
                     "EdgeTypePodCallsPod",
                     "EdgeTypeServiceSelectsPod"
@@ -258,57 +256,6 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
-                "type": "object"
-            },
-            "internal_api.grafanaBody": {
-                "properties": {
-                    "apiVersion": {
-                        "type": "string"
-                    },
-                    "edges": {
-                        "items": {
-                            "$ref": "#/components/schemas/internal_api.grafanaRow"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "edges_fields": {
-                        "items": {
-                            "$ref": "#/components/schemas/internal_api.grafanaField"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "nodes": {
-                        "items": {
-                            "$ref": "#/components/schemas/internal_api.grafanaRow"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "nodes_fields": {
-                        "items": {
-                            "$ref": "#/components/schemas/internal_api.grafanaField"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "internal_api.grafanaField": {
-                "properties": {
-                    "name": {
-                        "type": "string"
-                    },
-                    "type": {
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
-            "internal_api.grafanaRow": {
-                "additionalProperties": {},
                 "type": "object"
             }
         },
@@ -555,7 +502,7 @@ const docTemplate = `{
         },
         "/v1/edge-types": {
             "get": {
-                "description": "Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with ` + "`" + `Cache-Control: public, max-age=3600` + "`" + `. Use this to validate the ` + "`" + `edge_type` + "`" + ` filter on ` + "`" + `/v1/graph` + "`" + ` and to drive UI legends.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eEdge type matrix\u003c/b\u003e\u003c/summary\u003e\n\n| type | source → target | directed | cross-cluster |\n|---|---|---|---|\n| ` + "`" + `pod-runs-on-node` + "`" + ` | pod → node | yes | no |\n| ` + "`" + `pod-mounts-pvc` + "`" + ` | pod → pvc | yes | no |\n| ` + "`" + `pod-calls-pod` + "`" + ` | pod \\| service \\| others \\| external → pod \\| service \\| others \\| external | yes | yes |\n| ` + "`" + `service-selects-pod` + "`" + ` | service → pod | yes | no |\n\nA ` + "`" + `pod-calls-pod` + "`" + ` endpoint whose pod UID is empty and whose ` + "`" + `client` + "`" + `/` + "`" + `server` + "`" + ` label is a ` + "`" + `://` + "`" + ` connection string is resolved (detection hardcoded, no operator knob) to a ` + "`" + `service` + "`" + ` node, the real backing pod, or an ` + "`" + `others` + "`" + ` node; a non-URL missing-UID label resolves to an ` + "`" + `external` + "`" + ` node. ` + "`" + `service-selects-pod` + "`" + ` edges are materialised on demand from ` + "`" + `service` + "`" + ` nodes to their backing pods.\n\n\u003c/details\u003e",
+                "description": "Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with ` + "`" + `Cache-Control: public, max-age=3600` + "`" + `. Use this to validate the ` + "`" + `edge_type` + "`" + ` filter on ` + "`" + `/v1/graph` + "`" + ` and to drive UI legends.\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eEdge type matrix\u003c/b\u003e\u003c/summary\u003e\n\n| type | source → target | directed | cross-cluster |\n|---|---|---|---|\n| ` + "`" + `pod-mounts-pvc` + "`" + ` | pod → pvc | yes | no |\n| ` + "`" + `pod-calls-pod` + "`" + ` | pod \\| service \\| others \\| external → pod \\| service \\| others \\| external | yes | yes |\n| ` + "`" + `service-selects-pod` + "`" + ` | service → pod | yes | no |\n\nA ` + "`" + `pod-calls-pod` + "`" + ` endpoint whose pod UID is empty and whose ` + "`" + `client` + "`" + `/` + "`" + `server` + "`" + ` label is a ` + "`" + `://` + "`" + ` connection string is resolved (detection hardcoded, no operator knob) to a ` + "`" + `service` + "`" + ` node, the real backing pod, or an ` + "`" + `others` + "`" + ` node; a non-URL missing-UID label resolves to an ` + "`" + `external` + "`" + ` node. ` + "`" + `service-selects-pod` + "`" + ` edges are materialised on demand from ` + "`" + `service` + "`" + ` nodes to their backing pods.\n\n\u003c/details\u003e",
                 "parameters": [
                     {
                         "description": "API key. Required when the server is started with API keys configured.",
@@ -601,7 +548,7 @@ const docTemplate = `{
         },
         "/v1/graph": {
             "get": {
-                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. Only ` + "`" + `end \u003e start` + "`" + ` is enforced; the pair is passed through to upstream PromQL verbatim. Bounded query cost is delegated to upstream VictoriaMetrics search limits. Each request triggers a fresh fan-out — there is no in-process result cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `name` + "`" + `. The ` + "`" + `name` + "`" + ` filter matches ` + "`" + `n.Name()` + "`" + ` exactly across every node type (pod, K8s node, PVC, external).\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Node types**: ` + "`" + `pod` + "`" + `, ` + "`" + `node` + "`" + `, ` + "`" + `pvc` + "`" + `, ` + "`" + `service` + "`" + `, ` + "`" + `others` + "`" + `, ` + "`" + `external` + "`" + `. **Edge types**: ` + "`" + `pod-runs-on-node` + "`" + `, ` + "`" + `pod-mounts-pvc` + "`" + `, ` + "`" + `pod-calls-pod` + "`" + `, ` + "`" + `service-selects-pod` + "`" + `.\n\n**Endpoint resolution**: for a ` + "`" + `pod-calls-pod` + "`" + ` endpoint whose pod UID is empty, the ` + "`" + `client` + "`" + `/` + "`" + `server` + "`" + ` label is inspected for a ` + "`" + `://` + "`" + ` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional ` + "`" + `.svc.\u003cdomain\u003e` + "`" + ` suffix is stripped): a ` + "`" + `\u003cservice\u003e.\u003cnamespace\u003e` + "`" + ` host yields a ` + "`" + `service` + "`" + ` node (` + "`" + `\u003ccluster\u003e/\u003cns\u003e/\u003cservice\u003e` + "`" + `) plus on-demand ` + "`" + `service-selects-pod` + "`" + ` edges to each backing pod; a ` + "`" + `\u003cpod\u003e.\u003cservice\u003e.\u003cnamespace\u003e` + "`" + ` host resolves to the real backing pod; an unresolvable host yields an ` + "`" + `others` + "`" + ` node (` + "`" + `others/\u003cvalue\u003e` + "`" + `). A non-URL missing-UID label still yields an ` + "`" + `external` + "`" + ` node (` + "`" + `external/\u003cvalue\u003e` + "`" + `).\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-runs-on-node\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-eu/ip-10-0-1-23\", \"labels\": {} } },\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
+                "description": "Returns the joined multi-cluster pod / node / PVC graph for the supplied ` + "`" + `[start, end]` + "`" + ` window in Cytoscape.js JSON shape (` + "`" + `{ elements: { nodes:[…], edges:[…] } }` + "`" + `).\n\n**Window**: ` + "`" + `start` + "`" + `/` + "`" + `end` + "`" + ` accept RFC 3339 or Unix seconds. Only ` + "`" + `end \u003e start` + "`" + ` is enforced; the pair is passed through to upstream PromQL verbatim. Bounded query cost is delegated to upstream VictoriaMetrics search limits. Each request triggers a fresh fan-out — there is no in-process result cache.\n\n**Filters** (all repeatable; AND across param names, OR within a single name): ` + "`" + `cluster` + "`" + `, ` + "`" + `namespace` + "`" + `, ` + "`" + `edge_type` + "`" + `, ` + "`" + `name` + "`" + `. The ` + "`" + `name` + "`" + ` filter matches ` + "`" + `n.Name()` + "`" + ` exactly across every node type (pod, K8s node, PVC, external).\n\n**Traversal** (set ` + "`" + `root` + "`" + ` to enable): ` + "`" + `depth` + "`" + ` 0..6 (default 2), ` + "`" + `direction` + "`" + ` ` + "`" + `in` + "`" + `/` + "`" + `out` + "`" + `/` + "`" + `both` + "`" + ` (default ` + "`" + `both` + "`" + `).\n\n**Node types**: ` + "`" + `pod` + "`" + `, ` + "`" + `node` + "`" + `, ` + "`" + `pvc` + "`" + `, ` + "`" + `service` + "`" + `, ` + "`" + `others` + "`" + `, ` + "`" + `external` + "`" + `. **Edge types**: ` + "`" + `pod-mounts-pvc` + "`" + `, ` + "`" + `pod-calls-pod` + "`" + `, ` + "`" + `service-selects-pod` + "`" + `.\n\n**Endpoint resolution**: for a ` + "`" + `pod-calls-pod` + "`" + ` endpoint whose pod UID is empty, the ` + "`" + `client` + "`" + `/` + "`" + `server` + "`" + ` label is inspected for a ` + "`" + `://` + "`" + ` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional ` + "`" + `.svc.\u003cdomain\u003e` + "`" + ` suffix is stripped): a ` + "`" + `\u003cservice\u003e.\u003cnamespace\u003e` + "`" + ` host yields a ` + "`" + `service` + "`" + ` node (` + "`" + `\u003ccluster\u003e/\u003cns\u003e/\u003cservice\u003e` + "`" + `) plus on-demand ` + "`" + `service-selects-pod` + "`" + ` edges to each backing pod; a ` + "`" + `\u003cpod\u003e.\u003cservice\u003e.\u003cnamespace\u003e` + "`" + ` host resolves to the real backing pod; an unresolvable host yields an ` + "`" + `others` + "`" + ` node (` + "`" + `others/\u003cvalue\u003e` + "`" + `). A non-URL missing-UID label still yields an ` + "`" + `external` + "`" + ` node (` + "`" + `external/\u003cvalue\u003e` + "`" + `).\n\nExample: ` + "`" + `GET /v1/graph?start=2026-05-05T11:00:00Z\u0026end=2026-05-05T12:00:00Z\u0026cluster=prod-eu\u0026namespace=payments\u0026edge_type=pod-calls-pod` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"clusters\": [\"prod-eu\", \"prod-us\"],\n\"elements\": {\n\"nodes\": [\n{ \"data\": { \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"type\": \"pod\",  \"name\": \"checkout-7d9f6c8b8-abcde\", \"labels\": { \"cluster\": \"prod-eu\", \"namespace\": \"payments\" } } },\n{ \"data\": { \"id\": \"prod-eu/ip-10-0-1-23\",     \"type\": \"node\", \"name\": \"ip-10-0-1-23.ec2.internal\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n],\n\"edges\": [\n{ \"data\": { \"id\": \"...uuidv5...\", \"type\": \"pod-calls-pod\",   \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\", \"labels\": { \"cluster\": \"prod-eu\" } } }\n]\n}\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
                 "parameters": [
                     {
                         "description": "Window start. RFC 3339 (` + "`" + `2026-05-05T11:00:00Z` + "`" + `) or Unix seconds (` + "`" + `1746442800` + "`" + `).",
@@ -657,7 +604,6 @@ const docTemplate = `{
                         "schema": {
                             "items": {
                                 "enum": [
-                                    "pod-runs-on-node",
                                     "pod-mounts-pvc",
                                     "pod-calls-pod",
                                     "service-selects-pod"
@@ -788,196 +734,6 @@ const docTemplate = `{
                     "graph"
                 ]
             }
-        },
-        "/v1/graph/nodegraph": {
-            "get": {
-                "description": "Same underlying graph as ` + "`" + `/v1/graph` + "`" + ` but projected into the parallel-array shape Grafana's Node Graph panel expects via the JSON / Infinity datasource: ` + "`" + `nodes_fields[]` + "`" + `, ` + "`" + `nodes[]` + "`" + `, ` + "`" + `edges_fields[]` + "`" + `, ` + "`" + `edges[]` + "`" + `.\n\nFiltering and traversal semantics are identical to ` + "`" + `/v1/graph` + "`" + ` — see that endpoint for full details.\n\nExample: ` + "`" + `GET /v1/graph/nodegraph?start=1746442800\u0026end=1746446400\u0026cluster=prod-eu\u0026edge_type=pod-calls-pod\u0026root=prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab\u0026depth=3\u0026direction=out` + "`" + `\n\n\u003cdetails\u003e\u003csummary\u003e\u003cb\u003eSample response\u003c/b\u003e\u003c/summary\u003e\n\n` + "`" + `` + "`" + `` + "`" + `json\n{\n\"apiVersion\": \"v1\",\n\"nodes_fields\": [\n{ \"name\": \"id\",    \"type\": \"string\" },\n{ \"name\": \"title\", \"type\": \"string\" },\n{ \"name\": \"subtitle\", \"type\": \"string\" }\n],\n\"nodes\": [\n{ \"id\": \"prod-eu/8f8d4f1a-...-89ab\", \"title\": \"checkout-7d9f6c8b8-abcde\", \"subtitle\": \"pod\" }\n],\n\"edges_fields\": [\n{ \"name\": \"id\",     \"type\": \"string\" },\n{ \"name\": \"source\", \"type\": \"string\" },\n{ \"name\": \"target\", \"type\": \"string\" }\n],\n\"edges\": [\n{ \"id\": \"...uuidv5...\", \"source\": \"prod-eu/8f8d4f1a-...-89ab\", \"target\": \"prod-us/a1b2c3d4-...-7654\" }\n]\n}\n` + "`" + `` + "`" + `` + "`" + `\n\n\u003c/details\u003e",
-                "parameters": [
-                    {
-                        "description": "Window start. RFC 3339 or Unix seconds.",
-                        "example": "2026-05-05T11:00:00Z",
-                        "in": "query",
-                        "name": "start",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "description": "Window end. RFC 3339 or Unix seconds. Must be \u003e start.",
-                        "example": "2026-05-05T12:00:00Z",
-                        "in": "query",
-                        "name": "end",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "description": "Restrict to listed clusters (repeatable, OR-combined).",
-                        "example": "prod-eu",
-                        "in": "query",
-                        "name": "cluster",
-                        "schema": {
-                            "items": {
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
-                    },
-                    {
-                        "description": "Restrict to listed namespaces (repeatable, OR-combined).",
-                        "example": "payments",
-                        "in": "query",
-                        "name": "namespace",
-                        "schema": {
-                            "items": {
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
-                    },
-                    {
-                        "description": "Restrict to listed edge types. Repeatable, OR-combined.",
-                        "example": "pod-calls-pod",
-                        "in": "query",
-                        "name": "edge_type",
-                        "schema": {
-                            "items": {
-                                "enum": [
-                                    "pod-runs-on-node",
-                                    "pod-mounts-pvc",
-                                    "pod-calls-pod",
-                                    "service-selects-pod"
-                                ],
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
-                    },
-                    {
-                        "description": "Restrict to nodes whose name matches exactly across every node type. Repeatable.",
-                        "example": "checkout-7d9f6c8b8-abcde",
-                        "in": "query",
-                        "name": "name",
-                        "schema": {
-                            "items": {
-                                "type": "string"
-                            },
-                            "type": "array"
-                        },
-                        "style": "form"
-                    },
-                    {
-                        "description": "Cluster-scoped node ID anchoring a traversal. See /v1/graph for ID formats per type.",
-                        "example": "prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab",
-                        "in": "query",
-                        "name": "root",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "description": "BFS traversal depth ` + "`" + `0..6` + "`" + `. Defaults to ` + "`" + `2` + "`" + ` when ` + "`" + `root` + "`" + ` is set.",
-                        "example": 2,
-                        "in": "query",
-                        "name": "depth",
-                        "schema": {
-                            "default": 2,
-                            "maximum": 6,
-                            "minimum": 0,
-                            "type": "integer"
-                        }
-                    },
-                    {
-                        "description": "Traversal direction. Defaults to ` + "`" + `both` + "`" + `.",
-                        "example": "both",
-                        "in": "query",
-                        "name": "direction",
-                        "schema": {
-                            "default": "both",
-                            "enum": [
-                                "in",
-                                "out",
-                                "both"
-                            ],
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "description": "API key. Required when the server is started with API keys configured.",
-                        "in": "header",
-                        "name": "X-API-Key",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/internal_api.grafanaBody"
-                                }
-                            }
-                        },
-                        "description": "OK"
-                    },
-                    "400": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/internal_api.errorBody"
-                                }
-                            }
-                        },
-                        "description": "Invalid parameters"
-                    },
-                    "401": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/internal_api.errorBody"
-                                }
-                            }
-                        },
-                        "description": "Missing or invalid ` + "`" + `X-API-Key` + "`" + ` (only when API key auth is configured)"
-                    },
-                    "502": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/internal_api.errorBody"
-                                }
-                            }
-                        },
-                        "description": "Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
-                    },
-                    "504": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/internal_api.errorBody"
-                                }
-                            }
-                        },
-                        "description": "Build exceeded --build-timeout (RFC 9110 §15.6.5)"
-                    }
-                },
-                "security": [
-                    {
-                        "ApiKeyAuth": []
-                    }
-                ],
-                "summary": "Get multi-cluster graph (Grafana Node Graph datasource)",
-                "tags": [
-                    "graph"
-                ]
-            }
         }
     },
     "openapi": "3.1.0",
@@ -992,7 +748,7 @@ const docTemplate = `{
 var SwaggerInfo = &swag.Spec{
 	Version:          "v1",
 	Title:            "kube-state-graph API",
-	Description:      "Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.\n\n**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.",
+	Description:      "Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON.\n\n**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

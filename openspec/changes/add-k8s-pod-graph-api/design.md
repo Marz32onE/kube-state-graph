@@ -1,6 +1,6 @@
 ## Context
 
-This repository delivers exactly one component: the **graph API server**. Everything else — a centralised VictoriaMetrics, the per-cluster scrape pipelines that feed it (`kube-state-metrics`, vmagent / Prometheus, the customised service-graph metrics source), and the Kind-based integration-test harness — is treated as an external dependency and is only present in this repo as test scaffolding.
+This repository delivers exactly one component: the **graph API server**. Everything else — a centralised VictoriaMetrics, the per-cluster scrape pipelines that feed it (`kube-state-metrics`, vmagent / Prometheus, the customised service-graph metrics source) — is treated as an external dependency and is only present in this repo as test scaffolding (the testcontainers-go integration suite under `internal/integration/`).
 
 Data flow that the API server assumes is already in place:
 
@@ -23,7 +23,7 @@ cluster N: kube-state-metrics ──┤
   - `traces_service_graph_request_total{cluster, client_k8s_pod_uid, server_k8s_pod_uid, client_k8s_namespace_name, server_k8s_namespace_name, connection_type}`.
 - The API server reads everything it needs from VictoriaMetrics through the Prometheus HTTP API, **on demand per request**, scoped to a caller-specified time range. It never talks to the Kubernetes API server in any cluster, never scrapes `kube-state-metrics` directly, and never connects to the service-graph producer.
 
-The integration-test harness in this repo (single Kind cluster, in-cluster VictoriaMetrics, fake-fixtures producer that synthesises multi-cluster series) exists only to give CI and developers a reproducible target. It deliberately does **not** spin up multiple Kind clusters or real per-cluster scrape pipelines — that work belongs to deployment, not to this repo.
+The integration-test suite in this repo (`internal/integration/`, a `testcontainers-go` VictoriaMetrics container fed hand-crafted multi-cluster series via `POST /api/v1/import/prometheus`) exists only to give CI and developers a reproducible target. It deliberately does **not** stand up real per-cluster scrape pipelines — that work belongs to deployment, not to this repo.
 
 Constraints on the API server:
 
@@ -42,12 +42,12 @@ Constraints on the API server:
 - Build the graph by issuing PromQL queries with `@` timestamp modifiers and range-aware functions (`last_over_time`, `rate`) against centralised VictoriaMetrics, and joining the result sets in memory across all clusters in scope.
 - Each request runs a fresh upstream fan-out — there is no in-process result cache and no singleflight. A horizontally scalable cache mechanism is deferred to a future iteration (see "Future cache mechanism" below).
 - Use the `(cluster, pod-uid)` composite as the stable identity for pod nodes and the join key for pod-pod edges; node and PVC IDs are similarly cluster-scoped.
-- Expose Cytoscape.js-shaped JSON as the primary response, plus a Grafana Node Graph compatibility route for visual verification.
+- Expose Cytoscape.js-shaped JSON as the response of `GET /v1/graph`.
 - Provide cluster discovery (`GET /v1/clusters`) sourced live from VictoriaMetrics, plus a static edge-type catalogue (`GET /v1/edge-types`).
-- Provide an integration-test harness (single Kind cluster, in-cluster VictoriaMetrics, fake-fixtures producer for multi-cluster `kube_*` and `traces_service_graph_*` series, smoke script) that proves the API server returns a non-empty, well-formed multi-cluster graph including a cross-cluster edge.
+- Provide a container-integration test suite (`internal/integration/`, a testcontainers-go VictoriaMetrics container seeded with hand-crafted multi-cluster `kube_*` and `traces_service_graph_*` series) that proves the API server returns a non-empty, well-formed multi-cluster graph including a cross-cluster edge.
 
 **Non-Goals:**
-- Implementing the customised service-graph collector (Alloy / OTLP collector). The harness uses a fake-fixtures producer that writes the contract metrics directly.
+- Implementing the customised service-graph collector (Alloy / OTLP collector). The integration suite seeds the contract metrics directly into VictoriaMetrics.
 - Operating, configuring, or hardening `kube-state-metrics` or VictoriaMetrics. They are dependencies, not deliverables.
 - Talking to the Kubernetes API directly in any cluster. All cluster facts are read via metrics.
 - Authorisation, multi-tenant isolation, or TLS termination on the HTTP API (assume reverse proxy handles it). Per-cluster RBAC is also out of scope — every reachable cluster is equally readable through this server. v1 ships static **API-key authentication** only (single shared secret tier, no per-caller scoping); see D24.
@@ -57,7 +57,7 @@ Constraints on the API server:
 - A distributed / shared cache (Redis, memcached) or background materialiser. These are explicitly deferred — a future iteration will add a horizontally scalable cache mechanism for distributed deployment; the design space is captured under "Future cache mechanism".
 - A graph database (Neo4j, Memgraph, ArangoDB) for partial / traversal queries. In-memory adjacency suffices for v1.
 - VictoriaMetrics multi-tenant (vmcluster `accountID:projectID`) routing. Single-tenant centralised VM with `cluster` external labels is the v1 isolation model; multi-tenancy is a v1.1 escape hatch.
-- Spinning up multiple Kind clusters, or real per-cluster scrape pipelines, in the integration-test harness.
+- Standing up real per-cluster scrape pipelines in the integration-test suite.
 
 ## Decisions
 
@@ -80,7 +80,7 @@ Every request to `GET /v1/graph?start=...&end=...` triggers a fresh build of the
 1. Resolve and validate `start` / `end` (only `end > start`; D5).
 2. Run all required PromQL queries against centralised VictoriaMetrics in parallel via `errgroup.WithContext` under a per-build `context.WithTimeout(ctx, --build-timeout)`. On `context.DeadlineExceeded`, abort and return `504 Gateway Timeout` with `reason: "timeout"`. Concurrency limiting is delegated to horizontal scaling (HPA) and Pod resource limits — there is no in-process semaphore.
 3. Join the result sets across clusters in memory and produce the global multi-cluster `Graph`.
-4. Apply filters (`cluster`, `namespace`, `edge_type`, `name`) and traversal pruning (`root`, `depth`, `direction`) over the freshly built `Graph` as a projection, then serialise to the requested format (Cytoscape.js or Grafana Node Graph) and return.
+4. Apply filters (`cluster`, `namespace`, `edge_type`, `name`) and traversal pruning (`root`, `depth`, `direction`) over the freshly built `Graph` as a projection, then serialise to Cytoscape.js JSON and return.
 
 There is no in-process result cache, no singleflight, no background `Snapshotter`, no `atomic.Pointer[Graph]`, no fixed refresh interval, and no `POST /admin/refresh`.
 
@@ -109,7 +109,6 @@ Edge endpoints reference these composite IDs.
 
 Edges fall into typed categories:
 
-- `pod-runs-on-node` (intra-cluster only): derived from `kube_pod_info{node=..., cluster=...}` evaluated within the time range.
 - `pod-mounts-pvc` (intra-cluster only): derived from joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the node hosting the pod, within a single cluster.
 - `pod-calls-pod` (intra-cluster **or cross-cluster**): from `rate(traces_service_graph_request_total[<window>]) @ <end>` with non-zero rate. The client side joins on `(cluster, client_k8s_pod_uid)`. The server side joins via the **global pod-UID index** built from topology — `server_k8s_pod_uid` alone resolves to a single pod across all loaded clusters, since K8s pod UIDs are unique cross-cluster in practice. The edge carries `labels.cluster` set to the client-side cluster (omitted when the client is an external endpoint); cross-cluster status is derived by comparing the resolved source-node `labels.cluster` and target-node `labels.cluster` on the consumer side (no boolean flag in `labels` per D9's strict-string rule).
 
@@ -143,7 +142,7 @@ v1 ships **no** in-process result cache, **no** singleflight, and **no** `/admin
 - Sorting / deduping `IPAddress` slices at construction (today they are emitted in a single-element form; the slice contract is "stable but not semantically ranked").
 - Keeping body shape fixed at `{apiVersion, clusters, elements}` for graph routes. No time-varying or echo-of-input fields are serialised; observability moves to logs/metrics.
 
-**Response cache headers.** Routes whose content is stable and long-lived emit explicit `Cache-Control` (`/v1/edge-types`: 3600 s, `/openapi.{yaml,json}`: 3600 s, `/docs/assets/*`: 86400 s, `/docs`: 300 s) so that browsers and reverse proxies may cache them client-side. `/v1/graph`, `/v1/graph/nodegraph`, and `/v1/clusters` emit no `Cache-Control` — every freshly built body is treated as authoritative.
+**Response cache headers.** Routes whose content is stable and long-lived emit explicit `Cache-Control` (`/v1/edge-types`: 3600 s, `/openapi.{yaml,json}`: 3600 s, `/docs/assets/*`: 86400 s, `/docs`: 300 s) so that browsers and reverse proxies may cache them client-side. `/v1/graph` and `/v1/clusters` emit no `Cache-Control` — every freshly built body is treated as authoritative.
 
 **No singleflight.** Concurrent identical requests each run their own upstream fan-out. At dev / pre-distributed-deployment traffic this is acceptable. Cluster-wide deduplication is part of the future cache mechanism, not v1.
 
@@ -160,10 +159,10 @@ Whichever shape ships will need to revisit D5 (time-class TTL ladder), D11 (cach
 `GET /v1/graph` accepts (in addition to mandatory `start` / `end`):
 
 - `?cluster=<name>` — repeatable; restricts the response to nodes whose `cluster` is in the set. Cross-cluster edges with one end inside the set and one end outside are **kept** (the remote endpoint resolves correctly because the freshly built `*Graph` holds all clusters loaded for the window); the remote endpoint node is also kept (with its own `labels.cluster`). Cross-cluster status is conveyed by comparing the source-node and target-node `labels.cluster` — consumers derive the boolean from the two strings (the edge itself carries only `labels.cluster` = trace-source / client-side cluster). Setting `cluster` to an unknown value is not an error — it simply yields an empty result for that name.
-- `?namespace=<ns>` — repeatable; restricts pod / PVC nodes whose `namespace` is in the set. A namespace value matches across clusters; combine with `?cluster=` to scope to a single cluster's namespace.
+- `?namespace=<ns>` — repeatable; restricts pod / PVC nodes whose `namespace` is in the set. A namespace value matches across clusters; combine with `?cluster=` to scope to a single cluster's namespace. K8s `node` nodes carry no `namespace` label and no edge linking them to a namespaced entity, so a namespace-narrowed view drops them entirely — it contains only namespaced entities.
 - `?edge_type=<type>` — repeatable; restricts to those edge types only. If a requested type has no edges in the current `Graph`, that type is silently skipped (no error, just empty).
-- `?name=<value>` — repeatable; matches `n.Name()` by exact equality across **every** node type (`PodNode`, `K8sNode`, `PVCNode`, `ExternalNode`). Use it to anchor the view on any single node — a pod, a host node, a PVC, or an external endpoint — without the caller having to encode the type. Names are not globally unique (a pod and a K8s node can share a name; a PVC name can repeat across namespaces); all matches are returned. Combine with `?cluster=` / `?namespace=` to disambiguate.
-- `?root=<id>&depth=<n>&direction=in|out|both` — partial-graph traversal: BFS from the given composite ID (`<cluster>/<pod-uid>` or `<cluster>/<node-name>`), bounded by `depth` (default 2, max 6).
+- `?name=<value>` — repeatable; matches `n.Name()` by exact equality across **every** node type (`PodNode`, `K8sNode`, `PVCNode`, `ExternalNode`). Use it to anchor the view on any single node — a pod, a host node, a PVC, or an external endpoint — without the caller having to encode the type. Names are not globally unique (a pod and a K8s node can share a name; a PVC name can repeat across namespaces); all matches are returned. Combine with `?cluster=` / `?namespace=` to disambiguate. A `name` match on a pod does **not** pull in the pod's host K8s node — there is no edge linking them (the pod→node relationship is compound nesting via `labels.node` only); to render the host node, anchor on it directly.
+- `?root=<id>&depth=<n>&direction=in|out|both` — partial-graph traversal: BFS from the given composite ID (`<cluster>/<pod-uid>` or `<cluster>/<node-name>`), bounded by `depth` (default 2, max 6). BFS follows edges only; a pod root does **not** reach its host K8s node (no edge links them — the pod→node relationship is compound nesting via `labels.node` only). A K8s `node` is an edgeless graph node, so anchoring a root on it yields only the node itself (plus the node's own depth-0 entry).
 
 Filtering is applied **at response time over the freshly built `*Graph` value**, not by re-querying upstream. PromQL queries always fetch the full window across every cluster present in upstream VictoriaMetrics; the in-memory `*Graph` is the shared base from which all filtered views are projected.
 
@@ -171,7 +170,7 @@ Filtering is applied **at response time over the freshly built `*Graph` value**,
 - Empty filter ⇒ full multi-cluster graph for the time range.
 - Filters compose with AND across types and OR within a type.
 - Traversal first prunes by `root`/`depth`/`direction`, then `cluster` / `namespace` / `edge_type` / `name` filters apply over the traversal result.
-- Edge re-add rule (unified across all filters): an edge survives when at least one resolved endpoint is in scope after node filtering. When exactly one endpoint is in scope, the missing endpoint is re-added from `g.NodesByID` provided it passes the non-cluster filters (namespace). This covers cross-cluster `pod-calls-pod` edges where only `cluster` narrows scope (the partner pod lives in an out-of-scope cluster), `pod-runs-on-node` / `pod-mounts-pvc` edges incident on an in-scope pod, and name-anchored views that need to render incident edges of the named node together with their partners. There is no name-specific suppression: anchoring on a named node intentionally surfaces the edges that connect it to its neighbourhood, otherwise the rendered graph would have dangling edge endpoints.
+- Edge re-add rule (unified across all filters): an edge survives when at least one resolved endpoint is in scope after node filtering. When exactly one endpoint is in scope, the missing endpoint is re-added from `g.NodesByID` provided it passes the non-cluster filters (namespace). This covers cross-cluster `pod-calls-pod` edges where only `cluster` narrows scope (the partner pod lives in an out-of-scope cluster), `pod-mounts-pvc` edges incident on an in-scope pod, and name-anchored views that need to render incident edges of the named node together with their partners. There is no name-specific suppression: anchoring on a named node intentionally surfaces the edges that connect it to its neighbourhood, otherwise the rendered graph would have dangling edge endpoints.
 - The `pod_uid` filter parameter was considered and rejected: pod UIDs are opaque internal identifiers callers cannot obtain without first making a `/v1/graph` call. Callers scope by `cluster` + `name` instead, accepting that names are not globally unique.
 - Alternatives considered:
   - PromQL label-selector narrowing per request (rejected — VictoriaMetrics scans the index regardless; label selectors trim the network payload but not upstream evaluation cost. The full multi-cluster graph is small enough at v1 scale to build once and project per request).
@@ -214,30 +213,30 @@ Service-graph counters are ingested as two monotonic samples (`t0` and `t1 = t0 
 
 - Why direct ingestion: the API server is the unit under test. Synthesising the metric contract directly in Go keeps tests focused on join / build / HTTP behaviour, makes multi-cluster scenarios trivial (just emit different `cluster` values), and avoids dragging in collector + tracing dependencies, fixture programs, YAML schemas, and reload protocols.
 - Tests MUST emit the exact label set the production contract specifies, so swapping in real producers in deployment is a configuration change, not a code change.
-- The local Kind rig (`local/kind/`) is **separate** and uses a **real** `kube-state-metrics` scraping the Kind cluster — that exercises the topology code path against real series. It does not produce `traces_service_graph_*` (no Tempo); the service-graph code path is exercised only by `internal/integration/`.
+- The integration suite (`internal/integration/`) is the sole verification path for both the topology and the service-graph code paths: it seeds `kube_*` and `traces_service_graph_*` series directly into the VictoriaMetrics container, so multi-cluster / cross-cluster scenarios are exercised end-to-end against real PromQL.
 
 **Rejected: standalone fixtures binary (`cmd/vm-fixtures/`) + YAML config** — earlier sketch; superseded by direct in-test exposition ingestion. The binary added build complexity, deployment surface, and a YAML schema for no test-discrimination benefit. Tests can author exact series inline in Go.
-**Rejected: multiple Kind clusters with real `kube-state-metrics`** — doubles harness setup cost, exhausts laptop resources, and validates the same metric contract that direct ingestion already covers.
+**Rejected: real per-cluster `kube-state-metrics` scrape pipelines** — heavy setup cost, exhausts laptop resources, and validates the same metric contract that direct ingestion already covers.
 **Rejected: synthetic OTLP trace generator + collector** — full pipeline exists in production but is upstream of this server; doubles the integration-test surface for no benefit.
 **Rejected: `telemetrygen`** — emits standalone spans without parent/child propagation, so the `servicegraph` connector cannot pair them and no edge metrics result.
 **Rejected: OpenTelemetry Demo (`otel-demo`)** — boots ~15 services and a heavy chart; too much for a per-PR integration test.
 
-### D9. Output format: Cytoscape.js JSON, with Grafana Node Graph compatibility
+### D9. Output format: Cytoscape.js JSON
 
-**Node and edge schema (canonical, used in both formats):**
+**Node and edge schema (canonical):**
 
 | Object | Field | Type | Source / Notes |
 |---|---|---|---|
 | Node | `id` | string | Cluster-scoped composite. Pods: `<cluster>/<pod-uid>`. Nodes: `<cluster>/<node-name>`. PVCs: `<cluster>/<namespace>/<claim>`. **Services** (resolved from a `://` connection string, D29): `<cluster>/<namespace>/<service>`. **Others** (`://` connection string that did not resolve to an in-cluster pod/service, D29): `others/<label-value>` (no cluster). **External** (missing-UID fallback, non-URL label): `external/<label-value>` (no cluster). |
-| Node | `name` | string | Pod name / node name / PVC claim name. For others / external nodes, the verbatim `client` or `server` label value (e.g., `http://api.example.com`). Used as the display label in the Grafana panel. |
+| Node | `name` | string | Pod name / node name / PVC claim name. For others / external nodes, the verbatim `client` or `server` label value (e.g., `http://api.example.com`). Used as the display label in the rendered graph. |
 | Node | `type` | string | One of `"pod"`, `"node"`, `"pvc"`, `"service"`, `"others"`, `"external"`. |
 | Node | `ipaddress` | `[]string` (`omitempty`) | Observed IP addresses for the node. Present on `type="pod"` (`kube_pod_info.pod_ip`), `type="node"` (K8s node `ExternalIP` from `kube_node_status_addresses`), and `type="service"` (`kube_service_info.cluster_ip`, omitted when `cluster_ip="None"` for headless services). Omitted for `type="pvc"`, `type="others"`, `type="external"`, and omitted on pod / node / service entries when the source metric does not surface an IP. The slice order is stable but not semantically ranked. |
 | Node | `labels` | `map[string]string` | String-only key/value bag. Pod / node / PVC nodes always include `cluster`, `namespace` (pods/PVCs), `node` (pods, cluster-scoped node ID). K8s pod / node labels are flattened in verbatim. IP addresses are **not** carried in `labels` — see the `ipaddress` row above. **Service nodes** (D29) carry `cluster` and `namespace`. **Others nodes** carry an empty `labels` map (`{}`) — the `pattern` key was removed along with `KSG_OTHERS_NAME_PATTERN` (D29); no `cluster`. **External nodes** carry an empty `labels` map (`{}`) — no `pattern`, no `cluster`. New keys are additive. |
 | Edge | `id` | string | UUIDv5 derived from a fixed namespace UUID and the canonical tuple `(type, source, target)`. Stable across builds for the same edge; format compliant with RFC 4122. |
-| Edge | `type` | string | One of the registered edge types in `/v1/edge-types` (e.g., `"pod-runs-on-node"`, `"pod-mounts-pvc"`, `"pod-calls-pod"`, `"service-selects-pod"`). |
+| Edge | `type` | string | One of the registered edge types in `/v1/edge-types` (e.g., `"pod-mounts-pvc"`, `"pod-calls-pod"`, `"service-selects-pod"`). |
 | Edge | `source` | string | Source node `id`. Always references a node present in the same response. |
 | Edge | `target` | string | Target node `id`. Always references a node present in the same response. |
-| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `cluster` (the trace source cluster, i.e. the client-side pod's cluster — omitted when the client is a non-pod endpoint, i.e. `service`, `others`, or `external`). For `pod-mounts-pvc`: `claim_name`, `storage_class`. For `pod-runs-on-node`: `scheduled_at`. For `service-selects-pod` (D29): optional `namespace`, none required. New keys are additive. |
+| Edge | `labels` | `map[string]string` | String-only key/value bag. For `pod-calls-pod`: `cluster` (the trace source cluster, i.e. the client-side pod's cluster — omitted when the client is a non-pod endpoint, i.e. `service`, `others`, or `external`). For `pod-mounts-pvc`: `claim_name`, `storage_class`. For `service-selects-pod` (D29): optional `namespace`, none required. New keys are additive. |
 
 **Strictly string-typed values.** `labels` is `map[string]string` for both nodes and edges. Non-string-typed data (numeric edge metrics such as `rate`, `p99_ms`, `error_rate`; boolean flags such as `cross_cluster` or `ghost`) is **deferred to a future typed struct field** on node/edge data. v1 does not encode booleans as `"true"`/`"false"` strings inside `labels`; consumers derive cross-cluster status for `pod-calls-pod` edges by comparing the edge's resolved source-node `labels.cluster` with the target-node `labels.cluster` (both nodes are guaranteed present in the same response).
 
@@ -274,22 +273,11 @@ The primary `GET /v1/graph` response is **Cytoscape.js**-shaped JSON:
 }
 ```
 
-The second route, `GET /v1/graph/nodegraph`, returns the same data projected into the **Grafana Node Graph** API datasource shape (parallel `nodes_fields`/`nodes` and `edges_fields`/`edges` arrays). The serializer maps the canonical fields as follows:
-
-- Node `name` → `title`.
-- Node `labels.cluster` ` · ` `labels.namespace` (or `labels.cluster` alone when no namespace) → `subTitle`.
-- Node `type` → `mainStat`.
-- Edge `type` → `mainStat`.
-- Edge `secondaryStat` is left empty in v1 (numeric edge metrics are deferred to a future typed struct field; see the strictly-string-typed labels note above).
-
-This makes the integration-test Grafana panel show pod / node names directly without per-deployment template tweaking.
-
-- Why: a single canonical schema (`id`, `name`, `type`, `labels`) drives both formats; any future field addition lives in `labels` and is therefore non-breaking.
+- Why: a single canonical schema (`id`, `name`, `type`, `labels`) drives the serialiser; any future field addition lives in `labels` and is therefore non-breaking.
 - Why UUIDv5 for edge `id`: deterministic (golden tests stay stable; same edge → same ID across rebuilds), RFC 4122 compliant, and decoupled from the human-readable `(source, target, type)` triple so renaming convention later does not change IDs already exposed.
 - Alternatives considered:
   - `kind`/`label`/`attrs` field names (rejected — divergent from user-requested schema).
   - Random UUIDv4 for edges (rejected — breaks golden-test determinism; same edge would get a different ID every build).
-  - Plain `{nodes, edges}` only (rejected — locks out Grafana Node Graph compat without an adapter layer).
   - GraphQL (rejected — adds dependency surface for v1 with no clear caller).
 
 ### D10. Logging via `log/slog`, JSON handler
@@ -311,7 +299,7 @@ These are mandatory for the v1 implementation:
 - **Query registry**: PromQL strings as named constants in one file, parameterised on `<window>` and `<end>`. Paired with a parser that maps Prometheus `model.Vector` results into typed Go structs.
 - **One PromQL instant query per metric family**, evaluated at the bucketed `end` with `last_over_time` / `rate` over the window. Queries do **not** include filter-derived selectors. Parse Vector client-side.
 - **Parallel upstream fan-out** via `errgroup.WithContext`. Wall-clock latency = O(slowest query), not O(sum of queries).
-- **Per-build context timeout**: graph endpoints (`/v1/graph`, `/v1/graph/nodegraph`) wrap the build in `context.WithTimeout(ctx, --build-timeout)` (default `15s`). On `context.DeadlineExceeded`, the build is aborted, the failure counter increments, and the request returns `504 Gateway Timeout` with `reason: "timeout"`.
+- **Per-build context timeout**: the graph endpoint (`/v1/graph`) wraps the build in `context.WithTimeout(ctx, --build-timeout)` (default `15s`). On `context.DeadlineExceeded`, the build is aborted, the failure counter increments, and the request returns `504 Gateway Timeout` with `reason: "timeout"`.
 - **Per-request timeout for non-graph endpoints**: `/v1/clusters` (live discovery query) and `/readyz` (`up{}` probe) wrap their upstream call in `context.WithTimeout(ctx, --api-timeout)` (default `5s`). On `context.DeadlineExceeded`, the request returns `504 Gateway Timeout` with `reason: "timeout"`. Endpoints with no upstream call (`/v1/edge-types`, `/livez`, `/metrics`, `/openapi.*`, `/docs*`) are not subject to this timeout.
 - **No in-process concurrency cap.** Concurrency limiting is delegated to horizontal scaling (HPA) and Pod resource limits. The previous `golang.org/x/sync/semaphore`-based per-instance cap and the `503 capacity` error reason were removed: HPA reacts to CPU / latency signals at instance granularity and is the operator's primary lever; an in-process semaphore added a config knob whose tuning required the same load data HPA already uses, while making per-instance load shedding less observable than queue-time-based metrics.
 - **Adjacency maps**: forward and reverse `map[NodeID][]*Edge` built once inside `Build()`; reused for traversal pruning during `Project()`. Built on the immutable `*Graph` so concurrent projections within the same request share them safely.
@@ -340,20 +328,19 @@ Operator endpoints: none in v1. Diagnostics rely on `kube_state_graph_*` metrics
 
 ### D13. Testing layers
 
-The test stack has six layers, all CI-runnable except the last; each MUST exist before this change is archived:
+The test stack has five layers, all CI-runnable; each MUST exist before this change is archived:
 
 | Layer | CI? | Scope | Tool |
 |------|-----|------|------|
 | Unit | yes | Pure join / parse / project functions on hand-crafted multi-cluster `model.Vector` and `model.Matrix` inputs (intra-cluster, cross-cluster, and mixed) | `go test` |
 | Component | yes | Build pipeline end-to-end against an `httptest.Server` mocking the Prometheus query API; covers per-build timeout, parameter validation, and serialiser output | `go test` |
-| Golden | yes | Canned scenarios (single-cluster, two-cluster with cross-cluster edge, three-cluster with traversal pruning) → `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types` JSON compared to checked-in `.golden.json` | `go test` |
+| Golden | yes | Canned scenarios (single-cluster, two-cluster with cross-cluster edge, three-cluster with traversal pruning) → `/v1/graph`, `/v1/clusters`, `/v1/edge-types` JSON compared to checked-in `.golden.json` | `go test` |
 | Property | yes | Random topology + edge inputs across N synthetic clusters + random filters → invariants (no orphan edges, no duplicate IDs, every endpoint resolves, filtered ⊆ unfiltered, traversal stays within `depth`, cross-cluster edges have distinct cluster endpoints) | `testing/quick` or `gopter` |
 | **Container integration** (capability `container-integration`) | yes | Per-package VictoriaMetrics container started via testcontainers-go; series injected via VM's `/api/v1/import/prometheus`; in-process API server pointed at the container; assertions over real PromQL evaluation | `go test` + Docker |
-| **Manual visual rig** (capability `verification-harness`) | **no** | Single Kind cluster with VictoriaMetrics + fake-fixtures producer + API server + Grafana Pod with the checked-in Node Graph dashboard, run on demand by an operator. Used for visual sanity verification of the rendered graph; not exercised by CI | `bash` bootstrap + browser |
 
-The first five layers run on every PR via `go test ./...`. The Kind manual rig is exercised by operators on demand only — see D20 for testcontainer rationale and D21 for static analysis / vulnerability scanning policy.
+All five layers run on every PR via `go test ./...` — see D20 for testcontainer rationale and D21 for static analysis / vulnerability scanning policy.
 
-- Why: integration alone leaves logic regressions undetectable in PR feedback; mock-only component tests miss real PromQL semantics; Kind alone is too slow and fragile for per-PR feedback. The split puts every behavioural assertion in the CI path against real PromQL, while the Grafana rig keeps human-in-the-loop verification first-class without coupling it to merge gates.
+- Why: integration alone leaves logic regressions undetectable in PR feedback; mock-only component tests miss real PromQL semantics. The split puts every behavioural assertion in the CI path against real PromQL — the unit / component / golden / property layers for fast, dependency-free feedback, and the container-integration layer for real PromQL evaluation and deterministic time semantics.
 
 ### D14. Versioning
 
@@ -371,17 +358,6 @@ The first five layers run on every PR via `go test ./...`. The Kind manual rig i
 {
   "apiVersion": "v1",
   "edge_types": [
-    {
-      "type": "pod-runs-on-node",
-      "description": "Pod scheduled on a node, derived from kube_pod_info{node=...}. Always intra-cluster.",
-      "source_type": "pod",
-      "target_type": "node",
-      "directed": true,
-      "may_cross_cluster": false,
-      "labels": [
-        { "name": "scheduled_at", "value_type": "string" }
-      ]
-    },
     {
       "type": "pod-mounts-pvc",
       "description": "Pod mounts a PVC bound on the pod's host node. Always intra-cluster.",
@@ -441,10 +417,9 @@ Both options were considered and rejected for v1:
 
 ### D17. Multi-cluster routing, discovery, and cross-cluster edges
 
-**Routing.** All graph endpoints accept multi-cluster scope as a query parameter, not a path segment:
+**Routing.** The graph endpoint accepts multi-cluster scope as a query parameter, not a path segment:
 
 - `GET /v1/graph?start=...&end=...&cluster=<name>&cluster=<name>...`
-- `GET /v1/graph/nodegraph?...`
 
 `cluster` is repeatable; absent ⇒ all clusters in the freshly built graph. Path-based per-cluster URLs were considered and rejected: cross-cluster edges naturally span more than one cluster, so a single-cluster path implies a scope smaller than the data — leading either to lossy responses (drop cross-cluster edges) or surprising responses (include endpoints outside the path). Query-param multi-select avoids this entirely.
 
@@ -532,23 +507,21 @@ go test ./internal/integration/
 Decisions:
 
 - **One container per package**, not per test: bootstrapping VM costs ~5–10 s, far more than each test. Tests inside a package use unique series-label discriminators (e.g., a `test=<TestName>` label) so they never collide.
-- **Direct injection via `/api/v1/import/prometheus`**, not a scrape stub: keeps the test process self-contained (no second container, no scrape interval to tune), and the API server only sees series in VM regardless of how they got there. The Prometheus exposition format is hand-written by the test, supports per-sample timestamps, and is the same format the manual-rig fixtures producer emits.
-- **In-process API server** (`api.New(...).Handler()` against `httptest.NewServer`): no third container; tests can introspect server state, share types, and avoid Docker round-trips. Containerised server behaviour is covered by the manual rig instead.
+- **Direct injection via `/api/v1/import/prometheus`**, not a scrape stub: keeps the test process self-contained (no second container, no scrape interval to tune), and the API server only sees series in VM regardless of how they got there. The Prometheus exposition format is hand-written by the test and supports per-sample timestamps.
+- **In-process API server** (`api.New(...).Handler()` against `httptest.NewServer`): no third container; tests can introspect server state, share types, and avoid Docker round-trips. The production container image (`deploy/docker/server.Dockerfile`) is built and published separately, not exercised by this layer.
 - **Absolute timestamps in fixtures**: tests use fixed timestamps (e.g., `time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)`) and pass the same window to the API. This makes time-window alignment fully deterministic — a class of bugs the httptest mock layer cannot expose.
 - **VM image is pinned** by tag in test code; no `:latest`. Image is pre-pulled in CI to remove first-run noise.
 - **Docker socket required**: the integration-test job runs on `ubuntu-latest` GitHub Actions runners (Docker socket native). macOS / Windows runners are out of scope for this layer.
 - **Body determinism**: the integration suite asserts that two consecutive `/v1/graph` requests for identical inputs return byte-identical response bodies, since v1 has no result cache and any non-determinism in the build/serialise path would surface here.
 
-What testcontainers does **not** cover (and so the manual rig still does):
+What the container suite deliberately does **not** cover (out of scope for this repo, left to deployment):
 
 - Kubernetes Service / Deployment / ConfigMap wiring.
 - Real scrape pipeline (vmagent → VM).
-- Visual rendering correctness in Grafana.
 
-- Why this split: a container-only CI layer gives us real PromQL evaluation, deterministic time semantics, and parallel-safe per-package tests, without the operational cost of Kind on every PR.
+- Why a container layer: it gives us real PromQL evaluation, deterministic time semantics, and parallel-safe per-package tests against a real VictoriaMetrics, which a mock-only layer cannot.
 - Alternatives considered:
-  - Replace Kind harness entirely (rejected — visual verification in Grafana is still high-leverage for human review of edge-rendering correctness; Kind earns its keep as the platform for that, just not as a CI gate).
-  - Run the API server as a third container (rejected — no benefit over in-process for the assertions this layer makes; the Dockerfile is exercised by the manual rig).
+  - Run the API server as a third container (rejected — no benefit over in-process for the assertions this layer makes; the production container image is built and published separately).
   - Inject series via a scrape stub container (rejected — adds a container, a scrape interval, and a startup race for no behavioural benefit since the API only ever reads from VM).
 
 ### D21. Static analysis and vulnerability scanning
@@ -650,7 +623,7 @@ When neither is set the keyset is **empty** and the middleware is a no-op (auth 
 
 | Open (no key) | Protected (`X-API-Key` required) |
 |---|---|
-| `/livez`, `/readyz` (kubelet probes) | `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types` |
+| `/livez`, `/readyz` (kubelet probes) | `/v1/graph`, `/v1/clusters`, `/v1/edge-types` |
 | `/metrics` (Prometheus scrape; gate via NetworkPolicy or a separate listen address in production) | |
 | `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*` (UI must load) | |
 
@@ -694,7 +667,7 @@ When neither is set the keyset is **empty** and the middleware is a no-op (auth 
 
 ### D25. OpenTelemetry tracing and logging
 
-**Why now**: D10 (`log/slog`, JSON handler) covers operator logs but ships no distributed-tracing surface. Once KSG sits behind a Grafana Node Graph dashboard, an Alloy / OTel Collector, and a centralised VictoriaMetrics, operators need per-request spans (which cluster, which PromQL leg was slow?) and trace-correlated logs (a single `trace_id` joining HTTP access, build pipeline, PromQL fan-out, projection, serialisation). The same OTel pipeline that already collects `traces_service_graph_*` from the workloads is the natural sink for KSG's own self-traces and self-logs.
+**Why now**: D10 (`log/slog`, JSON handler) covers operator logs but ships no distributed-tracing surface. Once KSG sits behind an Alloy / OTel Collector and a centralised VictoriaMetrics, operators need per-request spans (which cluster, which PromQL leg was slow?) and trace-correlated logs (a single `trace_id` joining HTTP access, build pipeline, PromQL fan-out, projection, serialisation). The same OTel pipeline that already collects `traces_service_graph_*` from the workloads is the natural sink for KSG's own self-traces and self-logs.
 
 **Stack**:
 
@@ -736,7 +709,7 @@ GET /v1/graph                               (otelgin server span)
    ├─ prometheus.query (kube_node_labels)
    └─ prometheus.query (traces_service_graph_request_total)
 └─ kube-state-graph.project                 (filter / cluster scope / traversal)
-└─ kube-state-graph.serialise               (Cytoscape or NodeGraph)
+└─ kube-state-graph.serialise               (Cytoscape)
 ```
 
 `prometheus.query` spans are siblings under `kube-state-graph.build` (driven by `errgroup`); they all carry `db.system=prometheus`, `db.statement=<rendered PromQL>`, `kube_state_graph.query_name=<one of the constants>`, and `server.address` / `server.port` derived from `--prom-url`. The PromQL HTTP client is wrapped with `otelhttp.NewTransport(...)` so the `traceparent` header is injected automatically and an additional client-side HTTP span is recorded per upstream call.
@@ -749,7 +722,7 @@ GET /v1/graph                               (otelgin server span)
 | `kube-state-graph.build` | `kube_state_graph.window_seconds`, `kube_state_graph.end_unix`, on success `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count` |
 | `prometheus.query` | `db.system=prometheus`, `db.statement`, `kube_state_graph.query_name`, `server.address`, `server.port` |
 | `kube-state-graph.project` | `graph.node.count`, `graph.edge.count` (post-filter), `kube_state_graph.filter.cluster`, `kube_state_graph.filter.namespace`, `kube_state_graph.filter.edge_type` |
-| `kube-state-graph.serialise` | `kube_state_graph.serialiser` (`cytoscape` or `nodegraph`), `graph.node.count`, `graph.edge.count` |
+| `kube-state-graph.serialise` | `kube_state_graph.serialiser` (`cytoscape`), `graph.node.count`, `graph.edge.count` |
 
 `db.statement` carries the raw PromQL — operators with strict policy on logging query strings can opt out by setting `OTEL_TRACES_SAMPLER=always_off` (kills tracing globally) or by stripping the attribute at the Collector via a processor. Document the trade-off; do not redact in-binary because the readable PromQL is the highest-value debugging signal in a slow-build trace.
 
@@ -918,7 +891,7 @@ A `"://"`-bearing label with an empty UID therefore always flows through Stage 1
 
 **Metric-prefix scope (D26).** `KSG_METRIC_PREFIX` extends to the three new KSM-shaped series (`kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels`). It is NOT applied to `traces_service_graph_*` or `up{}`.
 
-**Local rig / KSM (tracked in `tasks.md`).** The local Kind rig and Helm chart enable services + endpointslices in KSM `--resources` and `--metric-allowlist`, extend RBAC (list/watch services, endpointslices), and remove the `KSG_OTHERS_NAME_PATTERN` env from the rig Deployment and the chart.
+**KSM requirements (tracked in `tasks.md`).** Full connection-string resolution requires KSM to export services + endpointslices (`--resources`, `--metric-allowlist`) and the scrape ServiceAccount to hold `list`/`watch` on services and endpointslices — documented in `docs/operations.md`. The removed `KSG_OTHERS_NAME_PATTERN` env / flag / config field is deleted everywhere (see "Knob removal" above).
 
 Why:
 
@@ -968,15 +941,15 @@ Why / Alternatives considered:
 
 ### D31. Cytoscape compound node grouping (`cluster > node > pod`), presentation-only
 
-The Cytoscape `/v1/graph` serialiser groups nodes into compound (parent / child) containers via Cytoscape's `data.parent` field, so a renderer draws pods inside their K8s node and nodes / services / PVCs inside their cluster. This is a **presentation-only** concern: it lives entirely in `serialiseCytoscape` and touches neither the core `*Graph`, the sealed `GraphNode` types, `graph.Project`, the property tests, nor the Grafana Node Graph serialiser.
+The Cytoscape `/v1/graph` serialiser groups nodes into compound (parent / child) containers via Cytoscape's `data.parent` field, so a renderer draws pods inside their K8s node and nodes / services / PVCs inside their cluster. This is a **presentation-only** concern: it lives entirely in `serialiseCytoscape` and touches neither the core `*Graph`, the sealed `GraphNode` types, `graph.Project`, nor the property tests.
 
 **Containment hierarchy** — a single strict tree, because Cytoscape allows each node exactly one parent:
 
-- `cluster > node > pod` — a synthetic `type="cluster"` group node contains the K8s nodes; each K8s node contains the pods that run on it.
+- `cluster > node > pod` — a synthetic `type="cluster"` group node contains the K8s nodes; each K8s node contains the pods scheduled on it. A K8s `node` node is an **edgeless** graph node that exists purely as a compound container (it still carries its `external_ip` on the `ipaddress` attribute); the pod→node relationship is expressed by this nesting and nothing else.
 - `cluster > service`, `cluster > pvc` — services and PVCs are cluster-level **siblings** of K8s nodes. They are NOT compound parents of pods: a Kubernetes Service spans multiple nodes and a pod can back multiple Services, so service→pod containment is many-to-many and cannot map to a single-parent tree. The pod ↔ service / pod ↔ pvc relationships stay as edges (`pod-to-service` / `service-selects-pod` / `pod-mounts-pvc`).
 - `others` / `external` endpoints have no cluster identity → no parent (top-level).
 
-**Synthetic cluster group nodes.** Cytoscape's `data.parent` must reference a node present in `elements.nodes`, so the serialiser emits one `{ data: { id: "cluster/<name>", name: "<name>", type: "cluster", labels: {} } }` group node per distinct `labels.cluster` value observed on an emitted node — no `parent`, no `ipaddress`. They are synthesised in the serialiser only (they are not `GraphNode`s) and never appear in the Grafana output. Emitted first, sorted by cluster name, for body determinism (D6).
+**Synthetic cluster group nodes.** Cytoscape's `data.parent` must reference a node present in `elements.nodes`, so the serialiser emits one `{ data: { id: "cluster/<name>", name: "<name>", type: "cluster", labels: {} } }` group node per distinct `labels.cluster` value observed on an emitted node — no `parent`, no `ipaddress`. They are synthesised in the serialiser only (they are not `GraphNode`s). Emitted first, sorted by cluster name, for body determinism (D6).
 
 **`data.parent` assignment** (a new `parent` field on the Cytoscape node `data`, `omitempty`):
 
@@ -984,26 +957,23 @@ The Cytoscape `/v1/graph` serialiser groups nodes into compound (parent / child)
 - `node` / `service` / `pvc` → `cluster/<labels.cluster>`.
 - `others` / `external` / `cluster` → no parent.
 
-The pod→node parent derives from the pod's own `labels.node` attribute (a contract field in `graph-api`), NOT from the `pod-runs-on-node` edge, so it survives edge-type projection.
+The pod→node parent derives from the pod's own `labels.node` attribute (a contract field in `graph-api`), so it survives edge-type projection.
 
-**`pod-runs-on-node` omitted from the Cytoscape edge set.** Because `cluster > node > pod` nesting already expresses "pod runs on node", the Cytoscape serialiser drops `pod-runs-on-node` edges from `elements.edges` (they would be redundant with the containment). The edge is NOT removed from the core graph: it stays registered in `graph.EdgeTypes`, is produced by the builder, participates in `graph.Project` traversal / name-filter (e.g. `?name=<node>` → pods that run on it; `?root=<node>&direction=in`), and is still emitted by the Grafana Node Graph serialiser (which cannot nest, so the edge is its only representation of pod→node). Only the Cytoscape presentation suppresses it. The other relationship edges (`pod-mounts-pvc`, `service-selects-pod`, `pod-to-service`, `pod-calls-pod`) are NOT containment in this tree and stay as edges in both serialisers.
-
-**Grafana Node Graph is unchanged.** The Node Graph API datasource has no compound-node concept, so the Grafana serialiser ignores `parent`, synthesises no cluster nodes, and keeps every edge (including `pod-runs-on-node`). pod→node, pod→service, etc. remain visible there as edges.
+**The pod→node relationship is compound nesting only — there is no edge for it.** Because `cluster > node > pod` nesting already expresses "pod runs on node", there is no `pod-runs-on-node` edge anywhere: not in the builder output, not in `graph.EdgeTypes`, not listed by `/v1/edge-types`, and not in any serialiser. The K8s `node` node is therefore edgeless, and the nesting (sourced from `labels.node`) is the sole on-the-wire representation of the pod→node relationship. A consequence (see D7): a `name` filter or a `root` traversal anchored on a pod does not pull in its host K8s node, and a `?namespace=` filter drops K8s nodes (they carry no namespace label and no incident edge). The relationship edges (`pod-mounts-pvc`, `service-selects-pod`, `pod-to-service`, `pod-calls-pod`) are NOT containment in this tree and stay as serialised edges.
 
 **Determinism (D6).** Cluster group nodes are emitted in sorted order ahead of the real nodes (themselves already sorted by `SortNodes` under projection); `parent` is a pure function of node attributes; the body shape stays `{apiVersion, clusters, elements}`. Byte-identical output for identical `(window, filters, upstream-data)`.
 
 Why:
 
 - Compound grouping is the single highest-value readability win for the Cytoscape view — operators see the cluster / node / pod hierarchy at a glance instead of a flat mesh — and Cytoscape renders it natively from `data.parent`.
-- Keeping it presentation-only avoids polluting the load-bearing `graph.Project` and property invariants with edgeless group nodes (a `ClusterNode` in the core graph would never be reached by root-anchored BFS and would dangle), and leaves Grafana untouched.
-- Sourcing the pod→node parent from `labels.node` (not the edge) keeps nesting correct even when `?edge_type=` projects the runs-on edge away.
+- Keeping it presentation-only avoids polluting the load-bearing `graph.Project` and property invariants with edgeless group nodes (a `ClusterNode` in the core graph would never be reached by root-anchored BFS and would dangle).
+- Sourcing the pod→node parent from `labels.node` (a contract attribute) keeps nesting correct under any `?edge_type=` projection, and it is the only representation of the pod→node relationship — no edge duplicates it.
 
 Alternatives considered:
 
-- **`ClusterNode` as a sealed `GraphNode` in the core graph** (rejected — edgeless group nodes break root-anchored BFS in `graph.Project` and force special-casing in traversal, property invariants, and the Grafana serialiser, for no gain over synthesising them in the one serialiser that needs them).
+- **`ClusterNode` as a sealed `GraphNode` in the core graph** (rejected — edgeless group nodes break root-anchored BFS in `graph.Project` and force special-casing in traversal and property invariants, for no gain over synthesising them in the serialiser that needs them).
 - **`cluster > node > service > pod` (service nested under node)** (rejected — a Service spans nodes and a pod backs multiple Services; forcing it into the tree fragments service identity per node and breaks the single `pod-to-service` target + the on-demand service dedupe of D29).
-- **Keep `pod-runs-on-node` in the Cytoscape edge set too** (rejected — the edge and the nesting double-represent the same fact; an edge from a pod to its enclosing node box is visual noise. The edge is retained everywhere else — core graph, traversal, Grafana — only suppressed in the Cytoscape presentation).
-- **Drop `pod-runs-on-node` from the core graph / registry entirely** (rejected — Grafana would lose pod→node completely with no nesting fallback, and `graph.Project` traversal / `?name=<node>` would break; the relationship must survive for non-Cytoscape consumers).
+- **Model pod→node as an edge instead of (or in addition to) compound nesting** (rejected — the edge and the nesting double-represent the same fact; an edge from a pod to its enclosing node box is visual noise, and an edge type that no serialiser emits is dead weight in the registry / projection. Compound nesting via `labels.node` is the single, sufficient representation; the host node renders as the pod's container, not as an edge target).
 
 ## Risks / Trade-offs
 
@@ -1014,7 +984,7 @@ Alternatives considered:
 - [Inconsistent `cluster` external label across scrape pipelines] → Series missing the `cluster` label are bucketed under `cluster="unknown"` and surfaced via `kube_state_graph_clusters_observed`; document that operators must set the label uniformly.
 - [Cross-cluster edge with one endpoint missing topology data] → If the producer emits a `traces_service_graph_request_total` series whose `client_k8s_pod_uid` or `server_k8s_pod_uid` does not appear in any cluster's `kube_pod_info` for the window, the missing endpoint is rendered as a synthetic ghost pod node (`attrs.ghost=true`) carrying only its `cluster` and `pod_uid`, instead of dropping the edge.
 - [`kube-state-metrics` retention in VictoriaMetrics shorter than requested window] → `last_over_time` returns empty; respond `400 Bad Request` with `reason: "outside retention"` when zero topology rows are returned for a window covered by upstream `up{}` data.
-- [Fake fixtures producer in the harness diverges from real producers] → Pin the metric names, label set, and cluster-label discipline the harness uses to D8, so swapping in real producers is a configuration change rather than a code change.
+- [Integration-suite fixtures diverge from real producers] → Pin the metric names, label set, and cluster-label discipline the `internal/integration/` suite seeds to D8, so swapping in real producers is a configuration change rather than a code change.
 - [No auth on the API] → Document that the service is intended to sit behind a reverse proxy.
 - [No result cache → upstream load scales with traffic] → Accepted for v1 in pre-distributed-deployment dev. Future cache mechanism (Redis L2, materialiser tier, or graph DB) is the planned mitigation; the design space is intentionally left open so the chosen shape matches the eventual deployment topology.
 - [Multi-cluster cardinality on self-metrics] → `cluster` label appears only on observational gauges (`graph_node_count`, `graph_edge_count`); document expected `cluster` cardinality range (≤ 20 in v1) and recommend dropping the label at the scrape layer if it grows beyond budget.
@@ -1032,13 +1002,11 @@ Greenfield repository — no migration. Rollback is `git revert` of the merge co
 
 ## Open Questions
 
-- Final list of edge types beyond the three in D4 (e.g., `pod-shares-node`, `pod-shares-namespace`) — resolve during spec drafting; whichever ship in v1 must appear in both `Build()` and the static `/v1/edge-types` registry. v1 ships exactly the three: `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`.
+- Final list of edge types beyond the core set (e.g., `pod-shares-node`, `pod-shares-namespace`) — resolve during spec drafting; whichever ship in v1 must appear in both `Build()` and the static `/v1/edge-types` registry. v1 ships exactly three: `pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`.
 - Alignment-grid policy across DST or leap seconds — likely "always UTC, no DST adjustment", confirm during spec.
 - Shape of the future cache mechanism for distributed deployment (Redis L2 vs background materialiser vs graph DB). Tracked as a separate change once the deployment topology firms up.
 - Whether `/v1/edge-types` should ever support time-window filtering — defer to v1.1.
 - Whether `/v1/clusters` should also report per-cluster pod / node counts in its response, or keep it minimal (names + first-seen / last-seen) — defer to spec.
-- ~~Fake-fixtures program shape: continuous Deployment with steady-state metrics vs YAML-driven snapshot replayer~~ — resolved: no fixtures program. Local rig uses real `kube-state-metrics`; integration tests (`internal/integration/`) ingest series directly via `POST /api/v1/import/prometheus` to a `testcontainers-go` VictoriaMetrics container.
-- Exact Grafana Node Graph dashboard JSON to ship in `deploy/grafana/` for visual verification, including a layout that highlights cross-cluster edges — defer to harness spec.
-- Whether `?format=` query parameter on `/v1/graph` is preferable to a separate `/v1/graph/nodegraph` route — defer to spec; current preference is the separate route.
+- ~~Fake-fixtures program shape: continuous Deployment with steady-state metrics vs YAML-driven snapshot replayer~~ — resolved: no fixtures program. Integration tests (`internal/integration/`) ingest series directly via `POST /api/v1/import/prometheus` to a `testcontainers-go` VictoriaMetrics container.
 - ~~Whether `KSG_OTHERS_NAME_PATTERN` should evolve to a regex (`KSG_OTHERS_NAME_REGEX`) or accept multiple comma-separated patterns~~ — resolved by D29: the knob was removed entirely and `"://"` detection is hardcoded (checked only on the service-graph `client` / `server` labels), with connection-string resolution to service / pod / others nodes.
 - ~~Whether others nodes should expose any additional `labels` (e.g., scheme parsed out of URL-shaped values)~~ — resolved by D29: others nodes now carry `labels = {}` (the `pattern` key is removed along with the knob).

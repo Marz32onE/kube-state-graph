@@ -17,8 +17,8 @@ import (
 
 var update = flag.Bool("update", false, "update golden files")
 
-// TestGolden_GraphResponses snapshots the Cytoscape and Grafana Node Graph
-// responses for several canned scenarios so contract drift is caught on PR.
+// TestGolden_GraphResponses snapshots the Cytoscape responses for several
+// canned scenarios so contract drift is caught on PR.
 func TestGolden_GraphResponses(t *testing.T) {
 	scenarios := map[string]graph.View{
 		"single-cluster":       buildSingleCluster(),
@@ -37,10 +37,6 @@ func TestGolden_GraphResponses(t *testing.T) {
 			}
 			body := serialiseCytoscape(g, view)
 			compareGolden(t, name+"-cytoscape.json", body)
-		})
-		t.Run(name+"-nodegraph", func(t *testing.T) {
-			body := serialiseGrafanaNodeGraph(view)
-			compareGolden(t, name+"-nodegraph.json", body)
 		})
 	}
 }
@@ -75,11 +71,7 @@ func compareGolden(t *testing.T, file string, body any) {
 func buildSingleCluster() graph.View {
 	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}}
 	node := &graph.K8sNode{IDValue: "cluster-alpha/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha"}}
-	edge := graph.NewEdge(graph.EdgeTypePodRunsOnNode, pod.IDValue, node.IDValue, map[string]string{})
-	return graph.View{
-		Nodes: []graph.GraphNode{node, pod},
-		Edges: []*graph.Edge{edge},
-	}
+	return graph.View{Nodes: []graph.GraphNode{node, pod}}
 }
 
 func buildTwoClusterCross() graph.View {
@@ -132,17 +124,16 @@ func buildMissingUIDFallback() graph.View {
 
 // buildNameFilter snapshots the projection of a two-cluster graph through
 // `?name=checkout`. The matching pod (cluster-alpha/p1) is the anchor; the
-// host K8s node (cluster-alpha/worker-0) is re-added via pod-runs-on-node;
-// the cross-cluster partner pod (cluster-beta/p2) is re-added via the
-// unified edge-endpoint partner rule on the pod-calls-pod edge.
+// cross-cluster partner pod (cluster-beta/p2) is re-added via the unified
+// edge-endpoint partner rule on the pod-calls-pod edge. The host K8s nodes
+// carry no edges (pod→node is compound nesting via labels.node only), so a
+// name-filtered view does not pull them in.
 func buildNameFilter() graph.View {
 	a := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}}
 	b := &graph.PodNode{IDValue: "cluster-beta/p2", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-beta", "namespace": "billing", "node": "cluster-beta/worker-0"}}
 	nodeA := &graph.K8sNode{IDValue: "cluster-alpha/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha"}}
 	nodeB := &graph.K8sNode{IDValue: "cluster-beta/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-beta"}}
 	edges := []*graph.Edge{
-		graph.NewEdge(graph.EdgeTypePodRunsOnNode, a.IDValue, nodeA.IDValue, map[string]string{}),
-		graph.NewEdge(graph.EdgeTypePodRunsOnNode, b.IDValue, nodeB.IDValue, map[string]string{}),
 		graph.NewEdge(graph.EdgeTypePodCallsPod, a.IDValue, b.IDValue, map[string]string{"cluster": "cluster-alpha"}),
 	}
 	g := graph.NewGraph([]graph.GraphNode{a, b, nodeA, nodeB}, edges, time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC))

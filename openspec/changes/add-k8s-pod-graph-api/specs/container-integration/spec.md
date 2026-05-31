@@ -82,7 +82,7 @@ Tests within the same package that run in parallel SHALL label injected series w
 
 The container-integration suite SHALL contain at least one test for each of the following behaviours:
 
-- A single-cluster graph rendering with `pod-runs-on-node` edges.
+- A single-cluster graph rendering with `pod-mounts-pvc` edges and pod→node compound nesting derived from each pod's `labels.node` (no edge links a pod to its host K8s node).
 - A multi-cluster graph with at least one `pod-calls-pod` edge whose source-node `labels.cluster` differs from its target-node `labels.cluster` (cross-cluster edge recovered via the topology pod-UID index).
 - A connection-string client/server label containing `"://"` that does NOT resolve to an in-cluster pod/service producing an `others`-typed node with `labels={}` (D29).
 - A headless-service connection string (`<pod>.<svc>.<ns>.svc.cluster.local`) resolving to a real pod node.

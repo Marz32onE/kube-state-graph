@@ -23,17 +23,6 @@ type EdgeTypeDefinition struct {
 // the /v1/edge-types HTTP handler.
 var EdgeTypes = []EdgeTypeDefinition{
 	{
-		Type:            EdgeTypePodRunsOnNode,
-		Description:     "Pod scheduled on a node, derived from kube_pod_info{node=...}. Always intra-cluster.",
-		SourceType:      []NodeType{NodeTypePod},
-		TargetType:      []NodeType{NodeTypeK8sNode},
-		Directed:        true,
-		MayCrossCluster: false,
-		Labels: []EdgeTypeLabel{
-			{Name: "scheduled_at", ValueType: "string", Description: "RFC3339 timestamp of pod-to-node assignment within the queried window."},
-		},
-	},
-	{
 		Type:            EdgeTypePodMountsPVC,
 		Description:     "Pod mounts a PVC bound on the pod's host node. Always intra-cluster.",
 		SourceType:      []NodeType{NodeTypePod},

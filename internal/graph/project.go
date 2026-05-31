@@ -100,11 +100,13 @@ func nodePassesFilters(n GraphNode, scope Scope) bool {
 		}
 	}
 	if len(scope.Namespaces) > 0 {
-		// K8sNode and ExternalNode are cluster-scoped; they have no namespace
-		// label. Excluding them here would drop pod-runs-on-node edges whenever
-		// a caller narrows by namespace, which defeats the purpose of the view.
+		// ExternalNode is cluster-unscoped (no namespace label) and only ever
+		// enters a view as the re-added partner of a pod-calls-pod edge, so it
+		// is exempt from the namespace match. Every other node type — including
+		// K8sNode, which now carries no edges — must match the requested
+		// namespace.
 		switch n.Type() {
-		case NodeTypeK8sNode, NodeTypeExternal:
+		case NodeTypeExternal:
 			// pass-through
 		default:
 			if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
@@ -200,8 +202,8 @@ func nodePassesNonClusterFilters(n GraphNode, scope Scope) bool {
 	labels := n.Labels()
 	if len(scope.Namespaces) > 0 {
 		switch n.Type() {
-		case NodeTypeK8sNode, NodeTypeExternal:
-			// pass-through; cluster-scoped entities carry no namespace.
+		case NodeTypeExternal:
+			// pass-through; external endpoints carry no namespace.
 		default:
 			if _, ok := scope.Namespaces[labels["namespace"]]; !ok {
 				return false

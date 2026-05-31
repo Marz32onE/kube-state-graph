@@ -10,7 +10,6 @@ import (
 type EdgeType string
 
 const (
-	EdgeTypePodRunsOnNode     EdgeType = "pod-runs-on-node"
 	EdgeTypePodMountsPVC      EdgeType = "pod-mounts-pvc"
 	EdgeTypePodCallsPod       EdgeType = "pod-calls-pod"
 	EdgeTypeServiceSelectsPod EdgeType = "service-selects-pod"

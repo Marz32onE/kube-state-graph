@@ -6,7 +6,7 @@
 |------------------------------------------------------------|-----------|-------|
 | `kube_state_graph_build_duration_seconds`                  | histogram | Wall-clock build time per request. |
 | `kube_state_graph_project_duration_seconds`                | histogram | Filter + traversal pruning. |
-| `kube_state_graph_serialise_duration_seconds{format}`      | histogram | `cytoscape` / `nodegraph`. |
+| `kube_state_graph_serialise_duration_seconds{format}`      | histogram | `cytoscape`. |
 | `kube_state_graph_build_concurrency`                       | gauge     | |
 | `kube_state_graph_build_rejected_total{reason}`            | counter   | `capacity`/`timeout`. |
 | `kube_state_graph_graph_node_count{cluster,kind}`          | gauge     | Last build only. |
@@ -93,10 +93,6 @@ the OpenAPI / Scalar UI routes are exempt.
            readOnly: true
    ```
 
-   `local/kind/manifests/05-api-key-secret.yaml` and
-   `local/kind/manifests/30-api-server.yaml` show the same wiring for the dev
-   rig.
-
 ### Rotation
 
 - Edit the `Secret` and `kubectl apply` it. Kubelet propagates the new content
@@ -156,7 +152,7 @@ GET /v1/graph                               (otelgin server span)
    ├─ prometheus.query  (kube_node_labels)
    └─ prometheus.query  (traces_service_graph_request_total)
 └─ kube-state-graph.project                 (filter / cluster scope / traversal)
-└─ kube-state-graph.serialise               (Cytoscape | nodegraph)
+└─ kube-state-graph.serialise               (Cytoscape)
 ```
 
 Selected attributes:
@@ -167,7 +163,7 @@ Selected attributes:
 | `kube-state-graph.build` | `kube_state_graph.window_seconds`, `kube_state_graph.end_unix`, `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count`, `kube_state_graph.cross_cluster_edges` |
 | `prometheus.query` | `db.system=prometheus`, `db.statement=<rendered PromQL>`, `kube_state_graph.query_name`, `kube_state_graph.result_series_count` |
 | `kube-state-graph.project` | `graph.node.count`, `graph.edge.count` (post-filter) |
-| `kube-state-graph.serialise` | `kube_state_graph.serialiser` (`cytoscape` or `nodegraph`), `graph.node.count`, `graph.edge.count` |
+| `kube-state-graph.serialise` | `kube_state_graph.serialiser` (`cytoscape`), `graph.node.count`, `graph.edge.count` |
 
 The W3C `traceparent` header is honoured on inbound requests (the resulting server span chains under the caller's trace) and propagated automatically on every outbound PromQL HTTP call via `otelhttp`.
 

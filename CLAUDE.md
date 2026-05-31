@@ -10,22 +10,14 @@ VictoriaMetrics. Edges between pods come from `traces_service_graph_*` metrics
 and may cross cluster boundaries.
 
 The repo ships **only the API server**. `kube-state-metrics`, the service-graph
-producer, VictoriaMetrics, and Kind are external dependencies. The in-repo
-`local/kind/` rig is local-only scaffolding, not a deliverable. It uses
-**kube-state-metrics** (scraping the kind cluster, with a `cluster=kind-local`
-relabel injected by VictoriaMetrics' scrape config) to produce the kube_*
-topology series the API consumes. Service-graph metrics
-(`traces_service_graph_request_total`) are produced locally by a Beyla
-DaemonSet that auto-instruments pods in the `kube-state-graph` namespace and
-ships OTLP spans to a Grafana Alloy Deployment; Alloy's
-`otelcol.connector.servicegraph` (configured with `dimensions=["k8s.pod.uid"]`)
-emits the metric with `client_k8s_pod_uid` + `server_k8s_pod_uid` and remote-
-writes to VictoriaMetrics. The rig deliberately ships no synthetic traffic
-generator — the existing in-cluster Go traffic (kube-state-graph→VM→KSM,
-Grafana→kube-state-graph, etc.) is enough to populate paired client+server
-spans. Cross-cluster scenarios (which a single Kind cannot demonstrate) are
-still exercised by integration tests in `internal/integration/` via the
-testcontainers-go VictoriaMetrics container.
+producer (Beyla / Alloy / Tempo or any compatible exporter), and VictoriaMetrics
+are external dependencies. Topology comes from **kube-state-metrics** `kube_*`
+series; service-graph edges come from `traces_service_graph_request_total`
+(carrying `client_k8s_pod_uid` + `server_k8s_pod_uid`) — both read from the
+centralised VictoriaMetrics. Multi-cluster, cross-cluster, and service-graph
+code paths are exercised by the integration tests in `internal/integration/`
+via the testcontainers-go VictoriaMetrics container, which ingests hand-crafted
+fixture series through `POST /api/v1/import/prometheus`.
 
 ## Common commands
 
@@ -59,12 +51,6 @@ go test ./internal/api/ -run TestGolden -v
 # Update golden files (after changing serialiser shape on purpose)
 go test ./internal/api/ -update -run Golden
 
-# Local kind rig (NOT run by CI; requires Docker + Kind on host).
-# Aliases: kind-up == local-up, kind-down == local-down, smoke == local-smoke.
-make kind-up                                # ./local/kind/bootstrap.sh
-make smoke                                  # ./local/kind/smoke.sh
-make kind-down                              # ./local/kind/teardown.sh
-
 # Run binary directly
 ./bin/kube-state-graph --prom-url=http://localhost:8428 --listen-addr=:8080
 ```
@@ -84,14 +70,14 @@ parseGraphRequest        ── validates start/end (RFC 3339 or Unix seconds); 
    ▼
 context.WithTimeout(ctx, --build-timeout)   ── graph endpoints only; deadline exceeded → 504 timeout
    └─ Builder.Build(ctx, window, end)
-         ├─ ReadTopology  (errgroup of 5 PromQL queries in parallel)
+         ├─ ReadTopology  (errgroup of 8 PromQL queries in parallel: 5 KSM topology + 3 D29 service/endpointslice)
          ├─ ReadServiceGraph (1 PromQL, `user`/`unknown` peers excluded at selector — D30; joined with topology)
          └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
    (no in-process concurrency cap; HPA + Pod resource limits handle load shedding)
    ▼
 graph.Project(g, scope)            ── filters + traversal applied here, NOT during build
    ▼
-serialiseCytoscape / serialiseGrafanaNodeGraph
+serialiseCytoscape
 ```
 
 v1 has **no in-process result cache** and **no singleflight**. Each request runs a fresh upstream fan-out and recomputes the body. A future iteration is expected to add a horizontally scalable cache mechanism for distributed deployment (Redis L2, background materialiser, or graph DB) — tracked as a separate change.
@@ -199,7 +185,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   never include the presented key value.
 - **Deterministic response body.** The serialiser produces byte-identical output for the same `(window, filters, upstream-data)`: node/edge slices MUST go through `graph.SortNodes`/`SortEdges`, `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Don't add timestamps, random IDs, or unsorted map iteration to the response — golden tests will break.
 - **IP addresses live on the typed `ipaddress` attribute, never in `labels`.** `PodNode.IPAddress()` carries `[pod_ip]` from `kube_pod_info` (when present). `K8sNode.IPAddress()` carries `[external_ip]` from `kube_node_status_addresses{type="ExternalIP"}` (when present). `ServiceNode.IPAddress()` carries `[cluster_ip]` from `kube_service_info` (when present, omitted for headless `cluster_ip="None"`). `PVCNode`, `OthersNode`, and `ExternalNode` always return nil. `host_ip` from `kube_pod_info` is intentionally dropped — it is the node's IP, surfaced via the node entry instead. The serialiser emits `data.ipaddress` (with `omitempty`); `labels.pod_ip`, `labels.host_ip`, `labels.external_ip`, and `labels.cluster_ip` MUST NOT appear.
-- **Cytoscape compound nodes are presentation-only (D31).** `serialiseCytoscape` synthesises a `type="cluster"` group node per cluster (`id="cluster/<name>"`, `labels={}`, no `ipaddress`, sorted first) and sets `data.parent` (`omitempty`) for nesting: `cluster > node > pod` (pod → its `labels.node`, falling back to its cluster group when that node is out of scope), and `cluster > service` / `cluster > pvc` (services/PVCs are cluster-level siblings, NEVER pod containers — a Service spans nodes and a pod can back many Services). `others`/`external` get no parent. The Cytoscape serialiser OMITS `pod-runs-on-node` edges (the nesting expresses them); the edge stays in the core graph, in `graph.Project` traversal / name-filter, in `/v1/edge-types`, and in the Grafana Node Graph output (which can't nest, so the edge is its only pod→node representation). The core `*Graph`, sealed `GraphNode` types, `graph.Project`, and property tests are UNTOUCHED — cluster group nodes are serialiser-synthesised DTOs, not `GraphNode`s, and never appear in Grafana output. The pod→node parent derives from `labels.node` (a contract field), not the edge, so it survives `?edge_type=` projection.
+- **Cytoscape compound nodes are presentation-only (D31).** `serialiseCytoscape` synthesises a `type="cluster"` group node per cluster (`id="cluster/<name>"`, `labels={}`, no `ipaddress`, sorted first) and sets `data.parent` (`omitempty`) for nesting: `cluster > node > pod` (pod → its `labels.node`, falling back to its cluster group when that node is out of scope), and `cluster > service` / `cluster > pvc` (services/PVCs are cluster-level siblings, NEVER pod containers — a Service spans nodes and a pod can back many Services). `others`/`external` get no parent. There is **no `pod-runs-on-node` edge type** — the `cluster > node > pod` nesting (from each pod's `labels.node`) is the sole representation of the pod→node relationship, so K8s `node` nodes carry no edges. A consequence: a `name`/`namespace` filter or a traversal anchored on a pod no longer pulls in its host node, and a `?namespace=` filter drops K8s nodes outright (they carry no namespace label). Cluster group nodes are serialiser-synthesised DTOs, not `GraphNode`s. The pod→node parent derives from `labels.node` (a contract field), so the nesting is independent of any edge and survives `?edge_type=` projection.
 - **OTLP tracing/logging is config'd by OTel env vars only** (`OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`). No bespoke `--otlp-*` flags. Telemetry defaults to no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (zero export overhead, no background goroutines). Tracing MUST NOT alter response bodies — resource attrs and span IDs live on spans, never in JSON. `otelgin` is mounted on `/v1/*` only; `/livez`, `/readyz`, `/metrics`, and `/docs/*` are deliberately untraced. The auth middleware MUST NEVER log or attribute the presented `X-API-Key` value via either the local handler or the OTLP slog bridge.
 - **Upstream metric-name prefix is an additive `KSG_METRIC_PREFIX` knob** applied to KSM-shaped series only (`kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels`, `kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels`, and the `kube_node_info`-backed cluster-discovery query). The prefix is prepended verbatim — trailing underscore is the operator's responsibility. NOT applied to `traces_service_graph_request_total` (different exporter family — Alloy/Tempo) or `up{}` (Prometheus-native). The D29 endpointslice → service join reads `kube_endpointslice_labels{label_kubernetes_io_service_name}`, which KSM only emits when `--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name]` is set (NOT exposed by default). The metric-name suffix and the label-name set per series are a fixed contract any compatible exporter MUST honour; see design.md D26 and `docs/operations.md` § "Exporter compatibility contract". Threaded via `promql.Renderer{Prefix}` held on `build.Builder` and `api.Server`; the `Query` string constants remain bare so `query=` / `query_name=` dimensions on self-metrics and spans stay stable across deployments that differ only by prefix.
 
@@ -228,7 +214,6 @@ upstream behind small interfaces (`promql.Querier`, `auth.Validator`,
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | None. Wire-format snapshots; run with `-update` to refresh. |
 | Property | `internal/graph/property_test.go` | None. Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
 | Integration | `internal/integration/*` | **Docker required.** testcontainers-go VictoriaMetrics suite; gated `SkipIfDockerUnavailable` — skips locally without Docker, runs full on CI (ubuntu-latest). Inject hooks into the in-process API via `StartAPIServer(cfg, WithClock(...))`. |
-| Manual rig | `local/kind/smoke.sh` | Kind cluster + curl checks (kube-state-metrics + VM + API + Grafana); not executed by CI. |
 
 When **adding a unit test that needs to fake upstream PromQL**, use
 `newMockQuerier(t, fixtureSet{...})` — never spin up an `httptest.NewServer`

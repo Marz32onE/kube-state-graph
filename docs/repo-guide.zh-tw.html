@@ -189,13 +189,13 @@
 </ul>
 <p>
   在記憶體中 join 成多叢集的 pod / node / PVC / service / external / others 圖，
-  並輸出 Cytoscape.js 或 Grafana Node Graph JSON。
+  並輸出 Cytoscape.js JSON。
   <strong>不</strong>使用 Kubernetes client-go、不 scrape KSM、不 ingest trace。
 </p>
 <div class="diagram">交付物邊界
 ─────────────
 本 repo 交付：  kube-state-graph 二進位 + OpenAPI + 文件 + 測試 harness
-本 repo 不交付： VictoriaMetrics、kube-state-metrics、service-graph producer、生產 K8s 部署（除範例 Helm/Docker）
+本 repo 不交付： VictoriaMetrics、kube-state-metrics、service-graph producer、生產 K8s 部署（除範例 Docker image）
 
 典型部署拓樸
 ────────────
@@ -216,7 +216,7 @@
       <td>kube-state-metrics</td>
       <td><code>kube_pod_info</code>、<code>kube_node_info</code>、PVC、Service、EndpointSlice 等</td>
       <td><code>cluster</code>（vmagent/Prometheus <code>external_labels</code>）</td>
-      <td>節點、<code>pod-runs-on-node</code>、<code>pod-mounts-pvc</code>、D29 連線字串解析索引</td>
+      <td>節點（K8s node 作為 compound 容器，無邊）、<code>pod-mounts-pvc</code>、D29 連線字串解析索引</td>
     </tr>
     <tr>
       <td>Service graph producer</td>
@@ -234,7 +234,7 @@
 </table>
 
 <h3>2.2 每次建圖的 PromQL fan-out</h3>
-<p><code>internal/build/topology.go</code> 以 <code>errgroup.WithContext</code> 並行執行最多 <strong>8</strong> 條拓樸查詢；<code>ReadServiceGraph</code> 再跑 1 條 service-graph 查詢。查詢模板定義於 <code>internal/promql/queries.go</code>。</p>
+<p><code>internal/build/topology.go</code> 以 <code>errgroup.WithContext</code> 並行執行固定 <strong>8</strong> 條拓樸查詢（5 條 KSM 拓樸 + 3 條 D29 service/endpointslice）；<code>ReadServiceGraph</code> 再跑 1 條 service-graph 查詢。查詢模板定義於 <code>internal/promql/queries.go</code>。</p>
 <table>
   <thead><tr><th>Query 常數</th><th>包裝方式（概念）</th></tr></thead>
   <tbody>
@@ -244,8 +244,8 @@
   </tbody>
 </table>
 
-<h3>2.3 本機驗證 harness（非 CI 必跑）</h3>
-<p><code>local/kind/</code>：Kind + in-cluster VM + KSM + Beyla/Alloy service graph + Grafana。用 <code>make kind-up</code> / <code>make smoke</code> 手動驗證。跨叢集情境由 <code>internal/integration/</code>（testcontainers VictoriaMetrics + 合成 series）覆蓋。</p>
+<h3>2.3 驗證方式</h3>
+<p>跨叢集情境（單一 Kind 無法示範）由 <code>internal/integration/</code> 唯一覆蓋：testcontainers-go 啟動 VictoriaMetrics container，透過 <code>POST /api/v1/import/prometheus</code> 推入手工製作的 fixture series，再對 in-process API 斷言。需 Docker；本機無 Docker 會 skip，CI（ubuntu-latest）跑完整套。</p>
 </section>
 
 <section id="lifecycle">
@@ -266,7 +266,7 @@
         │
         ▼
   Builder.Build(window, end)
-        ├─ ReadTopology（errgroup，5～8 條 PromQL）
+        ├─ ReadTopology（errgroup，固定 8 條 PromQL）
         ├─ ReadServiceGraph（1 條 PromQL + 與 topology join）
         └─ assemble → graph.NewGraph（含 adjacency）
         │
@@ -274,7 +274,7 @@
   graph.Project(g, scope)   ← 過濾與 BFS 在此，不在 build 階段
         │
         ▼
-  serialiseCytoscape / serialiseGrafanaNodeGraph
+  serialiseCytoscape
         │
         ▼
   JSON { apiVersion, clusters, elements }（確定性排序）</div>
@@ -284,12 +284,12 @@
   <thead><tr><th>情境</th><th>HTTP</th><th>reason（JSON）</th></tr></thead>
   <tbody>
     <tr><td>建圖超過 <code>--build-timeout</code></td><td>504</td><td><code>timeout</code></td></tr>
-    <tr><td>VM 回傳錯誤</td><td>502</td><td><code>upstream_error</code> 等</td></tr>
+    <tr><td>VM 回傳錯誤</td><td>502</td><td><code>upstream</code></td></tr>
     <tr><td>視窗內無 pod/node 但 <code>up</code> 健康</td><td>400</td><td><code>outside_retention</code></td></tr>
     <tr><td>參數無效</td><td>400</td><td><code>invalid_range</code> 等</td></tr>
   </tbody>
 </table>
-<p>對應實作：<code>internal/build/errors.go</code>、<code>internal/api/errors.go</code> 的 <code>mapBuildError</code>。</p>
+<p>對應實作：<code>internal/build/errors.go</code>、<code>internal/api/errors.go</code> 的 <code>mapBuildError</code>（前三列走此路徑；<code>invalid_range</code> 等參數錯誤則在 <code>internal/api/handlers.go</code> 的 <code>parseGraphRequest</code> 直接產生，不經 <code>mapBuildError</code>）。</p>
 </section>
 
 <section id="packages">
@@ -349,7 +349,8 @@
 </ul>
 
 <h3>D31 Cytoscape compound nodes</h3>
-<p>僅 <code>serialiseCytoscape</code> 合成 <code>type=cluster</code> 群組與 <code>parent</code> 巢狀；核心 <code>*Graph</code> 不變。Grafana 路由保留 <code>pod-runs-on-node</code> 邊（無法巢狀）。</p>
+<p>僅 <code>serialiseCytoscape</code> 合成 <code>type=cluster</code> 群組與 <code>parent</code> 巢狀（<code>cluster &gt; node &gt; pod</code>）；核心 <code>*Graph</code> 不變。pod→node 關係只由 compound 巢狀表達，<code>parent</code> 取自每個 pod 的 <code>labels.node</code>，<strong>沒有任何 pod-runs-on-node 邊</strong>。K8s <code>node</code> 因此是無邊的圖節點，純粹作為 compound 容器（仍於 <code>ipaddress</code> 帶 <code>external_ip</code>）。</p>
+<p><strong>過濾／traversal 影響：</strong>因為 pod 與其 host node 之間沒有邊，鎖定 pod 的 <code>name</code> 過濾或 <code>root</code> traversal 不再連帶拉入其 host K8s node；而 <code>?namespace=</code> 過濾會丟棄 K8s node（無 namespace label 也無邊），故收窄 namespace 的視圖只含具命名空間的實體。</p>
 
 <h3>依賴刻意精簡</h3>
 <p>執行期主要：Gin、prometheus/client_golang、google/uuid、x/sync、OpenTelemetry。無 client-go——降低權限面與運維複雜度，代價是完全依賴指標合約正確。</p>
@@ -400,6 +401,7 @@ make build
     <tr><td><code>--build-timeout</code></td><td>15s</td><td><code>/v1/graph*</code> 建圖逾時</td></tr>
     <tr><td><code>--api-timeout</code></td><td>5s</td><td><code>/v1/clusters</code>、<code>/readyz</code></td></tr>
     <tr><td><code>--api-keys-file</code></td><td>空</td><td>啟用 <code>X-API-Key</code>；可週期熱重載</td></tr>
+    <tr><td><code>--api-keys-reload-interval</code></td><td>30s</td><td>API key 檔案熱重載週期（驅動上一列）</td></tr>
     <tr><td><code>--metric-prefix</code></td><td>空</td><td>僅 KSM 形狀指標加前綴；不影響 service-graph / <code>up</code></td></tr>
     <tr><td><code>OTEL_EXPORTER_OTLP_*</code></td><td>未設</td><td>未設則 tracing 為 no-op</td></tr>
   </tbody>
@@ -409,12 +411,11 @@ make build
 <table>
   <thead><tr><th>路由</th><th>需 API key？</th><th>用途</th></tr></thead>
   <tbody>
-    <tr><td><code>GET /v1/graph</code></td><td>有設定時要</td><td>Cytoscape JSON；支援 filter + traversal</td></tr>
-    <tr><td><code>GET /v1/graph/nodegraph</code></td><td>同上</td><td>Grafana Node Graph 形狀</td></tr>
+    <tr><td><code>GET /v1/graph</code></td><td>有設定時要</td><td>Cytoscape.js JSON；支援 filter + traversal</td></tr>
     <tr><td><code>GET /v1/clusters</code></td><td>同上</td><td>即時叢集列表</td></tr>
     <tr><td><code>GET /v1/edge-types</code></td><td>同上</td><td>靜態邊類型目錄（與 builder 同步）</td></tr>
     <tr><td><code>GET /livez</code>、<code>/readyz</code>、<code>/metrics</code></td><td>否</td><td>探針與自監控</td></tr>
-    <tr><td><code>/openapi.*</code>、<code>/docs</code></td><td>否</td><td>Scalar API 文件</td></tr>
+    <tr><td><code>/openapi.*</code>、<code>/docs</code>、<code>/docs/assets/*</code></td><td>否</td><td>Scalar API 文件（含 vendored 字型／資產）</td></tr>
   </tbody>
 </table>
 
@@ -492,8 +493,7 @@ curl -s -H "X-API-Key: ${KSG_API_KEY}" "http://localhost:8080/v1/graph?start=${s
 <pre>make test                    # 全套件，-race -shuffle
 make lint &amp;&amp; make vet &amp;&amp; make vuln
 go test ./internal/graph/ -run TestProject -v
-go test ./internal/api/ -run TestGolden -v
-make kind-up &amp;&amp; make smoke   # 本機 Kind（需 Docker）</pre>
+go test ./internal/api/ -run TestGolden -v</pre>
 </section>
 
 <section id="testing">
@@ -542,20 +542,22 @@ make kind-up &amp;&amp; make smoke   # 本機 Kind（需 Docker）</pre>
 </ul>
 
 <h3>11.3 文件與範例漂移（建議修正）</h3>
-<div class="warn">
-  <strong>README / README.zh-tw 與現行程式可能不一致：</strong>
+<div class="note">
+  <strong>文件漂移盤點（已於 2026-05-31 對照程式碼逐條查證並修正）：</strong>
   <ul>
-    <li>仍提及 <code>ETag</code> / <code>If-None-Match</code> / 304——v1 已移除 HTTP cache validator（見 <code>tasks.md</code> §32、<code>design.md</code> D6）；<code>internal/api</code> 已無 ETag 實作</li>
-    <li>仍提及 <code>--max-window</code> / <code>--max-skew</code>——已改由 VM 搜尋限制負責（<code>tasks.md</code> §27 進行中／部分完成）</li>
-    <li><code>examples/python/get_graph.py</code> 仍示範 ETag revalidation，與現行 API 不符</li>
-    <li><code>docs/api.md</code> 若仍寫 ETag，應與 spec 同步刪除</li>
+    <li><code>README.md</code> / <code>README.zh-tw.md</code> <strong>並無</strong>漂移：兩者提到 <code>ETag</code>、「max-window cap」都是<em>否定句</em>（明確聲明「不發 ETag / 無視窗上限」），與程式碼一致。先前把它們列為「不一致」是歸錯檔，已更正。</li>
+    <li>真正過時、現已修正：<code>docs/api.md</code> 原把 <code>ETag</code> / <code>If-None-Match</code> / 304 當成現役 header（v1 早已移除，見 <code>design.md</code> D6 / <code>tasks.md</code> §32 已勾），相關段落已刪。</li>
+    <li><code>examples/python/get_graph.py</code> 原示範 <code>If-None-Match</code> revalidation（伺服器永不回 304，屬死碼），已移除；並順手補齊 node/edge 型別（<code>service</code>/<code>others</code>/<code>cluster</code>、<code>service-selects-pod</code>、<code>parent</code>、<code>ipaddress</code>）以符合現行回應形狀。</li>
+    <li><code>--max-skew</code> 在整個 repo 並不存在、<code>--max-window</code> 也只在 README 以否定句出現——此條原為誤報，已刪。</li>
+    <li><code>tasks.md</code> §27 的 checkbox 先前全未勾，但程式早已落地（flag 移除、<code>--api-timeout</code> 加入、503→504/502 對齊），已補勾。</li>
+    <li>連帶修正 <code>CLAUDE.md</code> 的「errgroup of <strong>5</strong> PromQL」→ 8（5 KSM + 3 D29），該處比本指南還舊。</li>
   </ul>
 </div>
 
 <h3>11.4 測試與 DX</h3>
 <ul>
-  <li>完成 <code>tasks.md</code> §27 剩餘項（config 精簡、文件掃尾）</li>
-  <li>§32.D.4 手動驗證 Kind + Scalar：<code>ipaddress</code> 欄位、graph 路由無 ETag</li>
+  <li><code>tasks.md</code> §27（config 精簡、文件掃尾）已對照程式碼完成並打勾</li>
+  <li>跨叢集／service-graph 情境唯一驗證路徑為 <code>internal/integration/</code>（testcontainers VictoriaMetrics）</li>
   <li>可加：<code>make serve-docs</code> 一鍵開啟本 HTML + Scalar</li>
 </ul>
 

@@ -3,7 +3,7 @@
 - [x] 1.1 Initialise Go module (`go mod init github.com/<org>/kube-state-graph`, Go 1.22+).
 - [x] 1.2 Add direct dependencies: `github.com/gin-gonic/gin`, `github.com/prometheus/client_golang`, `github.com/google/uuid`, `golang.org/x/sync` (errgroup + semaphore).
 - [x] 1.3 Lay out package skeleton: `cmd/kube-state-graph/`, `internal/api/`, `internal/build/`, `internal/promql/`, `internal/graph/`, `internal/config/`, `internal/observability/`.
-- [x] 1.4 Add baseline `Makefile` targets: `build`, `test`, `vet`, `lint`, `cover`, `kind-up`, `kind-down`, `smoke`.
+- [x] 1.4 Add baseline `Makefile` targets: `build`, `test`, `vet`, `lint`, `cover`.
 - [x] 1.5 Wire up `golangci-lint` config and a pre-commit/CI step that runs `go vet`, `golangci-lint`, and `go test ./...`.
 - [x] 1.6 Add `.editorconfig`, `LICENSE`, top-level `README.md` placeholder.
 
@@ -22,7 +22,7 @@
 - [x] 3.4 Implement `graph.Graph` struct holding `Nodes`, `Edges`, plus pre-built forward + reverse adjacency maps (`map[NodeID][]*Edge`).
 - [x] 3.5 Implement `graph.Scope` (filter spec: clusters, namespaces, nodes, edge types, traversal root/depth/direction).
 - [x] 3.6 Implement pure `graph.Project(g *Graph, scope Scope) GraphView` returning slices of pointers (no allocations).
-- [x] 3.7 Implement edge-type registry as a single `var` consumed by both the builder and the `/v1/edge-types` handler; cover `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`.
+- [x] 3.7 Implement edge-type registry as a single `var` consumed by both the builder and the `/v1/edge-types` handler; cover `pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`.
 
 ## 4. Upstream Prometheus query layer
 
@@ -41,8 +41,8 @@
 - [x] 5.5 Parse `kube_node_labels` `label_*` entries; flatten into the K8s node `labels` under their original keys (e.g., `label_topology_kubernetes_io_zone` → `topology.kubernetes.io/zone`).
 - [x] 5.6 Implement pod-restart handling: when multiple UIDs exist for the same `(cluster, namespace, pod)`, keep ONLY the latest UID as the canonical pod and discard prior UIDs (no synthetic linking edge — there is no reliable identity link once kubelet stops reporting the deleted UID).
 - [x] 5.7 Implement `cluster="unknown"` bucketing for series missing the `cluster` label; surface in `kube_state_graph_clusters_observed`.
-- [x] 5.8 Build `pod-runs-on-node` edges from `kube_pod_info{node=...}`.
-- [x] 5.9 Build `pod-mounts-pvc` edges by joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the pod's host node within the same cluster.
+- [x] 5.8 Surface each pod's host node on `PodNode.labels.node` (cluster-scoped node ID from `kube_pod_info{node=...}`). The pod→node relationship is expressed only by Cytoscape compound nesting via `labels.node`; there is no pod-runs-on-node edge. K8s `node` nodes are edgeless graph nodes that act purely as compound containers (they still carry `external_ip` on the `ipaddress` attribute).
+- [x] 5.9 Build `pod-mounts-pvc` edges by joining `kube_pod_spec_volumes_persistentvolumeclaims_info` with the owning pod within the same cluster.
 
 ## 6. Pod service-graph reader (capability: pod-service-graph)
 
@@ -70,10 +70,9 @@
 - [x] 8.1 Stand up Gin engine with `/v1/` route group, request-ID + slog middleware.
 - [x] 8.2 Implement `GET /v1/graph` handler: parse + validate `start`, `end`, filter params, traversal params; align window + build + project + serialise.
 - [x] 8.3 Implement Cytoscape.js serialiser: `{ apiVersion, clusters, elements: { nodes, edges } }` with canonical node/edge `data` shape. The body MUST NOT contain time-varying or echo-of-input fields — body shape is fixed so that identical inputs against the same upstream state produce a byte-identical body.
-- [x] 8.4 Implement `GET /v1/graph/nodegraph` handler: project → Grafana Node Graph JSON (`nodes_fields`/`nodes`/`edges_fields`/`edges`); map `name`→`title`, cluster·namespace→`subTitle`, `type`→`mainStat`, edge `type`→edge `mainStat`, `secondaryStat` omitted.
 - [x] 8.5 Implement `GET /v1/clusters` handler: live discovery query against VictoriaMetrics, intersected with `--clusters-allowlist`. No in-process discovery cache.
 - [x] 8.6 Implement `GET /v1/edge-types` handler: serialise the in-code registry; long `Cache-Control` on the response.
-- [x] 8.7 No HTTP cache validator on `/v1/graph` / `/v1/graph/nodegraph` / `/v1/clusters` (no `ETag`, no `Last-Modified`). No `Cache-Control` either — cacheability is a future-iteration concern.
+- [x] 8.7 No HTTP cache validator on `/v1/graph` / `/v1/clusters` (no `ETag`, no `Last-Modified`). No `Cache-Control` either — cacheability is a future-iteration concern.
 - [x] 8.9 Implement traversal pruning: BFS over the freshly built graph's adjacency map bounded by `depth`; reject `depth > 6` with `400 depth_too_large`.
 - [x] 8.10 Implement filter validation: reject obviously malformed values; treat unknown values as empty result, not error.
 - [x] 8.11 Implement `GET /livez` (always 200) and `GET /readyz` (1 s `up{}` probe → 200 / 503).
@@ -109,8 +108,8 @@
 ## 12. Golden tests
 
 - [x] 12.1 Add a `testdata/golden/` tree of canned scenarios (single-cluster, two-cluster + cross-cluster edge, three-cluster + traversal, external-name-pattern matched).
-- [x] 12.2 Implement golden-file harness with `-update` flag for `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types`.
-- [x] 12.3 Snapshot the four endpoint responses for each scenario; commit `.golden.json` files.
+- [x] 12.2 Implement golden-file harness with `-update` flag for `/v1/graph`, `/v1/clusters`, `/v1/edge-types`.
+- [x] 12.3 Snapshot the three endpoint responses for each scenario; commit `.golden.json` files.
 
 ## 13. Property-based tests
 
@@ -120,22 +119,10 @@
 - [x] 13.4 Property: for cross-cluster edges, the resolved source-node `labels.cluster` differs from the resolved target-node `labels.cluster` (cross-cluster status is derived from node labels, not from edge labels).
 - [x] 13.5 Property: edge IDs are unique per `(type, source, target)` and stable across re-runs.
 
-## 14. Verification harness (capability: verification-harness)
-
-- [x] 14.1 Author `deploy/kind/kind-config.yaml` (single cluster, 2 worker nodes).
-- [x] 14.2 Author `deploy/kind/bootstrap.sh` that creates the Kind cluster and applies all manifests.
-- [x] 14.3 Author manifests for in-cluster VictoriaMetrics single-node (`vmsingle`); confirm no `vmstorage`/`vmselect`/`vminsert`.
-- [x] 14.4 ~~Implement `tests/harness/vm-fixtures/` Go program~~ — superseded: integration tests in `internal/integration/` ingest fixture series directly into a `testcontainers-go` VictoriaMetrics container via `POST /api/v1/import/prometheus` (Prometheus exposition format). No standalone binary, YAML config, or `/metrics` endpoint.
-- [x] 14.5 ~~Author `tests/harness/vm-fixtures/fixtures.yaml`~~ — superseded: each test in `internal/integration/graph_e2e_test.go` constructs its own multi-cluster `kube_*` series, at least one cross-cluster service-graph series (where `server_k8s_pod_uid` resolves to a pod in a different cluster via the topology pod-UID index), and at least one `client="http://..."` series for external substitution.
-- [x] 14.6 Author manifests for the `kube-state-graph` API server Deployment with `KSG_EXTERNAL_NAME_PATTERN="://"` set in the env section.
-- [x] 14.7 Author `tests/smoke/run.sh` covering all assertions in the `verification-harness` spec (livez, readyz, clusters, edge-types, graph, multi-cluster filter, cross-cluster edge present, external node present, canonical schema enforced, metrics exposition).
-- [x] 14.8 Author `deploy/kind/teardown.sh` for reproducible cluster deletion.
-- [x] 14.9 Optional Grafana dashboard at `deploy/grafana/kube-state-graph-nodegraph.json` using the JSON / Infinity datasource against `/v1/graph/nodegraph`.
-
 ## 15. CI integration
 
 - [x] 15.1 Add CI workflow stage running `go vet`, `golangci-lint`, `go test ./...` (unit + component + golden + property) on every PR.
-- [x] 15.2 Add CI stage that runs `go test ./internal/integration/` on PRs touching `cmd/`, `internal/build/`, `internal/integration/`, or `local/kind/`, and on a nightly schedule. Integration tests use `testcontainers-go` with VictoriaMetrics; no separate fixtures harness.
+- [x] 15.2 Add CI stage that runs `go test ./internal/integration/` on PRs touching `cmd/`, `internal/build/`, or `internal/integration/`, and on a nightly schedule. Integration tests use `testcontainers-go` with VictoriaMetrics; no separate fixtures harness.
 - [x] 15.3 Publish a container image for `kube-state-graph` from CI for tagged commits; basic Dockerfile checked in.
 
 ## 16. Documentation
@@ -150,7 +137,6 @@
 
 - [x] 17.1 Run `openspec verify "add-k8s-pod-graph-api"` and confirm every requirement maps to an implementation file or test.
 - [ ] 17.2 Confirm `go test ./... -cover` reports ≥ 80 % coverage on `internal/build`, `internal/graph`, `internal/api`. _(Current: deferred — needs additional handler / orchestrator tests.)_
-- [ ] 17.3 Run the manual Grafana rig locally; record the resulting Grafana panel screenshot in `docs/`. _(Requires Docker + Kind on the host; not exercised in this session.)_
 - [ ] 17.4 Tag a `v0.1.0` release once all preceding tasks are checked.
 
 ## 18. Container integration tests (capability: container-integration)
@@ -160,7 +146,7 @@
 - [x] 18.3 Implement `IngestExpFmt(exposition string)` on `VMSuite` that POSTs to `<vm.URL>/api/v1/import/prometheus`, plus `WaitForSeries(query, budget)` polling helper.
 - [x] 18.4 Implement readiness wait that polls VM `/-/ready` until 200 within a configurable budget (default 10 s); fail with `vm_not_ready` on timeout.
 - [x] 18.5 Implement an in-process API-server-under-test factory (`StartAPIServer(configure func(*config.Config)) *httptest.Server`) on `VMSuite` that wires `api.New(...).Handler()`.
-- [x] 18.6 Author absolute-timestamp fixtures and corresponding tests for: single-cluster `pod-runs-on-node`, cross-cluster `pod-calls-pod`, `KSG_EXTERNAL_NAME_PATTERN` substitution producing an external node, body determinism across repeated builds, `/v1/clusters` discovery, `/v1/edge-types` shape.
+- [x] 18.6 Author absolute-timestamp fixtures and corresponding tests for: single-cluster `pod-mounts-pvc`, cross-cluster `pod-calls-pod`, `KSG_EXTERNAL_NAME_PATTERN` substitution producing an external node, body determinism across repeated builds, `/v1/clusters` discovery, `/v1/edge-types` shape.
 - [x] 18.7 Per-test discriminator: each `SetupTest` writes fixtures labelled with `test="<TestName>"` so concurrent runs don't collide.
 - [x] 18.8 CI workflow runs `go test ./...` on `ubuntu-latest`; the suite uses `SkipIfDockerUnavailable(t)` to skip cleanly on developer machines / runners without Docker.
 - [x] 18.9 `httptest.Server` mock layer retained for sub-second inner-loop dev; container layer adds value at PR-feedback level. Decision documented in design D20.
@@ -175,17 +161,6 @@
 - [x] 19.6 Add `make lint`, `make vuln`, `make test` Makefile targets that mirror the CI configuration.
 - [ ] 19.7 Run the full lint + vuln suite against the existing source tree; fix or `//nolint:<name>` (with rationale comments + tracked issues) the resulting findings. _(Deferred — `golangci-lint` not installed in this session; lint output cannot be triaged here.)_
 - [ ] 19.8 Document the suite in `docs/operations.md` (link to `static-analysis-suite/spec.md` for the authoritative requirements).
-
-## 20. Manual rig polish (capability: verification-harness — modified)
-
-- [x] 20.1 Move integration-only assets out of CI-implying paths: `deploy/kind/` → `local/kind/`; smoke script → `local/kind/smoke.sh`. The `tests/harness/vm-fixtures/` standalone fixtures binary was dropped — integration testing moved to `internal/integration/` with `testcontainers-go`, and the local Kind rig uses real `kube-state-metrics` scraping the Kind cluster (no synthetic fixtures program needed).
-- [x] 20.2 Add a Grafana Pod Deployment + Service to the rig manifests. Pin the Grafana image tag (`grafana/grafana:11.4.0`).
-- [x] 20.3 Add a Grafana datasource provisioning ConfigMap pointing at the in-cluster `kube-state-graph` Service via the JSON / Infinity datasource.
-- [x] 20.4 Add a Grafana dashboards provisioning ConfigMap that auto-imports `kube-state-graph-nodegraph.json` on Grafana boot.
-- [x] 20.5 Document Grafana bootstrap credentials, NodePort, and expected URLs (banner in `bootstrap.sh`).
-- [x] 20.6 Update `Makefile` targets: `local-up`/`local-down`/`local-smoke` aliases alongside the legacy `kind-*` / `smoke` names.
-- [x] 20.7 Remove any CI workflow steps that invoke the manual rig (the user-modified `.github/workflows/ci.yml` already does this; verified).
-- [ ] 20.8 Capture a Grafana panel screenshot post-bootstrap and commit it to `docs/grafana-screenshot.png`; reference it from `README.md`. _(Requires running the rig on a Docker host; deferred.)_
 
 ## 21. OpenAPI generation + offline Scalar UI (capability: api-docs / graph-api)
 
@@ -223,10 +198,8 @@
 - [x] 24.5 Wire `--api-keys-file` / `--api-keys` / `--api-keys-reload-interval` flags + `KSG_API_KEYS_FILE` / `KSG_API_KEYS` / `KSG_API_KEYS_RELOAD_INTERVAL` env into `internal/config`. Validate file exists when path set.
 - [x] 24.6 Load the keyset in `cmd/kube-state-graph/main.go`; start a periodic reload goroutine when file + interval are set; pass the keyset into `api.New`. Emit a startup `slog.Warn` when no keys are configured.
 - [x] 24.7 Register `kube_state_graph_auth_rejected_total{reason}` counter in `internal/observability`. Increment from middleware on `missing` and `invalid` outcomes.
-- [x] 24.8 Update swag annotations: document-level `@securityDefinitions.apikey ApiKeyAuth` (`@in header`, `@name X-API-Key`); per-handler `@Param X-API-Key`, `@Failure 401`, `@Security ApiKeyAuth` on `/v1/graph`, `/v1/graph/nodegraph`, `/v1/clusters`, `/v1/edge-types`, `/debug/last-queries`. Run `make docs` and commit `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
+- [x] 24.8 Update swag annotations: document-level `@securityDefinitions.apikey ApiKeyAuth` (`@in header`, `@name X-API-Key`); per-handler `@Param X-API-Key`, `@Failure 401`, `@Security ApiKeyAuth` on `/v1/graph`, `/v1/clusters`, `/v1/edge-types`, `/debug/last-queries`. Run `make docs` and commit `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
 - [x] 24.9 Integration test: `internal/integration/graph_e2e_test.go::TestAPIKey_FileBacked_Enforced` exercises 401 (no header), 401 (wrong key), 200 (valid key), and confirms `/livez` stays open with auth on.
-- [x] 24.10 Local rig: add `local/kind/manifests/05-api-key-secret.yaml` with two dev keys; update `30-api-server.yaml` to mount the Secret at `/etc/kube-state-graph/api-keys` and pass `KSG_API_KEYS_FILE` + `KSG_API_KEYS_RELOAD_INTERVAL` envs; update `40-grafana.yaml` datasource provisioning with `httpHeaderName1=X-API-Key` + `secureJsonData.httpHeaderValue1`.
-- [x] 24.11 Update `local/kind/smoke.sh`: assert `/livez` open, assert `/v1/edge-types` without header → 401, assert `/v1/edge-types` with `X-API-Key: $KSG_SMOKE_API_KEY` → 200; thread `AUTH_HEADER` through every protected curl.
 - [x] 24.12 Document Authentication in `docs/api.md` (header, exempt routes, 401 contract), `docs/operations.md` (rotation procedure, metric, K8s Secret mount), and `README.md` (env / flag table).
 
 ## 23. Pod-name filter (capability: graph-api — modified)
@@ -236,8 +209,8 @@
   - For `PodNode`: must match `Pods` (by `n.Name()`) when the set is non-empty.
   - For `K8sNode`, `PVCNode`, `ExternalNode`: when the pod filter is set, drop directly in `nodePassesFilters`. Endpoints survive only via the existing edge-endpoint re-add pass in `filterEdges` (for in-scope pods' incident edges).
 - [x] 23.3 In `graph.preserveCrossClusterEdge`, return `false` when `Pods` is set so the cluster-scoped partner-rehydration rule does NOT fire (caller named the exact pod set).
-- [x] 23.4 In `internal/api/handlers.go` `parseGraphRequest` (or equivalent), parse `q["pod"]` and pass it to `graph.NewScope`. Apply identical wiring to both `/v1/graph` and `/v1/graph/nodegraph` handlers.
-- [x] 23.5 Add `@Param pod` swag annotation (repeatable, `query`, `[]string`, `collectionFormat(multi)`) on both handlers; mention it in the `@Description`. Run `make docs` and commit the regenerated `docs/swagger.{json,yaml}` so `make check-docs` stays green.
+- [x] 23.4 In `internal/api/handlers.go` `parseGraphRequest` (or equivalent), parse `q["pod"]` and pass it to `graph.NewScope`. Apply the wiring to the `/v1/graph` handler.
+- [x] 23.5 Add `@Param pod` swag annotation (repeatable, `query`, `[]string`, `collectionFormat(multi)`) on the `/v1/graph` handler; mention it in the `@Description`. Run `make docs` and commit the regenerated `docs/swagger.{json,yaml}` so `make check-docs` stays green.
 - [x] 23.6 Unit tests in `internal/graph/project_test.go`: pod-name filter narrows correctly; pod name shared across clusters returns both; pod filter AND cluster filter; pod filter does NOT trigger cross-cluster preservation; unknown pod name returns empty.
 - [x] 23.7 Component tests in `internal/api/server_test.go`: HTTP `?pod=` maps through to scope correctly; combines with existing filters; unknown values return 200 + empty. _(Coverage placed in `internal/integration/graph_e2e_test.go` next to the existing edge-type filter integration tests, which exercise the full HTTP→Project→serialise pipeline against a real VM container — a closer fit than the mock-PromQL `server_test.go` which only validates request parsing.)_
 - [x] 23.8 Property test in `internal/graph/property_test.go`: when `Pods` is set, every returned pod node satisfies the filter, and no cross-cluster partner pod outside the filter is returned.
@@ -255,11 +228,11 @@ Operators want to anchor a graph view on **any** node — pod, K8s node, PVC, or
   - Drop the `preservePodFilterPartner` helper — its job (re-adding non-pod endpoints when one side is an in-scope pod) is now subsumed by the unified rule.
   - Drop the `preserveCrossClusterEdge` helper — the cross-cluster `pod-calls-pod` partner-rehydration case is also subsumed by the unified rule (out-of-scope-cluster partner is re-added because it passes the namespace check).
   - No name-specific suppression: anchoring on a named node intentionally surfaces incident edges with their partner endpoints; otherwise the rendered graph would have dangling edges.
-- [x] 25.4 In `internal/api/handlers.go` `parseGraphRequest`, replace `q["pod"]` parsing with `q["name"]` parsing on both `/v1/graph` and `/v1/graph/nodegraph`. The `pod` query parameter is no longer recognised; unknown query parameters continue to be ignored silently (existing convention).
-- [x] 25.5 Update swag annotations on both handlers: remove `@Param pod` and add `@Param name` (`query`, `[]string`, `collectionFormat(multi)`, repeatable). Update each handler's `@Description` to describe the new cross-type semantics. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` plus `internal/api/static/openapi/*` so `make check-docs` stays green.
+- [x] 25.4 In `internal/api/handlers.go` `parseGraphRequest`, replace `q["pod"]` parsing with `q["name"]` parsing on `/v1/graph`. The `pod` query parameter is no longer recognised; unknown query parameters continue to be ignored silently (existing convention).
+- [x] 25.5 Update swag annotations on the `/v1/graph` handler: remove `@Param pod` and add `@Param name` (`query`, `[]string`, `collectionFormat(multi)`, repeatable). Update the handler's `@Description` to describe the new cross-type semantics. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` plus `internal/api/static/openapi/*` so `make check-docs` stays green.
 - [x] 25.6 Replace pod-filter unit tests in `internal/graph/project_test.go`:
-  - Pod match: `?name=checkout` returns the `checkout` PodNode and re-adds K8s-node / PVC / external endpoints of its incident edges.
-  - K8s-node match: `?name=node-a` returns the `K8sNode` named `node-a` and re-adds pods that run on it.
+  - Pod match: `?name=checkout` returns the `checkout` PodNode and re-adds PVC / external / called-pod endpoints of its incident edges. The pod's host K8s node is NOT pulled in — there is no pod-runs-on-node edge linking them (the pod→node relationship is compound nesting via `labels.node` only).
+  - K8s-node match: `?name=node-a` returns ONLY the edgeless `K8sNode` named `node-a` — no pods are re-added, since no edge links a node to its pods (the pod→node relationship is compound nesting via `labels.node` only).
   - PVC match: `?name=data` returns the matching `PVCNode` and re-adds pods that mount it.
   - Cross-type match: `?name=worker-1` returns BOTH a pod and a K8s node when both happen to share the name.
   - Combined filters: `?name=api&cluster=cluster-alpha` only returns the cluster-alpha node(s).
@@ -276,54 +249,52 @@ Operators want to anchor a graph view on **any** node — pod, K8s node, PVC, or
 
 The configuration surface accumulated knobs whose value did not justify the cost of carrying them: `--max-window` / `--max-skew` duplicate guards already provided by upstream VictoriaMetrics search limits and trivially-handled empty results; `--max-pods` requires an extra probe round-trip whose only signal is bounded again by the same VM-side limits; `--cluster-discovery-lookback` has no observed reason to deviate from `1h`; `--enable-debug` toggles a debug endpoint that was only ever a 501 stub; `--build-concurrency` is a per-instance semaphore whose tuning duplicates HPA's signal at finer granularity but worse observability. Section 27 removes all of them, adds `--api-timeout` as a peer to `--build-timeout` for non-graph upstream calls, and realigns timeout / upstream-failure responses to the RFC 9110 conventions (`504 Gateway Timeout`, `502 Bad Gateway`).
 
-- [ ] 27.1 Remove `--max-window` flag, `KSG_MAX_WINDOW` env var, `Config.MaxWindow` field, default, and `Validate()` rule. Drop the `end - start > MaxWindow` guard in `parseGraphRequest` (`internal/api/handlers.go`). Drop `window_too_large` from `internal/api/errors.go` and any error-mapping table. Drop the corresponding scenario / requirement in spec / design / docs. Bounded query cost is delegated to upstream VictoriaMetrics search limits.
-- [ ] 27.2 Remove `--max-skew` flag, `KSG_MAX_SKEW` env var, `Config.MaxSkew` field, default, and `Validate()` rule. Drop the `end > now + MaxSkew` guard in `parseGraphRequest`. Drop `end_in_future` from `internal/api/errors.go`. Future-time queries return empty PromQL results which the caller surfaces as an empty graph; no KSG-side guard is necessary.
-- [ ] 27.3 Remove `--max-pods` flag, `KSG_MAX_PODS` env var, `Config.MaxPods` field, default, and `Validate()` rule. Remove the `count(kube_pod_info)` probe call site (`probeClusterSize` in `internal/build/builder.go` or equivalent), the `QClusterSizeProbe` query template in `internal/promql/queries.go`, and the `ReasonClusterTooLarge` build error / `cluster_too_large` HTTP reason in `internal/build/errors.go` + `internal/api/errors.go`. Remove the corresponding spec scenario in `cluster-topology-source/spec.md` and `graph-api/spec.md`.
-- [ ] 27.4 Remove `--cluster-discovery-lookback` flag, `KSG_CLUSTER_DISCOVERY_LOOKBACK` env var, `Config.ClusterDiscoveryLookback` field, default, and `Validate()` rule. In `internal/api/handlers.go::discoverClusters`, replace `s.cfg.ClusterDiscoveryLookback` with a package-level constant `clusterDiscoveryLookback = time.Hour`. Update the design / spec text to state the lookback is fixed at `1h`.
-- [ ] 27.5 Remove `--enable-debug` flag, `KSG_ENABLE_DEBUG` env var, `Config.EnableDebug` field, default, and `Validate()` rule. Remove the `/debug/last-queries` Gin route registration (`internal/api/server.go` / `routes.go`) and its handler (`internal/api/debug.go` if present). Update `internal/api/auth_middleware.go` to remove `/debug/*` from any exempt-path list (no-op once routes are gone).
-- [ ] 27.6 Update `cmd/kube-state-graph/main.go` HTTP server `WriteTimeout` derivation (`cfg.BuildTimeout + 5*time.Second`) — keep as-is; it does not depend on any removed field.
-- [ ] 27.7 Update unit tests in `internal/config/config_test.go`: remove cases asserting parsing / validation of removed fields. Update the round-trip "all flags" test to drop the removed flags.
-- [ ] 27.8 Update component tests in `internal/api/server_test.go`: drop `TestParseRequest_WindowTooLarge`, `TestParseRequest_EndInFuture`, `TestClusterTooLarge`, and any `/debug/last-queries` test. Adjust any test that wires `Config{ MaxWindow, MaxSkew, MaxPods, ClusterDiscoveryLookback, EnableDebug }` to drop those fields.
-- [ ] 27.9 Update integration tests in `internal/integration/graph_e2e_test.go`: drop the `cfg.ClusterDiscoveryLookback = 365 * 24 * time.Hour` override on the test rig (the constant now applies). Drop any `MaxWindow` / `MaxSkew` / `MaxPods` tweaks. Keep tests that exercise `?cluster=`, `?name=`, etc.
-- [ ] 27.10 Update Swag annotations on `/v1/graph` and `/v1/graph/nodegraph`: remove `--max-window` / `--max-skew` references from `@Description` and `@Param end "..."`. Remove the `/debug/last-queries` route annotations entirely. Remove `400 window_too_large`, `400 end_in_future`, `503 cluster_too_large` from `@Failure` blocks. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` plus `internal/api/static/openapi/*`.
-- [ ] 27.11 Update `docs/api.md`: drop `--max-window` / `--max-skew` from the `end` parameter description, drop the `window_too_large` / `end_in_future` / `cluster_too_large` rows from the status-code table, drop the `--cluster-discovery-lookback` mention from `/v1/clusters` (replace with "fixed `1h` lookback"), drop the entire `/debug/last-queries` section.
-- [ ] 27.12 Update `CLAUDE.md` "Request lifecycle" diagram and "Load-bearing design rules" bullets to drop `--max-window` / `--max-skew` validation lines and any `/debug/*` references. Mention upstream VictoriaMetrics search limits as the bounded-cost mechanism.
-- [ ] 27.13 Update `local/kind/manifests/30-api-server.yaml` and any other manifests / `Makefile` snippets that set the removed env vars.
-- [ ] 27.14 Run `openspec validate "add-k8s-pod-graph-api"` (must stay green); run `make test` + `make check-docs`; run `go vet ./...` + `golangci-lint run` (when available locally) to catch dead code (`probeClusterSize`, `QClusterSizeProbe`, `ReasonClusterTooLarge`, `validateWindow`, `validateSkew`, debug handler).
+- [x] 27.1 Remove `--max-window` flag, `KSG_MAX_WINDOW` env var, `Config.MaxWindow` field, default, and `Validate()` rule. Drop the `end - start > MaxWindow` guard in `parseGraphRequest` (`internal/api/handlers.go`). Drop `window_too_large` from `internal/api/errors.go` and any error-mapping table. Drop the corresponding scenario / requirement in spec / design / docs. Bounded query cost is delegated to upstream VictoriaMetrics search limits.
+- [x] 27.2 Remove `--max-skew` flag, `KSG_MAX_SKEW` env var, `Config.MaxSkew` field, default, and `Validate()` rule. Drop the `end > now + MaxSkew` guard in `parseGraphRequest`. Drop `end_in_future` from `internal/api/errors.go`. Future-time queries return empty PromQL results which the caller surfaces as an empty graph; no KSG-side guard is necessary.
+- [x] 27.3 Remove `--max-pods` flag, `KSG_MAX_PODS` env var, `Config.MaxPods` field, default, and `Validate()` rule. Remove the `count(kube_pod_info)` probe call site (`probeClusterSize` in `internal/build/builder.go` or equivalent), the `QClusterSizeProbe` query template in `internal/promql/queries.go`, and the `ReasonClusterTooLarge` build error / `cluster_too_large` HTTP reason in `internal/build/errors.go` + `internal/api/errors.go`. Remove the corresponding spec scenario in `cluster-topology-source/spec.md` and `graph-api/spec.md`.
+- [x] 27.4 Remove `--cluster-discovery-lookback` flag, `KSG_CLUSTER_DISCOVERY_LOOKBACK` env var, `Config.ClusterDiscoveryLookback` field, default, and `Validate()` rule. In `internal/api/handlers.go::discoverClusters`, replace `s.cfg.ClusterDiscoveryLookback` with a package-level constant `clusterDiscoveryLookback = time.Hour`. Update the design / spec text to state the lookback is fixed at `1h`.
+- [x] 27.5 Remove `--enable-debug` flag, `KSG_ENABLE_DEBUG` env var, `Config.EnableDebug` field, default, and `Validate()` rule. Remove the `/debug/last-queries` Gin route registration (`internal/api/server.go` / `routes.go`) and its handler (`internal/api/debug.go` if present). Update `internal/api/auth_middleware.go` to remove `/debug/*` from any exempt-path list (no-op once routes are gone).
+- [x] 27.6 Update `cmd/kube-state-graph/main.go` HTTP server `WriteTimeout` derivation (`cfg.BuildTimeout + 5*time.Second`) — keep as-is; it does not depend on any removed field.
+- [x] 27.7 Update unit tests in `internal/config/config_test.go`: remove cases asserting parsing / validation of removed fields. Update the round-trip "all flags" test to drop the removed flags.
+- [x] 27.8 Update component tests in `internal/api/server_test.go`: drop `TestParseRequest_WindowTooLarge`, `TestParseRequest_EndInFuture`, `TestClusterTooLarge`, and any `/debug/last-queries` test. Adjust any test that wires `Config{ MaxWindow, MaxSkew, MaxPods, ClusterDiscoveryLookback, EnableDebug }` to drop those fields.
+- [x] 27.9 Update integration tests in `internal/integration/graph_e2e_test.go`: drop the `cfg.ClusterDiscoveryLookback = 365 * 24 * time.Hour` override on the test rig (the constant now applies). Drop any `MaxWindow` / `MaxSkew` / `MaxPods` tweaks. Keep tests that exercise `?cluster=`, `?name=`, etc.
+- [x] 27.10 Update Swag annotations on `/v1/graph`: remove `--max-window` / `--max-skew` references from `@Description` and `@Param end "..."`. Remove the `/debug/last-queries` route annotations entirely. Remove `400 window_too_large`, `400 end_in_future`, `503 cluster_too_large` from `@Failure` blocks. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` plus `internal/api/static/openapi/*`.
+- [x] 27.11 Update `docs/api.md`: drop `--max-window` / `--max-skew` from the `end` parameter description, drop the `window_too_large` / `end_in_future` / `cluster_too_large` rows from the status-code table, drop the `--cluster-discovery-lookback` mention from `/v1/clusters` (replace with "fixed `1h` lookback"), drop the entire `/debug/last-queries` section.
+- [x] 27.12 Update `CLAUDE.md` "Request lifecycle" diagram and "Load-bearing design rules" bullets to drop `--max-window` / `--max-skew` validation lines and any `/debug/*` references. Mention upstream VictoriaMetrics search limits as the bounded-cost mechanism.
+- [x] 27.14 Run `openspec validate "add-k8s-pod-graph-api"` (must stay green); run `make test` + `make check-docs`; run `go vet ./...` + `golangci-lint run` (when available locally) to catch dead code (`probeClusterSize`, `QClusterSizeProbe`, `ReasonClusterTooLarge`, `validateWindow`, `validateSkew`, debug handler).
 
 ### 27.A Add `--api-timeout` (graph-api — modified)
 
-- [ ] 27.A.1 Add `Config.APITimeout time.Duration` (default `5 * time.Second`). Wire `--api-timeout` flag and `KSG_API_TIMEOUT` env in `internal/config/config.go`. `Validate()` SHALL require `APITimeout > 0`.
-- [ ] 27.A.2 In `internal/api/handlers.go::discoverClusters`, replace the implicit timeout (currently inherited from the request context) with an explicit `ctx, cancel := context.WithTimeout(c.Request.Context(), s.cfg.APITimeout); defer cancel()` wrapping the upstream PromQL `Instant` call. On `errors.Is(err, context.DeadlineExceeded)` return `504 Gateway Timeout` with `reason: "timeout"`.
-- [ ] 27.A.3 In `/readyz` handler, replace the hardcoded `time.Second` probe timeout with `s.cfg.APITimeout`. Behaviour on probe failure stays `503 Service Unavailable` (k8s convention; not a gateway-timeout case).
-- [ ] 27.A.4 Update Swag annotations on `/v1/clusters` to include `@Failure 504 {object} errorBody "Upstream timeout"`. Run `make docs` and commit regenerated artefacts.
-- [ ] 27.A.5 Unit test `internal/config/config_test.go`: parses `--api-timeout` flag and `KSG_API_TIMEOUT` env; rejects zero / negative.
-- [ ] 27.A.6 Component test `internal/api/server_test.go`: stalled discovery upstream → 504 with `reason: "timeout"`.
-- [ ] 27.A.7 Update `docs/api.md` to describe `--api-timeout` semantics (which endpoints honour it; default `5s`); update README env table.
+- [x] 27.A.1 Add `Config.APITimeout time.Duration` (default `5 * time.Second`). Wire `--api-timeout` flag and `KSG_API_TIMEOUT` env in `internal/config/config.go`. `Validate()` SHALL require `APITimeout > 0`.
+- [x] 27.A.2 In `internal/api/handlers.go::discoverClusters`, replace the implicit timeout (currently inherited from the request context) with an explicit `ctx, cancel := context.WithTimeout(c.Request.Context(), s.cfg.APITimeout); defer cancel()` wrapping the upstream PromQL `Instant` call. On `errors.Is(err, context.DeadlineExceeded)` return `504 Gateway Timeout` with `reason: "timeout"`.
+- [x] 27.A.3 In `/readyz` handler, replace the hardcoded `time.Second` probe timeout with `s.cfg.APITimeout`. Behaviour on probe failure stays `503 Service Unavailable` (k8s convention; not a gateway-timeout case).
+- [x] 27.A.4 Update Swag annotations on `/v1/clusters` to include `@Failure 504 {object} errorBody "Upstream timeout"`. Run `make docs` and commit regenerated artefacts.
+- [x] 27.A.5 Unit test `internal/config/config_test.go`: parses `--api-timeout` flag and `KSG_API_TIMEOUT` env; rejects zero / negative.
+- [x] 27.A.6 Component test `internal/api/server_test.go`: stalled discovery upstream → 504 with `reason: "timeout"`.
+- [x] 27.A.7 Update `docs/api.md` to describe `--api-timeout` semantics (which endpoints honour it; default `5s`); update README env table.
 
 ### 27.B Remove `--build-concurrency` and the `503 capacity` reason (graph-api — modified)
 
-- [ ] 27.B.1 Remove `Config.BuildConcurrency` field, `--build-concurrency` flag, `KSG_BUILD_CONCURRENCY` env, default, and `Validate()` rule from `internal/config/config.go`.
-- [ ] 27.B.2 Delete `internal/build/orchestrator.go` (the `Orchestrator` type with its semaphore + per-build context-timeout wrapper). Move the per-build `context.WithTimeout(ctx, cfg.BuildTimeout)` wrapping directly into `internal/api/handlers.go::handleGraph` and `handleNodeGraph`, immediately around `s.builder.Build(...)`.
-- [ ] 27.B.3 Update `internal/api/server.go::New` (and the test factory in `internal/integration/...`) to drop the `NewOrchestrator(...)` call and pass the `*Builder` directly into the `Server` struct (or whatever the handler uses).
-- [ ] 27.B.4 Remove `kube_state_graph_build_concurrency` gauge and `kube_state_graph_build_rejected_total{reason="capacity"}` counter labels from `internal/observability/metrics.go`. Keep `build_rejected_total{reason="timeout"}` (still load-bearing for graph endpoints).
-- [ ] 27.B.5 Remove `ReasonCapacity` constant (and the `503 capacity` mapping in `internal/api/errors.go`); collapse `ReasonTimeout` mapping target from `503` to `504`. Update `mapBuildError` accordingly.
-- [ ] 27.B.6 Update `internal/build/errors.go` `Reason` enum: drop `ReasonCapacity`; keep `ReasonTimeout` and `ReasonUpstream`. Update all call sites and switch / mapping tables.
-- [ ] 27.B.7 Drop the spec scenario `Scenario: Build over capacity` (already removed in this section's spec edits) and the prior `Scenario: Upstream stalls beyond timeout` `Retry-After: 1` assertion text (no `Retry-After` header on 504 — clients should not retry-spin a gateway-timeout fault without backoff).
-- [ ] 27.B.8 Update integration tests in `internal/integration/graph_e2e_test.go`: drop any `cfg.BuildConcurrency = N` overrides; drop `TestBuild_Capacity` and `TestRetryAfterHeader_Capacity` if present.
-- [ ] 27.B.9 Update component tests `internal/api/server_test.go`: rename `TestBuild_Timeout` assertions from `503 timeout` to `504 timeout`; drop `TestBuild_Capacity`. Add a regression test that two concurrent build requests both succeed when the upstream is responsive (no semaphore = no serialisation).
-- [ ] 27.B.10 Update Swag annotations on `/v1/graph` and `/v1/graph/nodegraph`: replace `@Failure 503 {object} errorBody "Build concurrency exhausted"` with `@Failure 504 {object} errorBody "Build timeout"`. Drop the `Retry-After` mention from the timeout description. Run `make docs` and commit regenerated artefacts.
-- [ ] 27.B.11 Update `docs/operations.md` capacity-planning section to recommend HPA tuning (CPU + p95 latency targets) instead of `--build-concurrency`.
-- [ ] 27.B.12 Update `local/kind/manifests/30-api-server.yaml` to drop the `KSG_BUILD_CONCURRENCY` env. Add a `resources:` block with sensible defaults (request 100 m / 128 Mi, limit 500 m / 512 Mi) to make the HPA-driven model concrete in the local rig.
+- [x] 27.B.1 Remove `Config.BuildConcurrency` field, `--build-concurrency` flag, `KSG_BUILD_CONCURRENCY` env, default, and `Validate()` rule from `internal/config/config.go`.
+- [x] 27.B.2 Delete `internal/build/orchestrator.go` (the `Orchestrator` type with its semaphore + per-build context-timeout wrapper). Move the per-build `context.WithTimeout(ctx, cfg.BuildTimeout)` wrapping directly into `internal/api/handlers.go::handleGraph`, immediately around `s.builder.Build(...)`.
+- [x] 27.B.3 Update `internal/api/server.go::New` (and the test factory in `internal/integration/...`) to drop the `NewOrchestrator(...)` call and pass the `*Builder` directly into the `Server` struct (or whatever the handler uses).
+- [x] 27.B.4 Remove `kube_state_graph_build_concurrency` gauge and `kube_state_graph_build_rejected_total{reason="capacity"}` counter labels from `internal/observability/metrics.go`. Keep `build_rejected_total{reason="timeout"}` (still load-bearing for graph endpoints).
+- [x] 27.B.5 Remove `ReasonCapacity` constant (and the `503 capacity` mapping in `internal/api/errors.go`); collapse `ReasonTimeout` mapping target from `503` to `504`. Update `mapBuildError` accordingly.
+- [x] 27.B.6 Update `internal/build/errors.go` `Reason` enum: drop `ReasonCapacity`; keep `ReasonTimeout` and `ReasonUpstream`. Update all call sites and switch / mapping tables.
+- [x] 27.B.7 Drop the spec scenario `Scenario: Build over capacity` (already removed in this section's spec edits) and the prior `Scenario: Upstream stalls beyond timeout` `Retry-After: 1` assertion text (no `Retry-After` header on 504 — clients should not retry-spin a gateway-timeout fault without backoff).
+- [x] 27.B.8 Update integration tests in `internal/integration/graph_e2e_test.go`: drop any `cfg.BuildConcurrency = N` overrides; drop `TestBuild_Capacity` and `TestRetryAfterHeader_Capacity` if present.
+- [x] 27.B.9 Update component tests `internal/api/server_test.go`: rename `TestBuild_Timeout` assertions from `503 timeout` to `504 timeout`; drop `TestBuild_Capacity`. Add a regression test that two concurrent build requests both succeed when the upstream is responsive (no semaphore = no serialisation).
+- [x] 27.B.10 Update Swag annotations on `/v1/graph`: replace `@Failure 503 {object} errorBody "Build concurrency exhausted"` with `@Failure 504 {object} errorBody "Build timeout"`. Drop the `Retry-After` mention from the timeout description. Run `make docs` and commit regenerated artefacts.
+- [x] 27.B.11 Update `docs/operations.md` capacity-planning section to recommend HPA tuning (CPU + p95 latency targets) instead of `--build-concurrency`.
 
 ### 27.C RFC-9110 status realignment for upstream errors (graph-api — modified)
 
-- [ ] 27.C.1 In `internal/api/errors.go::mapBuildError`, map `ReasonTimeout → 504 Gateway Timeout` and `ReasonUpstream → 502 Bad Gateway`. Document the choice in a comment referencing RFC 9110 §15.6.3 (502) and §15.6.5 (504).
-- [ ] 27.C.2 Audit every `writeError(c, http.StatusServiceUnavailable, ...)` site in `internal/api/`. Keep `503` only for `/readyz` (probe failed) and any genuine "service is going away / not yet ready" cases. Build / upstream paths SHALL NOT use 503.
-- [ ] 27.C.3 Audit every `errors.Is(err, context.DeadlineExceeded)` (and the equivalent for the prom client's wrapped errors) and ensure the matching error reason maps to `504 timeout` not `503`.
-- [ ] 27.C.4 Update `docs/api.md` status-code table to reflect the new mappings (already edited in this section's docs pass).
-- [ ] 27.C.5 Update component tests asserting `503 timeout` / `503 capacity` → adjust to `504 timeout` / removal respectively. Update integration tests `internal/integration/graph_e2e_test.go::TestBuild_*` similarly.
-- [ ] 27.C.6 `openspec validate "add-k8s-pod-graph-api"` and `make check-docs` after 27.A / 27.B / 27.C.
+- [x] 27.C.1 In `internal/api/errors.go::mapBuildError`, map `ReasonTimeout → 504 Gateway Timeout` and `ReasonUpstream → 502 Bad Gateway`. Document the choice in a comment referencing RFC 9110 §15.6.3 (502) and §15.6.5 (504).
+- [x] 27.C.2 Audit every `writeError(c, http.StatusServiceUnavailable, ...)` site in `internal/api/`. Keep `503` only for `/readyz` (probe failed) and any genuine "service is going away / not yet ready" cases. Build / upstream paths SHALL NOT use 503.
+- [x] 27.C.3 Audit every `errors.Is(err, context.DeadlineExceeded)` (and the equivalent for the prom client's wrapped errors) and ensure the matching error reason maps to `504 timeout` not `503`.
+- [x] 27.C.4 Update `docs/api.md` status-code table to reflect the new mappings (already edited in this section's docs pass).
+- [x] 27.C.5 Update component tests asserting `503 timeout` / `503 capacity` → adjust to `504 timeout` / removal respectively. Update integration tests `internal/integration/graph_e2e_test.go::TestBuild_*` similarly.
+- [x] 27.C.6 `openspec validate "add-k8s-pod-graph-api"` and `make check-docs` after 27.A / 27.B / 27.C.
 
 ## 28. Drop the cluster allowlist (capability: graph-api — modified, cluster-topology-source — modified, pod-service-graph — modified)
 
@@ -339,7 +310,6 @@ Cluster scoping is a caller-side concern via the `?cluster=` filter on `/v1/grap
 - [ ] 28.8 Update Swag annotations on `/v1/clusters` to drop the `--clusters-allowlist` mention; run `make docs` and commit regenerated artefacts.
 - [ ] 28.9 Update `docs/api.md` and `README.md` (+ zh-tw mirror) to drop the allowlist row from env / flag tables.
 - [ ] 28.10 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on allowlist injection — replace with the simpler statement that the server loads every cluster present in upstream VM and that caller-side scoping uses `?cluster=`.
-- [ ] 28.11 Update `local/kind/manifests/30-api-server.yaml` (and any other manifest) to drop `KSG_CLUSTERS_ALLOWLIST` env if present.
 - [ ] 28.12 Run `openspec validate "add-k8s-pod-graph-api"` and `make test` + `make check-docs`; `go vet ./...` for dead imports.
 
 ## 29. OTLP tracing and logging (capability: otlp-observability — added)
@@ -385,7 +355,7 @@ Per design D25 and `specs/otlp-observability/spec.md`. Wires OpenTelemetry traci
 - [x] 29.E.1 Add a package-level `tracer = otel.Tracer("kube-state-graph")` accessor in `internal/build/`, `internal/promql/`, `internal/graph/`, `internal/api/`.
 - [x] 29.E.2 In `internal/build/build.go::Build`, open `ctx, span := tracer.Start(ctx, "kube-state-graph.build", trace.WithAttributes(...))` with `kube_state_graph.window_seconds` and `kube_state_graph.end_unix`. On success set `kube_state_graph.cluster_count`, `graph.node.count`, `graph.edge.count`. On error `span.RecordError(err); span.SetStatus(codes.Error, reason.String())`.
 - [x] 29.E.3 In `internal/build/topology.go::ReadTopology` and `internal/build/servicegraph.go::ReadServiceGraph`, wrap each errgroup leg in `tracer.Start(ctx, "prometheus.query", trace.WithAttributes(semconv.DBSystemKey.String("prometheus"), attribute.String("db.statement", query), attribute.String("kube_state_graph.query_name", name)))`. Pass the legs' contexts through to the prom client so the outbound HTTP span chains correctly. (Implemented at the `promql.Client.Instant` boundary so every errgroup leg gets the span automatically.)
-- [x] 29.E.4 In `internal/api/handlers.go`, wrap the `graph.Project(g, scope)` call in `tracer.Start(ctx, "kube-state-graph.project")` and the serialiser call in `tracer.Start(ctx, "kube-state-graph.serialise", trace.WithAttributes(attribute.String("kube_state_graph.serialiser", "cytoscape" | "nodegraph")))`. Emit post-projection / post-serialise node + edge counts.
+- [x] 29.E.4 In `internal/api/handlers.go`, wrap the `graph.Project(g, scope)` call in `tracer.Start(ctx, "kube-state-graph.project")` and the serialiser call in `tracer.Start(ctx, "kube-state-graph.serialise", trace.WithAttributes(attribute.String("kube_state_graph.serialiser", "cytoscape")))`. Emit post-projection / post-serialise node + edge counts.
 - [x] 29.E.5 Update `internal/api/errors.go::mapBuildError` so the same place that picks the HTTP status + `reason` body string also records the error on the span (helper `recordBuildError(ctx, err, reason)`).
 
 ### 29.F Integration and validation
@@ -393,7 +363,6 @@ Per design D25 and `specs/otlp-observability/spec.md`. Wires OpenTelemetry traci
 - [ ] 29.F.1 Add a testcontainers-based integration test `internal/integration/otlp_e2e_test.go` that starts an OTel Collector container alongside VictoriaMetrics, configures the API server with `OTEL_EXPORTER_OTLP_ENDPOINT=<container endpoint>`, makes a `/v1/graph` request, and asserts the collector received: (a) one `GET /v1/graph` server span; (b) one `kube-state-graph.build` child; (c) ≥ 1 `prometheus.query` grandchild with `db.system=prometheus` and a non-empty `db.statement`; (d) the corresponding log records carry matching `trace_id` / `span_id`. **Deferred** — the existing `internal/integration/` testcontainers suite is gated by Docker bridge-network availability which is not present in the current dev sandbox; same blocker as `TestGraphSuite`. Will land in a follow-up change once CI exposes Docker.
 - [x] 29.F.2 Negative integration test: with no endpoint env var set, run a `/v1/graph` request and assert no socket connection is opened to any port (or simpler: assert `telemetry.Init` returns `enabled=false` and the in-memory exporter remains empty). (Covered by `TestInit_DisabledByDefault` in `internal/telemetry/telemetry_test.go`: clears all OTel env vars, calls Init, asserts `enabled=false` and that the global TracerProvider/LoggerProvider are no-op.)
 - [x] 29.F.3 Property/contract test: assert the response body for `/v1/edge-types` (and by extension `/v1/graph`) is byte-identical when tracing is enabled vs disabled — resource attributes must not leak into the response body. (Implemented as `TestTracing_BodyStableAcrossTracingState`.)
-- [x] 29.F.4 Update `local/kind/manifests/30-api-server.yaml` to add commented-out `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_SERVICE_NAME` env entries showing how to point the rig at a sidecar Alloy. Do not enable by default. (Implemented as enabled-by-default in the rig: env points kube-state-graph at the in-cluster Alloy, Alloy fans traces to a new Tempo Deployment for Grafana exploration; `28-tempo.yaml` added; Alloy now also accepts logs and runs them through `otelcol.exporter.debug`.)
 - [x] 29.F.5 Update `docs/operations.md` with an "OpenTelemetry" section listing the env vars, the span topology, the expected log fields, and the secret-redaction guarantee. Mirror in `docs/operations.zh-tw.md`. (No zh-tw mirror exists in this repo; English doc updated.)
 - [x] 29.F.6 Update `docs/api.md` to mention that responses are unaffected by tracing and that `traceparent` is honoured / propagated.
 - [x] 29.F.7 Update `CLAUDE.md` "Load-bearing design rules" with a bullet: "Tracing/logging exports are config'd by OTel env vars only (no `--otlp-*` flags), default no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, and SHALL NOT alter response bodies."
@@ -495,7 +464,7 @@ Per design D26 and the "Configurable upstream metric-name prefix" requirement in
 - [ ] 31.E.1 Run `openspec validate "add-k8s-pod-graph-api"`.
 - [ ] 31.E.2 Run `make test`, `make vet`, `make lint`.
 - [ ] 31.E.3 Run `make verify-mocks` (no interface signatures changed — should be clean).
-- [ ] 31.E.4 Sanity-check the manual rig: with Beyla emitting at least one span whose `k8s.pod.uid` resource attr is intentionally stripped (or by ingesting a hand-crafted `traces_service_graph_request_total` series via the integration-test ingest helper), confirm `/v1/graph` contains an `external/<label>` node for that endpoint.
+- [ ] 31.E.4 Sanity-check via the integration-test ingest helper: ingest a hand-crafted `traces_service_graph_request_total` series whose `client_k8s_pod_uid` is empty but the `client` label is non-empty, then confirm `/v1/graph` contains an `external/<label>` node for that endpoint.
 
 ## 32. Typed `ipaddress` node attribute + remove HTTP cache validators (capability: graph-api — modified, cluster-topology-source — modified)
 
@@ -536,7 +505,7 @@ The response shape is changed so that every pod and K8s-node entry carries its o
 - [x] 32.D.1 `go build ./...`, `go vet ./...`, `go test ./... -count=1 -race -short`: all green.
 - [x] 32.D.2 `make docs` regenerates `internal/api/static/openapi/*` + `docs/swagger.*` cleanly with no ETag / 304 references remaining and the new `ipaddress` schema entry visible.
 - [ ] 32.D.3 `openspec validate "add-k8s-pod-graph-api"` passes after the spec rewrites.
-- [ ] 32.D.4 Manually launch the local rig + Scalar UI and confirm `/v1/graph` returns nodes carrying `ipaddress` (pod + node entries) and that no `ETag` header is set on graph routes.
+- [ ] 32.D.4 Run the server binary against a VictoriaMetrics instance and confirm via `/v1/graph` (and the Scalar UI) that nodes carry `ipaddress` (pod + node entries) and that no `ETag` header is set on graph routes.
 
 ## 33. Split `others` (pattern) from `external` (missing-UID fallback) (capability: graph-api — modified, pod-service-graph — modified)
 
@@ -581,13 +550,11 @@ Pattern-matched non-pod endpoints (operator-declared via `KSG_OTHERS_NAME_PATTER
 - [ ] 33.F.2 `README.md` + `README.zh-tw.md`: update the env / flag table entries (`KSG_EXTERNAL_NAME_PATTERN` → `KSG_OTHERS_NAME_PATTERN`, `--external-name-pattern` → `--others-name-pattern`); update prose mentioning `external` nodes produced by the pattern to mention `others` instead.
 - [ ] 33.F.3 `docs/operations.md`: update the "Exporter compatibility contract" + any other section that mentions `KSG_EXTERNAL_NAME_PATTERN` or the `external`-via-pattern shape.
 - [ ] 33.F.4 `docs/api.md`: add `others` to the node `type` enum description; clarify the disjoint dedupe.
-- [ ] 33.F.5 `local/kind/manifests/30-api-server.yaml`: rename the env var.
-- [ ] 33.F.6 `charts/kube-state-graph/templates/deployment.yaml` + `charts/kube-state-graph/values.yaml`: rename the env var + the values key (`externalNamePattern` → `othersNamePattern` if such a key exists in `values.yaml`).
 - [ ] 33.F.7 `CLAUDE.md`: rewrite the "External-endpoint substitution rule" bullet to describe the split (pattern → others, fallback → external); update the resolution-order numbered list.
 
 ### 33.G Swag / OpenAPI
 
-- [ ] 33.G.1 Update any swag `@Description` or `@Param` on `/v1/graph` / `/v1/graph/nodegraph` mentioning `KSG_EXTERNAL_NAME_PATTERN` or the `external` enum value for pattern-matched nodes. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
+- [ ] 33.G.1 Update any swag `@Description` or `@Param` on `/v1/graph` mentioning `KSG_EXTERNAL_NAME_PATTERN` or the `external` enum value for pattern-matched nodes. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
 
 ### 33.H Validation
 
@@ -615,7 +582,7 @@ Per design D29. The configurable substring-match knob (`KSG_OTHERS_NAME_PATTERN`
 - [x] 34.B.5 `internal/build/topology.go`: parse `kube_endpointslice_endpoints{cluster, namespace, endpointslice, address, hostname, targetref_kind, targetref_name, targetref_namespace, ...}`; resolve each endpoint's backing pod by joining `(cluster, targetref_namespace, targetref_name)` against the loaded topology pods (the global pod index built from `kube_pod_info`); build index `EndpointsByService map[serviceKey][]endpointObs` keyed by `(cluster, namespace, service)` (service name recovered via the slice→service map from 34.B.4), each entry carrying the resolved `*PodNode` plus the endpoint `hostname` label (for headless pod-hostname matching).
 - [x] 34.B.6 `internal/build/topology.go`: build index `PodsByNameNS map[podNameKey]*PodNode` keyed by `(cluster, namespace, pod-name)` from the loaded `kube_pod_info` pods — used as the StatefulSet-convention headless fallback when no endpointslice `hostname` matches (KSM does NOT expose `spec.hostname`).
 - [x] 34.B.7 `internal/build/topology.go`: surface the three indexes on the `Topology` struct (e.g. `Topology.ServicesByNameNS`, `Topology.EndpointsByService`, `Topology.PodsByNameNS`) alongside the existing `Topology.PodsByUID`. Build INDEXES ONLY — do NOT materialise `ServiceNode`s or `service-selects-pod` edges here; those are emitted on demand by the service-graph reader (34.C) for referenced services only, to avoid graph bloat.
-- [x] 34.B.8 IMPLEMENTATION-TIME VERIFY: against a live KSM (local rig), confirm the exact label names — `label_kubernetes_io_service_name` on `kube_endpointslice_labels` (slice→service join), and that `kube_endpointslice_endpoints` carries `hostname` + `targetref_kind` / `targetref_name` / `targetref_namespace`. Adjust the parser to the verified label names before finalising.
+- [x] 34.B.8 IMPLEMENTATION-TIME VERIFY: against a live kube-state-metrics instance, confirm the exact label names — `label_kubernetes_io_service_name` on `kube_endpointslice_labels` (slice→service join), and that `kube_endpointslice_endpoints` carries `hostname` + `targetref_kind` / `targetref_name` / `targetref_namespace`. Adjust the parser to the verified label names before finalising.
 
 ### 34.C Service-graph resolver (capability: pod-service-graph)
 
@@ -640,13 +607,6 @@ Per design D29. The configurable substring-match knob (`KSG_OTHERS_NAME_PATTERN`
 - [x] 34.D.4 `cmd/kube-state-graph/main.go`: remove the `others_name_pattern_set` startup slog field.
 - [x] 34.D.5 `internal/build/servicegraph.go`: confirm `OthersNode` instances now always carry `labels={}` (the `pattern` key is gone everywhere). The disjointness between `others/<label>` (recognised `"://"` connection strings that did not resolve in-cluster) and `external/<label>` (non-URL missing-UID producer-regression signal) is preserved via the separate dedupe maps + node types.
 
-### 34.E Rig + RBAC + chart (capability: verification-harness)
-
-- [x] 34.E.1 `local/kind/manifests/` KSM config: add `services` and `endpointslices` to KSM `--resources`; add `kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels` to `--metric-allowlist`.
-- [x] 34.E.2 `local/kind/manifests/` KSM RBAC: extend the ClusterRole with `list` / `watch` on `services` (core) and `endpointslices` (`discovery.k8s.io`).
-- [x] 34.E.3 `local/kind/manifests/30-api-server.yaml`: REMOVE the `KSG_OTHERS_NAME_PATTERN` env entry.
-- [x] 34.E.4 `charts/kube-state-graph/templates/deployment.yaml`: remove the `KSG_OTHERS_NAME_PATTERN` env mapping. `charts/kube-state-graph/values.yaml`: remove the `othersNamePattern` values key.
-
 ### 34.F Tests + golden
 
 - [x] 34.F.1 `internal/build/servicegraph_test.go`: remove the `othersPattern` parameter from all call sites. Add Stage 0 cases — service-level hit (resolves to `ServiceNode` + materialises `service-selects-pod` edges to backing pods), headless-pod hit via endpointslice `hostname` match, headless-pod hit via `PodsByNameNS` StatefulSet fallback, unresolvable `"://"` label → `others/<label>` with `labels={}`, and a truly-external URL (`https://...partner...`) → `others/<label>`. Assert client `"://"` headless-pod resolution makes the edge carry `labels.cluster`; service / others resolution omits it.
@@ -665,7 +625,7 @@ Per design D29. The configurable substring-match knob (`KSG_OTHERS_NAME_PATTERN`
 
 ### 34.H Swag / OpenAPI
 
-- [x] 34.H.1 Update any swag `@Description` / `@Param` on `/v1/graph` / `/v1/graph/nodegraph` mentioning `KSG_OTHERS_NAME_PATTERN` to describe the hardcoded connection-string resolution instead.
+- [x] 34.H.1 Update any swag `@Description` / `@Param` on `/v1/graph` mentioning `KSG_OTHERS_NAME_PATTERN` to describe the hardcoded connection-string resolution instead.
 - [x] 34.H.2 Add the `service` node `type` enum value and the `service-selects-pod` edge type to the documented schemas; ensure `/v1/edge-types` annotations / examples include it. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
 
 ### 34.I Validation
@@ -708,24 +668,24 @@ Per design D30. The `servicegraph` connector emits **virtual peers** for endpoin
 
 ## 36. Cytoscape compound node grouping (`cluster > node > pod`) (capability: graph-api)
 
-Per design D31. The Cytoscape `/v1/graph` serialiser groups nodes into compound containers via Cytoscape's `data.parent`: `cluster > node > pod`, with services / PVCs as cluster-level siblings (NOT pod containers). Presentation-only — `serialiseCytoscape` is the only production change; the core graph, sealed types, `graph.Project`, property tests, and the Grafana Node Graph serialiser are untouched. `pod-runs-on-node` edges are suppressed from the Cytoscape edge set (the nesting expresses them) but retained everywhere else (core graph, traversal, `/v1/edge-types`, Grafana Node Graph). The pod→node parent is sourced from the pod's `labels.node` (a contract field), not the edge, so it survives edge-type projection. See design.md D31.
+Per design D31. The Cytoscape `/v1/graph` serialiser groups nodes into compound containers via Cytoscape's `data.parent`: `cluster > node > pod`, with services / PVCs as cluster-level siblings (NOT pod containers). Presentation-only — `serialiseCytoscape` is the only production change; the core graph, sealed types, `graph.Project`, and property tests are untouched. The pod→node relationship is expressed only by this compound nesting; there is no pod-runs-on-node edge. The pod→node parent is sourced from the pod's `labels.node` (a contract field), so it survives edge-type projection. See design.md D31.
 
 ### 36.A Serialiser
 
 - [x] 36.A.1 `internal/api/serialise.go`: add `Parent string` with tag `json:"parent,omitempty"` to `cytoscapeNodeData` (placed after `Type`, before `IPAddress`).
 - [x] 36.A.2 `internal/api/serialise.go`: in `serialiseCytoscape`, synthesise one `type="cluster"` group node (`id="cluster/<cluster>"`, `name="<cluster>"`, `labels={}`, no parent, no ipaddress) per distinct non-empty `labels.cluster` on an emitted node; emit them FIRST, sorted by cluster name (determinism, D6). Add `import "sort"`.
 - [x] 36.A.3 `internal/api/serialise.go`: assign `data.parent` — pod → `labels.node` when that node id is present in the view, else `cluster/<cluster>` (non-empty cluster), else `""`; node / service / pvc → `cluster/<cluster>`; others / external / cluster → `""`. Build a `present` set of view node ids so a pod never references a node absent from `elements.nodes`.
-- [x] 36.A.4 `internal/api/serialise.go`: in the Cytoscape edge loop, skip `graph.EdgeTypePodRunsOnNode`. Retain all other edge types. Do NOT modify `serialiseGrafanaNodeGraph` (it keeps the edge and emits no cluster nodes).
+- [x] 36.A.4 `internal/api/serialise.go`: in the Cytoscape edge loop, emit every edge type (`pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`). The pod→node relationship is expressed only by compound nesting via `labels.node`; there is no pod-runs-on-node edge to emit.
 
 ### 36.B Tests + golden
 
-- [x] 36.B.1 `internal/api/serialise_compound_test.go`: unit tests — cluster-node synthesis, `cluster > node > pod` parent chain, svc / pvc → cluster, pod fallback to cluster when its node is absent, others / external no parent, unknown-cluster pod (`labels.cluster=""`) no parent, cluster nodes sorted first, and Grafana-unaffected (keeps the runs-on edge, emits no cluster node).
-- [x] 36.B.2 Golden: regenerate `*-cytoscape.json` fixtures (`go test ./internal/api/ -update -run Golden`) — they gain the synthetic cluster group node + `data.parent` fields and drop `pod-runs-on-node` edges. The `*-nodegraph.json` fixtures MUST be byte-unchanged (Grafana serialiser untouched) — verify with `git diff`.
+- [x] 36.B.1 `internal/api/serialise_compound_test.go`: unit tests — cluster-node synthesis, `cluster > node > pod` parent chain, svc / pvc → cluster, pod fallback to cluster when its node is absent, others / external no parent, unknown-cluster pod (`labels.cluster=""`) no parent, cluster nodes sorted first, and that the pod→node relationship is expressed by the `data.parent` compound chain (no pod-runs-on-node edge exists).
+- [x] 36.B.2 Golden: regenerate `*-cytoscape.json` fixtures (`go test ./internal/api/ -update -run Golden`) — they gain the synthetic cluster group node + `data.parent` fields.
 
 ### 36.C Docs
 
-- [x] 36.C.1 `CLAUDE.md`: note the Cytoscape compound grouping (presentation-only, `data.parent`, synthetic `cluster` node, `pod-runs-on-node` suppressed in Cytoscape only / kept in Grafana) in the serialiser / response-shape sections.
-- [x] 36.C.2 `docs/api.md`: document the `data.parent` field, the synthetic `type="cluster"` node, and that `pod-runs-on-node` is shown via nesting in Cytoscape and via an edge in Grafana.
+- [x] 36.C.1 `CLAUDE.md`: note the Cytoscape compound grouping (presentation-only, `data.parent`, synthetic `cluster` node, pod→node relationship expressed via `labels.node` compound nesting with no pod-runs-on-node edge) in the serialiser / response-shape sections.
+- [x] 36.C.2 `docs/api.md`: document the `data.parent` field, the synthetic `type="cluster"` node, and that the pod→node relationship is shown via compound nesting (`labels.node`) in Cytoscape, with no pod-runs-on-node edge.
 - [x] 36.C.3 Swag / OpenAPI: add the optional `parent` field and the `cluster` node `type` enum to the documented Cytoscape node schema; run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
 
 ### 36.D Validation

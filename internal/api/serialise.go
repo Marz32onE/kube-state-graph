@@ -47,8 +47,8 @@ type cytoscapeEdgeData struct {
 
 // nodeTypeCluster is the synthetic node type used for Cytoscape compound
 // grouping. Cluster group nodes exist only in the Cytoscape presentation (to
-// satisfy data.parent references); they are not graph.GraphNodes and never
-// appear in the Grafana Node Graph output. See design.md D31.
+// satisfy data.parent references); they are not graph.GraphNodes. See
+// design.md D31.
 const nodeTypeCluster = "cluster"
 
 // clusterParentID is the synthetic group-node id for a cluster.
@@ -102,13 +102,6 @@ func serialiseCytoscape(g *graph.Graph, view graph.View) cytoscapeBody {
 
 	body.Elements.Edges = make([]cytoscapeEdge, 0, len(view.Edges))
 	for _, e := range view.Edges {
-		// pod-runs-on-node is expressed by compound nesting (cluster > node >
-		// pod), so the redundant edge is omitted from the Cytoscape view. It is
-		// retained in the core graph, in projection / traversal, and in the
-		// Grafana Node Graph output (which cannot nest). See design.md D31.
-		if e.Type == graph.EdgeTypePodRunsOnNode {
-			continue
-		}
 		body.Elements.Edges = append(body.Elements.Edges, cytoscapeEdge{
 			Data: cytoscapeEdgeData{
 				ID:     e.ID,
@@ -146,61 +139,4 @@ func compoundParent(n graph.GraphNode, present map[string]struct{}) string {
 		return clusterParentID(c)
 	}
 	return ""
-}
-
-// ----- Grafana Node Graph shape ---------------------------------------------
-
-type grafanaBody struct {
-	APIVersion  string         `json:"apiVersion"`
-	NodesFields []grafanaField `json:"nodes_fields"`
-	Nodes       []grafanaRow   `json:"nodes"`
-	EdgesFields []grafanaField `json:"edges_fields"`
-	Edges       []grafanaRow   `json:"edges"`
-}
-
-type grafanaField struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-}
-
-type grafanaRow map[string]any
-
-func serialiseGrafanaNodeGraph(view graph.View) grafanaBody {
-	out := grafanaBody{
-		APIVersion: APIVersion,
-		NodesFields: []grafanaField{
-			{Name: "id", Type: "string"},
-			{Name: "title", Type: "string"},
-			{Name: "subTitle", Type: "string"},
-			{Name: "mainStat", Type: "string"},
-		},
-		EdgesFields: []grafanaField{
-			{Name: "id", Type: "string"},
-			{Name: "source", Type: "string"},
-			{Name: "target", Type: "string"},
-			{Name: "mainStat", Type: "string"},
-		},
-	}
-	for _, n := range view.Nodes {
-		labels := n.Labels()
-		sub := labels["cluster"]
-		if ns := labels["namespace"]; ns != "" {
-			sub = sub + " · " + ns
-		}
-		out.Nodes = append(out.Nodes, grafanaRow{
-			"id":       n.ID(),
-			"title":    n.Name(),
-			"subTitle": sub,
-			"mainStat": string(n.Type()),
-		})
-	}
-	for _, e := range view.Edges {
-		out.Edges = append(out.Edges, grafanaRow{
-			"id":       e.ID,
-			"source":   e.Source,
-			"target":   e.Target,
-			"mainStat": string(e.Type),
-		})
-	}
-	return out
 }

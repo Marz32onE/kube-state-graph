@@ -21,7 +21,7 @@ cluster N: kube-state-metrics ──┤
 
 - 依呼叫端指定的 `[start, end]`，從**單一**集中式 VictoriaMetrics 讀取 `kube_*` 拓樸與 `traces_service_graph_*` 執行期指標。
 - Join 成多叢集圖，節點鍵為帶叢集範圍的 pod UID 與 node 名稱。
-- 回傳 Cytoscape.js JSON（`/v1/graph`）或 Grafana Node Graph 資料源形狀（`/v1/graph/nodegraph`）。
+- 回傳 Cytoscape.js JSON（`/v1/graph`）。
 - 提供叢集探索（`/v1/clusters`）與靜態邊類型目錄（`/v1/edge-types`）。
 - 每次請求都重新建圖——v1 **不附帶 in-process result cache、singleflight，也不發 HTTP cache validator**（無 `ETag` / `If-None-Match` / `304`）。後續分散式部署的水平擴展 cache 機制留待另案。`start` / `end` 接受 RFC 3339 或 Unix 秒，server 僅強制 `end > start`，其後原樣 pass through 給上游 PromQL——**不做** bucketing、alignment、視窗上限或未來時間擋板；bounded query cost 交由 VictoriaMetrics 搜尋限制負責。序列化輸出為確定性 body，僅含 `apiVersion`、`clusters`、`elements`；pod／node／service 的 IP 在頂層 `ipaddress`，不在 `labels`。
 
@@ -51,7 +51,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 | 指標 | 用途 | 會讀的標籤 | 必填？ |
 |---|---|---|---|
-| `kube_pod_info` | Pod 節點、`pod-runs-on-node` 邊 | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`（→ `data.ipaddress`；不匯出 `host_ip`） | **是** |
+| `kube_pod_info` | Pod 節點（`node` 標籤驅動 Cytoscape compound nesting） | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`（→ `data.ipaddress`；不匯出 `host_ip`） | **是** |
 | `kube_node_info` | K8s node 節點 | `cluster`, `node` | **是** |
 | `kube_node_status_addresses{type="ExternalIP"}` | Node 外部 IP（→ `data.ipaddress`） | `cluster`, `node`, `address` | 選填 |
 | `kube_node_labels` | 傳遞 node 標籤（`kubernetes.io/*` 等） | `cluster`, `node`, `label_*` | 選填 |
@@ -80,13 +80,15 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 | 邊類型 | 來源指標 |
 |---|---|
-| `pod-runs-on-node` | `kube_pod_info`（pod 的 `node` 標籤） |
 | `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
 | `pod-calls-pod` | `traces_service_graph_request_total` |
+| `service-selects-pod` | `traces_service_graph_request_total`（連線字串解析隨需產生） |
 
-### 本機驗證環境
+pod→node 關係**不**以邊表達，而是由 Cytoscape compound nesting（`cluster > node > pod`，依每個 pod 的 `labels.node` 推導）呈現；K8s `node` 節點本身無邊，純粹作為 compound 容器（仍在 `ipaddress` 屬性帶 `external_ip`）。因此鎖定某 pod 的 `name` 過濾或 `root` 遍歷**不會**再帶入其宿主 K8s node；而 `?namespace=` 過濾會**排除** K8s node（無 namespace 標籤、無邊），namespace 收斂後的視圖僅含具名空間實體。
 
-樹內 **`local/kind/`** 腳本會對真實 Kind 叢集 scrape `kube-state-metrics`（`kube_pod_info`、`kube_node_info`、`kube_node_labels`、`kube_pod_spec_volumes_persistentvolumeclaims_info`），並由 Grafana Beyla DaemonSet 以 eBPF 自動 instrument `kube-state-graph` namespace 內的 pod，將 OTLP spans 送到 Grafana Alloy Deployment；Alloy 的 `otelcol.connector.servicegraph`（設定 `dimensions=["k8s.pod.uid"]`）會把 Beyla 帶入的 per-pod resource attribute 提升為 `client_k8s_pod_uid` 與 `server_k8s_pod_uid`，再 remote-write 到 VictoriaMetrics。`pod-calls-pod` 邊由叢集內既有的 Go 服務流量（`kube-state-graph → VictoriaMetrics → kube-state-metrics`、Grafana → kube-state-graph 等）驅動，不需要額外的合成流量產生器。單一 Kind 無法模擬的跨叢集情境，仍由 **`internal/integration/`** 搭配 testcontainers 起的 VictoriaMetrics 涵蓋。
+### 驗證
+
+多叢集／跨叢集／service-graph 情境由 **`internal/integration/`** 搭配 testcontainers-go 起的 VictoriaMetrics 容器涵蓋：手工製作的 fixture series 以 Prometheus 文字曝露格式（`POST /api/v1/import/prometheus`）推進容器後，再對 in-process API server 驗證。
 
 ## 設定
 
@@ -94,7 +96,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 |---|---|---|---|
 | `--prom-url` | `KSG_PROM_URL` | `http://localhost:8428` | VictoriaMetrics Prometheus 相容 endpoint。 |
 | `--listen-addr` | `KSG_LISTEN_ADDR` | `:8080` | HTTP 監聽位址。 |
-| `--build-timeout` | `KSG_BUILD_TIMEOUT` | `15s` | `/v1/graph` 與 `/v1/graph/nodegraph` 的單次建圖 context 逾時。 |
+| `--build-timeout` | `KSG_BUILD_TIMEOUT` | `15s` | `/v1/graph` 的單次建圖 context 逾時。 |
 | `--api-timeout` | `KSG_API_TIMEOUT` | `5s` | 非 graph 端點的 upstream 呼叫逾時（`/v1/clusters`、`/readyz`）。 |
 | `--api-keys-file` | `KSG_API_KEYS_FILE` | （空） | 接受的 API key 檔案路徑（每行一個，`#` 為註解）。為 K8s `Secret` 掛載而設計，會週期性重新讀取。 |
 | `--api-keys` | `KSG_API_KEYS` | （空） | 逗號分隔字面 key；僅 dev 用途，設了 `--api-keys-file` 即忽略。 |
@@ -120,7 +122,7 @@ clone 後**只跑一次**。下載 modules、安裝 host-level 工具（`golangc
 
 ```bash
 make init           # go mod download + dev tools
-make doctor         # 檢查工具版本（go、golangci-lint、govulncheck、mockery、docker、kind）
+make doctor         # 檢查工具版本（go、golangci-lint、govulncheck、mockery、docker）
 make init-hooks     # （選用）安裝 pre-commit hook（gofmt + go vet）
 ```
 
@@ -134,9 +136,6 @@ make test           # 單元 + 元件 + golden + property + integration（需 Do
 make lint           # golangci-lint
 make vuln           # govulncheck
 make check-docs     # OpenAPI 與嵌入靜態檔是否與 swag 產出一致（CI 亦跑）
-make local-up       # 本機 Kind + VM + 儀表板腳本（見 local/kind/）
-make local-smoke    # 對已啟動環境跑 smoke
-make local-down     # 拆除
 ```
 
 ### Mocks（mockery）
@@ -158,9 +157,8 @@ make verify-mocks   # CI 風格的 freshness 檢查（regen + git diff）
 | Component | `internal/api/*_test.go` | 無 — 透過介面注入 `MockQuerier`；`httptest.NewServer` 只用於包裹 server-under-test，不假冒上游。 |
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | 無。執行 `-update` 重新生成 snapshot。 |
 | Integration | `internal/integration/*` | **需 Docker。** testcontainers-go 啟動真實 VictoriaMetrics 容器；`SkipIfDockerUnavailable` 在沒有 Docker 的本機自動跳過，CI 跑全套。 |
-| 手動 rig | `local/kind/smoke.sh` | Kind cluster — 只在本機跑，CI 不執行。 |
 
-unit 與 integration 邊界嚴格：**任何透過 TCP socket 連到上游的測試都歸類為 integration**。單元測試必須能在無外部相依下執行。整合測試走 `internal/integration/` + testcontainers-go：直接以 Prometheus 文字曝露格式把 fixture series 推進臨時 VictoriaMetrics 容器。本地 Kind rig 走 `local/kind/`，由 kube-state-metrics 直接抓取真實 Kind cluster 產生 topology series。
+unit 與 integration 邊界嚴格：**任何透過 TCP socket 連到上游的測試都歸類為 integration**。單元測試必須能在無外部相依下執行。整合測試走 `internal/integration/` + testcontainers-go：直接以 Prometheus 文字曝露格式把 fixture series 推進臨時 VictoriaMetrics 容器。
 
 ## 授權
 

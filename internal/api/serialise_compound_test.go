@@ -38,15 +38,14 @@ func assertNoClusterGroup(t *testing.T, nodes map[string]cytoscapeNodeData) {
 }
 
 // cluster > node > pod nesting: a synthetic cluster group node is emitted, the
-// K8s node is parented to the cluster, the pod is parented to its K8s node
-// (via labels.node), and the redundant pod-runs-on-node edge is omitted from
-// the Cytoscape output (the nesting expresses it).
+// K8s node is parented to the cluster, and the pod is parented to its K8s node
+// via labels.node. There is no pod-runs-on-node edge — the compound nesting is
+// the sole representation of the pod→node relationship (design.md D31).
 func TestSerialiseCytoscape_CompoundClusterNodePod(t *testing.T) {
 	pod := &graph.PodNode{IDValue: "c1/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "c1", "namespace": "shop", "node": "c1/worker-0"}}
 	node := &graph.K8sNode{IDValue: "c1/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "c1"}}
-	runsOn := graph.NewEdge(graph.EdgeTypePodRunsOnNode, pod.IDValue, node.IDValue, nil)
 
-	body := cy(t, []graph.GraphNode{node, pod}, []*graph.Edge{runsOn})
+	body := cy(t, []graph.GraphNode{node, pod}, nil)
 	nodes := cyNodesByID(body)
 
 	cl, ok := nodes["cluster/c1"]
@@ -57,11 +56,6 @@ func TestSerialiseCytoscape_CompoundClusterNodePod(t *testing.T) {
 
 	assert.Equal(t, "cluster/c1", nodes["c1/worker-0"].Parent, "node parented to cluster")
 	assert.Equal(t, "c1/worker-0", nodes["c1/p1"].Parent, "pod parented to its node (cluster > node > pod)")
-
-	for _, e := range body.Elements.Edges {
-		assert.NotEqual(t, string(graph.EdgeTypePodRunsOnNode), e.Data.Type,
-			"pod-runs-on-node edge must be omitted from Cytoscape output")
-	}
 }
 
 // Parent assignment across the remaining cases: pod fall-back when its node is
@@ -131,26 +125,4 @@ func TestSerialiseCytoscape_ClusterNodesSortedFirst(t *testing.T) {
 	require.GreaterOrEqual(t, len(body.Elements.Nodes), 2)
 	assert.Equal(t, "cluster/c-alpha", body.Elements.Nodes[0].Data.ID)
 	assert.Equal(t, "cluster/c-beta", body.Elements.Nodes[1].Data.ID)
-}
-
-// The Grafana Node Graph serialiser is unaffected by compound: it emits no
-// cluster group node and KEEPS the pod-runs-on-node edge (it cannot nest).
-func TestSerialiseGrafana_UnaffectedByCompound(t *testing.T) {
-	pod := &graph.PodNode{IDValue: "c1/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "c1", "namespace": "shop", "node": "c1/worker-0"}}
-	node := &graph.K8sNode{IDValue: "c1/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "c1"}}
-	runsOn := graph.NewEdge(graph.EdgeTypePodRunsOnNode, pod.IDValue, node.IDValue, nil)
-	view := graph.View{Nodes: []graph.GraphNode{node, pod}, Edges: []*graph.Edge{runsOn}}
-
-	body := serialiseGrafanaNodeGraph(view)
-	for _, n := range body.Nodes {
-		assert.NotEqual(t, "cluster", n["mainStat"], "Grafana emits no cluster group node")
-		assert.NotEqual(t, "cluster/c1", n["id"])
-	}
-	found := false
-	for _, e := range body.Edges {
-		if e["mainStat"] == string(graph.EdgeTypePodRunsOnNode) {
-			found = true
-		}
-	}
-	assert.True(t, found, "Grafana retains the pod-runs-on-node edge")
 }

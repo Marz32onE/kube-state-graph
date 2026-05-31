@@ -53,9 +53,9 @@ The server SHALL pass caller-supplied `start` and `end` through to upstream Prom
 
 Each **node** SHALL be `{ data: { id, name, type, labels } }`:
 - `id` SHALL be a cluster-scoped composite for pods / K8s nodes / PVCs / services (pods: `<cluster>/<pod-uid>`; nodes: `<cluster>/<node-name>`; PVCs: `<cluster>/<namespace>/<claim>`; services: `<cluster>/<namespace>/<service>`). For others nodes (unresolvable connection-string endpoints), `id` SHALL be `others/<label-value>` (no cluster prefix). For external nodes (missing-UID human-label fallback), `id` SHALL be `external/<label-value>` (no cluster prefix).
-- `name` SHALL be the human-readable pod / node / PVC / service name (used for the Grafana panel display label). For others / external nodes, `name` SHALL be the verbatim `client` or `server` label value from the source service-graph series.
-- `type` SHALL be one of the strings `"pod"`, `"node"`, `"pvc"`, `"service"`, `"others"`, `"external"`. The Cytoscape serialiser additionally synthesises `"cluster"` group nodes for compound nesting (see "Cytoscape compound node grouping"); these appear ONLY in the Cytoscape response, never in the Grafana Node Graph response.
-- `data` MAY carry an optional `parent` field (`omitempty`) referencing the `id` of the node's Cytoscape compound container — see "Cytoscape compound node grouping". The Grafana Node Graph response SHALL NOT carry a `parent` field.
+- `name` SHALL be the human-readable pod / node / PVC / service name. For others / external nodes, `name` SHALL be the verbatim `client` or `server` label value from the source service-graph series.
+- `type` SHALL be one of the strings `"pod"`, `"node"`, `"pvc"`, `"service"`, `"others"`, `"external"`. The Cytoscape serialiser additionally synthesises `"cluster"` group nodes for compound nesting (see "Cytoscape compound node grouping").
+- `data` MAY carry an optional `parent` field (`omitempty`) referencing the `id` of the node's Cytoscape compound container — see "Cytoscape compound node grouping".
 - `labels` SHALL be a JSON object whose values are strings only (`map[string]string`). For pod / K8s node / PVC / service nodes it SHALL include at minimum a `cluster` entry; for pods, PVCs, and services it SHALL also include a `namespace` entry; for pods it SHALL include `node` (the cluster-scoped node ID), and SHALL include `pod_ip` and `host_ip` whenever the upstream `kube_pod_info` series carried them; for K8s nodes it SHALL include `external_ip` when the upstream provided one. **For others nodes**, `labels` SHALL be an empty object `{}` (no `pattern` key, no `cluster` key). **For external nodes**, `labels` SHALL be an empty object `{}` (no `pattern` key, no `cluster` key — externals are only produced by the missing-UID fallback).
 
 Each **edge** SHALL be `{ data: { id, type, source, target, labels } }`:
@@ -116,34 +116,9 @@ Implementations SHALL NOT encode booleans or numbers as strings inside `labels`.
 - **WHEN** the same logical edge (same `type`, `source`, `target`) is produced by two consecutive builds for the same time bucket
 - **THEN** `data.id` is byte-identical between the two builds
 
-### Requirement: Grafana Node Graph compatibility route
-
-The server SHALL expose `GET /v1/graph/nodegraph` that returns the same underlying graph as `/v1/graph` projected into the Grafana Node Graph API datasource shape (parallel `nodes_fields`/`nodes` and `edges_fields`/`edges` arrays), accepting the same query parameters as `/v1/graph`. The serializer SHALL map the canonical schema as follows:
-
-- Node `name` → `title`.
-- Node `labels.cluster` ` · ` `labels.namespace` (or `labels.cluster` alone when no namespace) → `subTitle`.
-- Node `type` → `mainStat`.
-- Edge `type` → `mainStat`.
-- Edge `secondaryStat` SHALL be omitted in v1 (numeric edge metrics are deferred to a future typed field).
-
-#### Scenario: Nodegraph request returns Grafana shape
-
-- **WHEN** a client sends `GET /v1/graph/nodegraph?start=...&end=...`
-- **THEN** the response body contains `nodes_fields`, `nodes`, `edges_fields`, and `edges` arrays (Grafana Node Graph compatible) and does NOT contain a Cytoscape `elements` field
-
-#### Scenario: Pod name shown as title in Grafana
-
-- **WHEN** the nodegraph response contains a pod node
-- **THEN** the row's `title` field equals the pod's canonical `name`
-
-#### Scenario: Cluster context surfaced in subTitle
-
-- **WHEN** the nodegraph response contains a pod node
-- **THEN** the row's `subTitle` field includes the `<cluster>` value (and, when present, the namespace) so cross-cluster context is visible in Grafana
-
 ### Requirement: Filter parameters
 
-`GET /v1/graph` and `GET /v1/graph/nodegraph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `edge_type`, `name`. Filters SHALL be applied at response time as a projection over the freshly built graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
+`GET /v1/graph` SHALL accept the optional, repeatable filter parameters `cluster`, `namespace`, `edge_type`, `name`. Filters SHALL be applied at response time as a projection over the freshly built graph. Empty filter SHALL return the full multi-cluster graph for the time window. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter value SHALL NOT cause an error.
 
 The `name` parameter SHALL match `n.Name()` by exact string equality across **every** node type (`PodNode`, `K8sNode`, `PVCNode`, `ServiceNode`, `ExternalNode`) — a single `?name=` value matches a pod, a K8s node, a PVC, a service, or an external endpoint with the same name. Names are not globally unique (pods and K8s nodes can share a name; PVCs and services can repeat across namespaces); all matches SHALL be returned.
 
@@ -177,7 +152,7 @@ The `name` parameter SHALL match `n.Name()` by exact string equality across **ev
 #### Scenario: Name filter matches a K8s node
 
 - **WHEN** the freshly built graph contains a K8s node named `worker-1` in `cluster-alpha` and a client sends `?name=worker-1`
-- **THEN** the response contains the `worker-1` K8s-node and any pod nodes that are edge endpoints of `worker-1` via `pod-runs-on-node`
+- **THEN** the response contains the `worker-1` K8s-node node; because K8s nodes carry no edges, no pod is pulled in by this match (the pod→node relationship is compound nesting via `labels.node`, not an edge)
 
 #### Scenario: Name filter matches a PVC
 
@@ -239,12 +214,12 @@ The server SHALL expose `GET /v1/clusters` that returns the list of clusters wit
 
 ### Requirement: Edge-type discovery endpoint
 
-The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`, and `service-selects-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"service"`, `"others"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header.
+The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-mounts-pvc`, `pod-calls-pod`, and `service-selects-pod`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"service"`, `"others"`, `"external"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header.
 
 #### Scenario: Static catalogue
 
 - **WHEN** a client sends `GET /v1/edge-types`
-- **THEN** the response body contains an `edge_types` array including objects whose `type` values include `pod-runs-on-node`, `pod-mounts-pvc`, `pod-calls-pod`, and `service-selects-pod`
+- **THEN** the response body contains an `edge_types` array including objects whose `type` values include `pod-mounts-pvc`, `pod-calls-pod`, and `service-selects-pod`
 
 #### Scenario: pod-calls-pod marked may_cross_cluster
 
@@ -276,7 +251,7 @@ For identical input — same `(window, filters, traversal, upstream-data)` — t
 
 The serialiser SHALL maintain determinism by sorting `view.Nodes` and `view.Edges`, sorting `Graph.ClusterNames()`, sorting `IPAddress` slices at construction, and keeping the response body shape fixed at `{apiVersion, clusters, elements}` for graph routes (no time-of-build or echo-of-input fields).
 
-`GET /v1/edge-types`, `GET /openapi.yaml`, `GET /openapi.json`, `GET /docs`, and `GET /docs/assets/*` SHALL carry an explicit `Cache-Control` header (long max-age for the embedded assets). `GET /v1/graph`, `GET /v1/graph/nodegraph`, and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header.
+`GET /v1/edge-types`, `GET /openapi.yaml`, `GET /openapi.json`, `GET /docs`, and `GET /docs/assets/*` SHALL carry an explicit `Cache-Control` header (long max-age for the embedded assets). `GET /v1/graph` and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header.
 
 #### Scenario: Body byte-identical across repeated requests
 
@@ -398,7 +373,7 @@ The server SHALL expose `GET /metrics` in Prometheus exposition format including
 
 ### Requirement: Per-build timeout (graph endpoints)
 
-For `GET /v1/graph` and `GET /v1/graph/nodegraph`, the server SHALL apply a configurable per-build `context.WithTimeout` derived from `--build-timeout` (default 15 seconds). On `context.DeadlineExceeded`, the build SHALL be aborted, the `kube_state_graph_build_rejected_total{reason="timeout"}` counter SHALL be incremented, and the request SHALL receive `504 Gateway Timeout` with `reason: "timeout"` (RFC 9110 §15.6.5: gateway did not receive a timely response from an upstream server it needed to access in order to complete the request).
+For `GET /v1/graph`, the server SHALL apply a configurable per-build `context.WithTimeout` derived from `--build-timeout` (default 15 seconds). On `context.DeadlineExceeded`, the build SHALL be aborted, the `kube_state_graph_build_rejected_total{reason="timeout"}` counter SHALL be incremented, and the request SHALL receive `504 Gateway Timeout` with `reason: "timeout"` (RFC 9110 §15.6.5: gateway did not receive a timely response from an upstream server it needed to access in order to complete the request).
 
 #### Scenario: Upstream stalls beyond build timeout
 
@@ -486,7 +461,7 @@ The test SHALL run on every PR via `go test ./...` and SHALL fail when annotatio
 
 ### Requirement: Cytoscape compound node grouping
 
-`GET /v1/graph` (Cytoscape shape only) SHALL express the cluster / node / pod hierarchy as Cytoscape compound nodes via an optional `data.parent` field, and SHALL synthesise one group node per cluster. This is a presentation concern of the Cytoscape serialiser; it SHALL NOT affect the Grafana Node Graph response (`GET /v1/graph/nodegraph`), the core graph, projection, or traversal.
+`GET /v1/graph` SHALL express the cluster / node / pod hierarchy as Cytoscape compound nodes via an optional `data.parent` field, and SHALL synthesise one group node per cluster. This is a presentation concern of the Cytoscape serialiser; it SHALL NOT affect the core graph, projection, or traversal.
 
 The serialiser SHALL emit, for each distinct `labels.cluster` value present on an emitted node, one synthetic group node `{ data: { id: "cluster/<cluster>", name: "<cluster>", type: "cluster", labels: {} } }` with no `parent` and no `ipaddress`. These group nodes SHALL be emitted before the other nodes, ordered by cluster name, so the body stays byte-deterministic.
 
@@ -498,7 +473,7 @@ Each non-group node's `data.parent` SHALL be assigned as:
 
 The `parent` field SHALL use `omitempty` semantics (absent when there is no parent). Services and PVCs SHALL NOT be compound parents of pods (a Service spans nodes and a pod may back multiple Services; those relationships remain edges).
 
-The Cytoscape serialiser SHALL OMIT `pod-runs-on-node` edges from `elements.edges`, because the `cluster > node > pod` nesting already expresses that relationship. The `pod-runs-on-node` edge type SHALL remain registered in `/v1/edge-types`, SHALL still be produced into the core graph, SHALL still participate in projection / traversal / name-filtering, and SHALL still be emitted by `GET /v1/graph/nodegraph` (Grafana cannot nest). Other relationship edges (`pod-mounts-pvc`, `service-selects-pod`, `pod-to-service`, `pod-calls-pod`) SHALL be retained in the Cytoscape output.
+There is no `pod-runs-on-node` edge. The pod→node relationship SHALL be expressed solely by the `cluster > node > pod` compound nesting, derived from each pod's `labels.node`. K8s `node` nodes therefore carry no edges and act purely as compound containers. Relationship edges (`pod-mounts-pvc`, `service-selects-pod`, `pod-calls-pod`) SHALL be retained in the Cytoscape output.
 
 #### Scenario: Cluster group node synthesised
 
@@ -509,11 +484,6 @@ The Cytoscape serialiser SHALL OMIT `pod-runs-on-node` edges from `elements.edge
 
 - **WHEN** a pod node carries `labels.node="cluster-alpha/worker-0"` and the K8s node `cluster-alpha/worker-0` is in the response
 - **THEN** the pod's `data.parent` equals `"cluster-alpha/worker-0"` and the K8s node's `data.parent` equals `"cluster/cluster-alpha"`
-
-#### Scenario: pod-runs-on-node edge omitted from Cytoscape but kept in Grafana
-
-- **WHEN** the graph contains a `pod-runs-on-node` edge
-- **THEN** that edge does NOT appear in the Cytoscape `elements.edges`, but it DOES appear in the `GET /v1/graph/nodegraph` `edges` array
 
 #### Scenario: pod falls back to cluster parent when its node is not in scope
 
@@ -529,8 +499,3 @@ The Cytoscape serialiser SHALL OMIT `pod-runs-on-node` edges from `elements.edge
 
 - **WHEN** the response contains a `type="others"` or `type="external"` node
 - **THEN** that node's `data` has no `parent` field, and no cluster group node is synthesised for an endpoint carrying no `cluster` label
-
-#### Scenario: Grafana Node Graph unaffected by compound
-
-- **WHEN** a client requests `GET /v1/graph/nodegraph`
-- **THEN** the response contains no `type="cluster"` node and no `cluster/<name>` id, carries no `parent` concept, and retains the `pod-runs-on-node` edge in its `edges` array

@@ -74,7 +74,7 @@ func TestEdgeTypesEndpoint_StaticCatalogue(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "v1", body.APIVersion)
-	want := map[string]bool{"pod-runs-on-node": false, "pod-mounts-pvc": false, "pod-calls-pod": false}
+	want := map[string]bool{"pod-mounts-pvc": false, "pod-calls-pod": false}
 	for _, e := range body.EdgeTypes {
 		if _, ok := want[e.Type]; ok {
 			want[e.Type] = true

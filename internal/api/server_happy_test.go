@@ -88,25 +88,6 @@ func TestGraphEndpoint_HappyPath(t *testing.T) {
 	assert.Empty(t, nodeIPs, "happy fixture provides no ExternalIP for the node")
 }
 
-func TestNodeGraphEndpoint_HappyPath(t *testing.T) {
-	s := newServerWithMocks(t, newMockQuerier(t, happyFixtures()), nil)
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-
-	end := time.Now().UTC()
-	start := end.Add(-15 * time.Minute)
-	resp, err := http.Get(graphURL(srv.URL+"/v1/graph/nodegraph", start, end))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var body grafanaBody
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	assert.Equal(t, "v1", body.APIVersion)
-	assert.NotNil(t, body.Nodes)
-	assert.NotNil(t, body.Edges)
-}
-
 func TestGraphEndpoint_OutsideRetention_ReturnsError(t *testing.T) {
 	// All topology queries return empty + up probe returns one sample
 	// → outside_retention.

@@ -21,9 +21,6 @@ func sampleGraph() *Graph {
 	all = append(all, nodes...)
 
 	edges := []*Edge{
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p1", "cluster-alpha/worker-0", nil),
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p2", "cluster-alpha/worker-0", nil),
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-beta/p3", "cluster-beta/worker-0", nil),
 		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-alpha/p2", map[string]string{"cluster": "cluster-alpha"}),
 		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-beta/p3", map[string]string{"cluster": "cluster-alpha"}),
 	}
@@ -33,7 +30,7 @@ func sampleGraph() *Graph {
 func TestProject_NoFilter(t *testing.T) {
 	v := Project(sampleGraph(), Scope{})
 	assert.Len(t, v.Nodes, 5)
-	assert.Len(t, v.Edges, 5)
+	assert.Len(t, v.Edges, 2)
 }
 
 func TestProject_ClusterFilter(t *testing.T) {
@@ -127,9 +124,10 @@ func TestProject_TraversalBoundedByDepth(t *testing.T) {
 	for _, n := range v.Nodes {
 		ids[n.ID()] = true
 	}
-	for _, want := range []string{"cluster-alpha/p1", "cluster-alpha/worker-0", "cluster-alpha/p2", "cluster-beta/p3"} {
+	for _, want := range []string{"cluster-alpha/p1", "cluster-alpha/p2", "cluster-beta/p3"} {
 		assert.Truef(t, ids[want], "expected %s in traversal result", want)
 	}
+	assert.False(t, ids["cluster-alpha/worker-0"], "host node unreachable without a pod-runs-on-node edge")
 }
 
 func TestProject_UnknownRootEmpty(t *testing.T) {
@@ -144,15 +142,15 @@ func TestProject_DepthZero(t *testing.T) {
 	assert.Equal(t, "cluster-alpha/p1", v.Nodes[0].ID())
 }
 
-// Namespace filter must NOT drop K8sNode (cluster-scoped, no namespace label).
-// Otherwise pod-runs-on-node edges all vanish whenever a caller narrows by
-// namespace — discovered against the kind-local rig where namespace=ksg gave
-// 4 nodes and 0 edges.
-func TestProject_NamespaceFilter_KeepsK8sNode(t *testing.T) {
+// Namespace filter drops K8sNode: K8s nodes are cluster-scoped (no namespace
+// label) and carry no edges, so a namespace-narrowed view contains only
+// namespaced entities. The pod→node relationship is compound nesting via
+// labels.node, not an edge — see design.md D31.
+func TestProject_NamespaceFilter_DropsK8sNode(t *testing.T) {
 	g := sampleGraph()
 	v := Project(g, Scope{Namespaces: map[string]struct{}{"shop": {}}})
 
-	var k8sCount, podCount, runEdges int
+	var k8sCount, podCount int
 	for _, n := range v.Nodes {
 		switch n.Type() {
 		case NodeTypeK8sNode:
@@ -162,14 +160,8 @@ func TestProject_NamespaceFilter_KeepsK8sNode(t *testing.T) {
 		default:
 		}
 	}
-	for _, e := range v.Edges {
-		if e.Type == EdgeTypePodRunsOnNode {
-			runEdges++
-		}
-	}
 	assert.Equal(t, 2, podCount, "expected 2 pods in shop namespace")
-	assert.GreaterOrEqual(t, k8sCount, 1, "K8sNode must survive namespace filter")
-	assert.GreaterOrEqual(t, runEdges, 1, "pod-runs-on-node edges must survive when both endpoints in scope")
+	assert.Equal(t, 0, k8sCount, "K8s nodes carry no namespace and must drop under a namespace filter")
 }
 
 // multiClusterPodSampleGraph extends sampleGraph with a `payments` pod in
@@ -191,10 +183,6 @@ func multiClusterPodSampleGraph() *Graph {
 	all = append(all, nodes...)
 
 	edges := []*Edge{
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p1", "cluster-alpha/worker-0", nil),
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p2", "cluster-alpha/worker-0", nil),
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p4", "cluster-alpha/worker-0", nil),
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-beta/p3", "cluster-beta/worker-0", nil),
 		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-alpha/p2", map[string]string{"cluster": "cluster-alpha"}),
 		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/p1", "cluster-beta/p3", map[string]string{"cluster": "cluster-alpha"}),
 	}
@@ -205,7 +193,8 @@ func multiClusterPodSampleGraph() *Graph {
 //   - a pod named "worker-0" in cluster-alpha (collision with K8s node name)
 //   - a K8s node named "worker-0" in cluster-alpha and cluster-beta
 //   - a PVC named "checkout-data" in cluster-alpha
-//   - pod-runs-on-node and pod-mounts-pvc edges
+//   - a single pod-mounts-pvc edge (K8s nodes are edgeless; they are present
+//     only to exercise the pod/node name collision)
 func crossTypeSampleGraph() *Graph {
 	all := []GraphNode{
 		&PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop", "node": "cluster-alpha/worker-0"}},
@@ -215,8 +204,6 @@ func crossTypeSampleGraph() *Graph {
 		&PVCNode{IDValue: "cluster-alpha/shop/checkout-data", NameValue: "checkout-data", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}},
 	}
 	edges := []*Edge{
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p1", "cluster-alpha/worker-0", nil),
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/p2", "cluster-alpha/worker-0", nil),
 		NewEdge(EdgeTypePodMountsPVC, "cluster-alpha/p1", "cluster-alpha/shop/checkout-data", nil),
 	}
 	return NewGraph(all, edges, time.Now())
@@ -232,13 +219,12 @@ func TestProject_NameFilter_MatchesPod(t *testing.T) {
 	}
 	assert.True(t, ids["cluster-alpha/p1"], "checkout pod must match name")
 	// Endpoints of checkout's incident edges are re-added by the unified rule:
-	// pod-runs-on-node → worker-0; pod-calls-pod → cart (p2); pod-calls-pod
-	// → cross-cluster payments (p3).
-	assert.True(t, ids["cluster-alpha/worker-0"], "host node re-added via pod-runs-on-node")
+	// pod-calls-pod → cart (p2); pod-calls-pod → cross-cluster payments (p3).
 	assert.True(t, ids["cluster-alpha/p2"], "cart re-added via pod-calls-pod")
 	assert.True(t, ids["cluster-beta/p3"], "cross-cluster payments re-added via pod-calls-pod")
-	// Endpoints not incident on checkout stay out.
-	assert.False(t, ids["cluster-beta/worker-0"], "unrelated K8s node not incident on checkout must drop")
+	// Host K8s nodes carry no edge to the pod, so they are not pulled in.
+	assert.False(t, ids["cluster-alpha/worker-0"], "host node not re-added (no pod-runs-on-node edge)")
+	assert.False(t, ids["cluster-beta/worker-0"], "unrelated K8s node must drop")
 }
 
 func TestProject_NameFilter_MatchesK8sNode(t *testing.T) {
@@ -252,10 +238,9 @@ func TestProject_NameFilter_MatchesK8sNode(t *testing.T) {
 	// Both worker-0 K8s nodes match by name (cluster-alpha and cluster-beta).
 	assert.True(t, ids["cluster-alpha/worker-0"])
 	assert.True(t, ids["cluster-beta/worker-0"])
-	// Pods running on worker-0 are re-added via pod-runs-on-node edges.
-	assert.True(t, ids["cluster-alpha/p1"], "pod incident on worker-0 must be re-added")
-	assert.True(t, ids["cluster-alpha/p2"], "pod incident on worker-0 must be re-added")
-	assert.True(t, ids["cluster-beta/p3"], "pod incident on cluster-beta worker-0 must be re-added")
+	// K8s nodes carry no edges, so a name match pulls in no pods.
+	assert.False(t, ids["cluster-alpha/p1"], "no edge re-adds a pod onto a name-matched K8s node")
+	assert.False(t, ids["cluster-beta/p3"], "no edge re-adds a pod onto a name-matched K8s node")
 }
 
 func TestProject_NameFilter_MatchesPVC(t *testing.T) {

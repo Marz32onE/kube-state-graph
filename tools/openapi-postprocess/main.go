@@ -85,7 +85,7 @@ func processYAML(path string) error {
 var multiValueExamples = map[string][]any{
 	"cluster":   {"prod-eu", "prod-us"},
 	"namespace": {"payments", "checkout"},
-	"edge_type": {"pod-calls-pod", "pod-runs-on-node"},
+	"edge_type": {"pod-calls-pod", "service-selects-pod"},
 	"pod":       {"checkout-7d9f6c8b8-abcde", "payments-5c8b6f9d4-fghij"},
 }
 

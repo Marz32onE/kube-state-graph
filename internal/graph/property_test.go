@@ -46,10 +46,6 @@ func genGraph(seed int64, clusters, podsPerCluster, extraEdges int) *Graph {
 
 	edges := []*Edge{}
 	pods := podsOnly(all)
-	for _, p := range pods {
-		nodeID := p.Labels()["node"]
-		edges = append(edges, NewEdge(EdgeTypePodRunsOnNode, p.ID(), nodeID, map[string]string{}))
-	}
 	// service-selects-pod edge from each cluster's Service to a backing pod.
 	for i := range clusters {
 		svcID := ServiceID(clusterNames[i], "ns-0", "svc")

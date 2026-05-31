@@ -2,7 +2,7 @@
 //
 //	@title			kube-state-graph API
 //	@version		v1
-//	@description	Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON or in the Grafana Node Graph datasource shape.
+//	@description	Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON.
 //	@description
 //	@description	**Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key.
 //	@license.name	Apache 2.0

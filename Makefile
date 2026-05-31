@@ -1,7 +1,6 @@
-.PHONY: build test vet lint vuln ci cover docs check-docs refresh-docs-ui kind-up kind-down kind-redeploy kind-restart local-up local-down local-redeploy local-restart local-smoke smoke clean \
-        docker-build docker-push docker-buildx docker-load-kind docker-run docker-docs docker-docs-stop \
-        init init-go init-tools init-hooks doctor mocks verify-mocks tools-versions \
-        helm-lint helm-template helm-install-kind helm-uninstall-kind
+.PHONY: build test vet lint vuln ci cover docs check-docs refresh-docs-ui clean \
+        docker-build docker-push docker-buildx docker-run docker-docs docker-docs-stop \
+        init init-go init-tools init-hooks doctor mocks verify-mocks tools-versions
 
 BIN_DIR := bin
 BIN     := $(BIN_DIR)/kube-state-graph
@@ -107,7 +106,6 @@ doctor:
 	@echo "swag (tool): $$(go tool swag -v 2>/dev/null | head -1 || echo MISSING)"
 	@echo "mockery    : $$(go tool mockery --version 2>/dev/null | tail -1 || echo MISSING)"
 	@echo "docker     : $$(docker --version 2>/dev/null || echo MISSING)"
-	@echo "kind       : $$(kind --version 2>/dev/null || echo MISSING)"
 
 tools-versions:
 	@echo "Pinned dev tools (override via env):"
@@ -182,74 +180,14 @@ check-docs: docs
 refresh-docs-ui:
 	./scripts/refresh-docs-ui.sh
 
-## Local kind rig (NOT run by CI; see local/kind/).
-
-kind-up local-up:
-	./local/kind/bootstrap.sh
-
-kind-down local-down:
-	./local/kind/teardown.sh
-
-## Re-apply manifests + rebuild image + bounce pods on the existing Kind
-## cluster. Skip cluster create/destroy. Use after editing Go code, manifest
-## YAML, ConfigMaps, Grafana datasources/dashboards, or Alloy/Tempo config.
-kind-redeploy local-redeploy:
-	./local/kind/redeploy.sh
-
-## Bounce kube-state-graph + observability pods only (no rebuild, no
-## manifest re-apply). Use after a ConfigMap edit when you only need pods
-## to pick up fresh config.
-kind-restart local-restart:
-	kubectl -n kube-state-graph rollout restart \
-		deploy/kube-state-graph deploy/grafana deploy/alloy deploy/tempo deploy/victoria-metrics
-	kubectl -n kube-state-graph rollout status \
-		deploy/kube-state-graph deploy/grafana deploy/alloy deploy/tempo deploy/victoria-metrics --timeout=120s
-
-smoke local-smoke:
-	./local/kind/smoke.sh
-
-## ---------------------------------------------------------------------------
-## Helm chart (charts/kube-state-graph/).
-##
-## The chart is a deployable artefact; tests do not depend on it.
-## CI should run `make helm-lint` (and ideally `helm-template`) on changes
-## under charts/.
-
-CHART_DIR := charts/kube-state-graph
-
-helm-lint:
-	helm lint $(CHART_DIR)
-	helm lint $(CHART_DIR) --values local/kind/values-kind.yaml
-
-## Render the chart to stdout for both default and kind overlays. Useful
-## as a smoke test before committing template changes.
-helm-template:
-	@echo "==> default values"
-	helm template kube-state-graph $(CHART_DIR) --namespace kube-state-graph \
-		--set config.promURL=http://victoria-metrics:8428 >/dev/null
-	@echo "==> local/kind overlay"
-	helm template kube-state-graph $(CHART_DIR) --namespace kube-state-graph \
-		--values local/kind/values-kind.yaml >/dev/null
-	@echo "OK"
-
-## Install / upgrade kube-state-graph into the existing kind cluster using
-## the in-repo chart. Assumes `make kind-up` already created the supporting
-## resources (namespace, Secret, VictoriaMetrics, Alloy, ...). Re-runnable.
-helm-install-kind:
-	./local/kind/helm-install.sh
-
-helm-uninstall-kind:
-	helm uninstall kube-state-graph --namespace kube-state-graph
-
 clean:
 	rm -rf $(BIN_DIR) coverage.out
 
 ## Container image build / push.
 ##
-## Single-arch LOCAL build (host arch). Feeds docker-load-kind / docker-run /
-## docker-docs and tags the :dev tag the local kind rig pins via
-## imagePullPolicy=Never. This image is NEVER pushed to a registry — a
-## host-arch image would not run on differently-architected nodes. Publish
+## Single-arch LOCAL build (host arch). Feeds docker-run / docker-docs and
+## tags the :dev tag ($(LOCAL_TAG)). This image is NEVER pushed to a registry —
+## a host-arch image would not run on differently-architected nodes. Publish
 ## with `make docker-push` (multi-arch) instead.
 docker-build:
 	docker build $(DOCKER_BUILD_ARGS) \
@@ -279,11 +217,6 @@ docker-buildx:
 		-t $(IMAGE):latest \
 		--push \
 		.
-
-## Load the local-built image into the kind cluster used by `make kind-up`.
-## Useful when iterating on the API without rebuilding the whole rig.
-docker-load-kind: docker-build
-	kind load docker-image $(LOCAL_TAG) --name kube-state-graph
 
 ## Run the freshly built image locally against a Prom URL.
 ##   make docker-run PROM_URL=http://host.docker.internal:8428

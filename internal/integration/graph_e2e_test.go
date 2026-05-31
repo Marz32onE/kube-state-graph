@@ -292,7 +292,7 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 	resp := s.httpGet(srv.URL + "/v1/edge-types")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	for _, et := range []string{"pod-runs-on-node", "pod-mounts-pvc", "pod-calls-pod"} {
+	for _, et := range []string{"pod-mounts-pvc", "pod-calls-pod"} {
 		s.Contains(string(body), et)
 	}
 }

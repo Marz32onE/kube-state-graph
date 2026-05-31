@@ -18,7 +18,7 @@ func TestNewEdge_StableAcrossRebuilds(t *testing.T) {
 func TestNewEdge_UUIDv5Format(t *testing.T) {
 	for _, e := range []*Edge{
 		NewEdge(EdgeTypePodCallsPod, "cluster-alpha/abc", "cluster-beta/def", nil),
-		NewEdge(EdgeTypePodRunsOnNode, "cluster-alpha/abc", "cluster-alpha/worker-0", nil),
+		NewEdge(EdgeTypeServiceSelectsPod, "cluster-alpha/ns/svc", "cluster-alpha/abc", nil),
 		NewEdge(EdgeTypePodMountsPVC, "cluster-alpha/abc", "cluster-alpha/ns/claim", nil),
 	} {
 		assert.Regexp(t, uuidV5Re, e.ID)
@@ -28,7 +28,7 @@ func TestNewEdge_UUIDv5Format(t *testing.T) {
 func TestNewEdge_DistinctTuplesProduceDistinctIDs(t *testing.T) {
 	base := NewEdge(EdgeTypePodCallsPod, "src", "tgt", nil)
 	others := []*Edge{
-		NewEdge(EdgeTypePodRunsOnNode, "src", "tgt", nil),
+		NewEdge(EdgeTypeServiceSelectsPod, "src", "tgt", nil),
 		NewEdge(EdgeTypePodCallsPod, "src2", "tgt", nil),
 		NewEdge(EdgeTypePodCallsPod, "src", "tgt2", nil),
 	}
