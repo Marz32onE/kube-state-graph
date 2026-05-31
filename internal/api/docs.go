@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed static/scalar/index.html static/scalar/scalar.js static/scalar/scalar.css static/scalar/VERSION
+//go:embed static/scalar/index.html static/scalar/scalar.js static/scalar/scalar.css static/scalar/VERSION static/scalar/fonts/*.woff2
 var scalarFS embed.FS
 
 //go:embed static/openapi/openapi.yaml static/openapi/openapi.json
@@ -103,6 +103,8 @@ func mimeFor(name string) string {
 		return "text/html; charset=utf-8"
 	case strings.HasSuffix(name, ".json"):
 		return "application/json; charset=utf-8"
+	case strings.HasSuffix(name, ".woff2"):
+		return "font/woff2"
 	default:
 		return "application/octet-stream"
 	}

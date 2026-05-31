@@ -506,7 +506,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-cyrillic-ext.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-cyrillic-ext.woff2) format("woff2");
   unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
 }
 /* cyrillic */
@@ -515,7 +515,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-cyrillic.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-cyrillic.woff2) format("woff2");
   unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
 }
 /* greek-ext */
@@ -524,7 +524,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-greek-ext.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-greek-ext.woff2) format("woff2");
   unicode-range: U+1F00-1FFF;
 }
 /* greek */
@@ -533,7 +533,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-greek.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-greek.woff2) format("woff2");
   unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
 }
 /* vietnamese */
@@ -542,7 +542,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-vietnamese.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-vietnamese.woff2) format("woff2");
   unicode-range:
     U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169,
     U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323,
@@ -554,7 +554,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-latin-ext.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-latin-ext.woff2) format("woff2");
   unicode-range:
     U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
     U+A720-A7FF;
@@ -565,7 +565,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-latin.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-latin.woff2) format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
     U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
@@ -577,7 +577,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url(https://fonts.scalar.com/inter-symbols.woff2) format("woff2");
+  src: url(/docs/assets/fonts/inter-symbols.woff2) format("woff2");
   unicode-range: U+2190-2193, U+21B5, U+21E7, U+21EA, U+2318, U+2325;
 }
 /* JetBrains Mono (--scalar-font-code) */
@@ -586,7 +586,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
-  src: url(https://fonts.scalar.com/mono-cyrillic-ext.woff2) format("woff2");
+  src: url(/docs/assets/fonts/mono-cyrillic-ext.woff2) format("woff2");
   unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
 }
 /* cyrillic */
@@ -594,7 +594,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
-  src: url(https://fonts.scalar.com/mono-cyrillic.woff2) format("woff2");
+  src: url(/docs/assets/fonts/mono-cyrillic.woff2) format("woff2");
   unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
 }
 /* greek */
@@ -602,7 +602,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
-  src: url(https://fonts.scalar.com/mono-greek.woff2) format("woff2");
+  src: url(/docs/assets/fonts/mono-greek.woff2) format("woff2");
   unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
 }
 /* vietnamese */
@@ -610,7 +610,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
-  src: url(https://fonts.scalar.com/mono-vietnamese.woff2) format("woff2");
+  src: url(/docs/assets/fonts/mono-vietnamese.woff2) format("woff2");
   unicode-range:
     U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169,
     U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323,
@@ -621,7 +621,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
-  src: url(https://fonts.scalar.com/mono-latin-ext.woff2) format("woff2");
+  src: url(/docs/assets/fonts/mono-latin-ext.woff2) format("woff2");
   unicode-range:
     U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
     U+A720-A7FF;
@@ -631,7 +631,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
-  src: url(https://fonts.scalar.com/mono-latin.woff2) format("woff2");
+  src: url(/docs/assets/fonts/mono-latin.woff2) format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
     U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
