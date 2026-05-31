@@ -23,7 +23,7 @@ cluster N: kube-state-metrics ──┤
 - Join 成多叢集圖，節點鍵為帶叢集範圍的 pod UID 與 node 名稱。
 - 回傳 Cytoscape.js JSON（`/v1/graph`）或 Grafana Node Graph 資料源形狀（`/v1/graph/nodegraph`）。
 - 提供叢集探索（`/v1/clusters`）與靜態邊類型目錄（`/v1/edge-types`）。
-- 每次請求都重新建圖——v1 **不附帶 in-process result cache，也不附帶 singleflight**。回應仍帶 HTTP `ETag`（body 的 sha256），呼叫端可透過 `If-None-Match` 取得 `304 Not Modified` 而免去 body 傳輸。後續分散式部署的水平擴展 cache 機制留待之後另案處理。呼叫端送出的 `start` / `end` 在通過 `--max-window` / `--max-skew` 驗證後直接 pass through 給上游 PromQL，**不做** server-side bucketing 或 alignment。回應 body 只包含 `apiVersion`、`clusters`、`elements`。
+- 每次請求都重新建圖——v1 **不附帶 in-process result cache、singleflight，也不發 HTTP cache validator**（無 `ETag` / `If-None-Match` / `304`）。後續分散式部署的水平擴展 cache 機制留待另案。`start` / `end` 接受 RFC 3339 或 Unix 秒，server 僅強制 `end > start`，其後原樣 pass through 給上游 PromQL——**不做** bucketing、alignment、視窗上限或未來時間擋板；bounded query cost 交由 VictoriaMetrics 搜尋限制負責。序列化輸出為確定性 body，僅含 `apiVersion`、`clusters`、`elements`；pod／node／service 的 IP 在頂層 `ipaddress`，不在 `labels`。
 
 ## 快速開始
 
@@ -51,9 +51,9 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 | 指標 | 用途 | 會讀的標籤 | 必填？ |
 |---|---|---|---|
-| `kube_pod_info` | Pod 節點、`pod-runs-on-node` 邊 | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`, `host_ip` | **是** |
+| `kube_pod_info` | Pod 節點、`pod-runs-on-node` 邊 | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`（→ `data.ipaddress`；不匯出 `host_ip`） | **是** |
 | `kube_node_info` | K8s node 節點 | `cluster`, `node` | **是** |
-| `kube_node_status_addresses{type="ExternalIP"}` | Node 的 `external_ip` 標籤 | `cluster`, `node`, `address` | 選填 |
+| `kube_node_status_addresses{type="ExternalIP"}` | Node 外部 IP（→ `data.ipaddress`） | `cluster`, `node`, `address` | 選填 |
 | `kube_node_labels` | 傳遞 node 標籤（`kubernetes.io/*` 等） | `cluster`, `node`, `label_*` | 選填 |
 | `kube_pod_spec_volumes_persistentvolumeclaims_info` | PVC 節點、`pod-mounts-pvc` 邊 | `cluster`, `namespace`, `pod`, `persistentvolumeclaim`, `volume` | 選填（無 PVC 則無相關節點／邊） |
 
@@ -108,6 +108,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 - [多叢集部署](docs/multi-cluster.md)
 - [連線字串端點解析](docs/others-substitution.md)
 - [營運](docs/operations.md)
+- [架構與運作指南（繁體中文 HTML）](docs/repo-guide.zh-tw.html)
 
 ## 開發
 

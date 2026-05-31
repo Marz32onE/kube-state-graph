@@ -30,15 +30,19 @@ cluster N: kube-state-metrics ──┤
   Graph datasource shape (`/v1/graph/nodegraph`).
 - Exposes cluster discovery (`/v1/clusters`) and a static edge-type catalogue
   (`/v1/edge-types`).
-- Builds the graph on every request — v1 ships **no in-process result cache**
-  and **no singleflight**. Responses carry an `ETag` (sha256 of the body) so
-  clients may revalidate cheaply via `If-None-Match` and receive
-  `304 Not Modified` when the body would be unchanged. A horizontally
-  scalable cache mechanism for distributed deployment is anticipated as a
-  future change. Caller-supplied `start` / `end` are passed through to
-  upstream PromQL verbatim (after `--max-window` / `--max-skew` validation);
-  there is no server-side bucketing or alignment. The response body carries
-  only `apiVersion`, `clusters`, and `elements`.
+- Builds the graph on every request — v1 ships **no in-process result cache**,
+  **no singleflight**, and **no HTTP cache validators** (`ETag` /
+  `If-None-Match` / `304`). A horizontally scalable cache mechanism for
+  distributed deployment is anticipated as a future change. Caller-supplied
+  `start` / `end` accept RFC 3339 or Unix seconds; the server enforces only
+  `end > start`, then passes the window through to upstream PromQL verbatim —
+  no server-side bucketing, alignment, max-window cap, or future-time guard.
+  Bounded query cost is delegated to VictoriaMetrics search limits
+  (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`,
+  `-search.maxSamplesPerQuery`). The serialiser produces a deterministic body
+  (`apiVersion`, `clusters`, `elements` only — no echoed time fields). Pod,
+  node, and service IPs appear on the top-level `ipaddress` attribute, not in
+  `labels`.
 
 ## Quick start
 
@@ -57,8 +61,7 @@ curl 'http://localhost:8080/v1/graph?start=$(date -u -d "-5 min" +%s)&end=$(date
 ```
 
 When the server is started with API keys configured (`--api-keys-file` or
-`--api-keys`), every `/v1/*` and `/debug/*` request must carry an
-`X-API-Key: <key>` header:
+`--api-keys`), every `/v1/*` request must carry an `X-API-Key: <key>` header:
 
 ```bash
 curl -H 'X-API-Key: my-secret-key' 'http://localhost:8080/v1/clusters'
@@ -81,9 +84,9 @@ per source cluster).
 
 | Metric | Used for | Labels read | Required? |
 |---|---|---|---|
-| `kube_pod_info` | Pod nodes; pod-runs-on-node edges | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip`, `host_ip` | **Yes** |
+| `kube_pod_info` | Pod nodes; pod-runs-on-node edges | `cluster`, `namespace`, `pod`, `uid`, `node`, `pod_ip` (→ `data.ipaddress`; `host_ip` not exported) | **Yes** |
 | `kube_node_info` | K8sNode nodes | `cluster`, `node` | **Yes** |
-| `kube_node_status_addresses{type="ExternalIP"}` | Node `external_ip` label | `cluster`, `node`, `address` | Optional |
+| `kube_node_status_addresses{type="ExternalIP"}` | Node external IP (→ `data.ipaddress`) | `cluster`, `node`, `address` | Optional |
 | `kube_node_labels` | Node label propagation (`kubernetes.io/*` etc.) | `cluster`, `node`, `label_*` | Optional |
 | `kube_pod_spec_volumes_persistentvolumeclaims_info` | PVC nodes; pod-mounts-pvc edges | `cluster`, `namespace`, `pod`, `persistentvolumeclaim`, `volume` | Optional (no PVCs ⇒ no PVC nodes/edges) |
 
@@ -172,6 +175,7 @@ container.
 - [Multi-cluster setup](docs/multi-cluster.md)
 - [Connection-string endpoint resolution](docs/others-substitution.md)
 - [Operations](docs/operations.md)
+- [Architecture guide (繁體中文 HTML)](docs/repo-guide.zh-tw.html) — end-to-end flow, design rationale, and how to extend the codebase
 
 ## Development
 
