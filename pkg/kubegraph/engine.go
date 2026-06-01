@@ -38,16 +38,29 @@ type Options struct {
 // pipeline as a single call. Construct one per upstream Querier.
 type Engine struct {
 	builder *build.Builder
+	q       promql.Querier
+	clk     clock.Clock
 }
 
 // New constructs an Engine querying through q. The caller owns q (typically a
 // *promql.Client built from a VictoriaMetrics URL, or any Querier).
 func New(q promql.Querier, opts Options) *Engine {
+	clk := opts.Clock
+	if clk == nil {
+		clk = clock.System{}
+	}
 	b := build.New(q, build.Options{
 		MetricPrefix: opts.MetricPrefix,
 		APITimeout:   opts.APITimeout,
-	}, opts.Metrics, opts.Clock)
-	return &Engine{builder: b}
+	}, opts.Metrics, clk)
+	return &Engine{builder: b, q: q, clk: clk}
+}
+
+// Probe reports upstream reachability via a cheap up{} instant query — the same
+// signal the build's retention check uses — suitable for a readiness check.
+func (e *Engine) Probe(ctx context.Context) error {
+	_, err := e.q.Instant(ctx, string(promql.QUpProbe), string(promql.QUpProbe), e.clk.Now().UTC())
+	return err
 }
 
 // Build runs the multi-cluster build for [end-window, end] and returns the

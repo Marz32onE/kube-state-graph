@@ -2,6 +2,7 @@ package kubegraph_test
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"testing"
 	"time"
@@ -71,6 +72,23 @@ func TestBuildFromValues_EmptyUpstream(t *testing.T) {
 	assert.Equal(t, "v1", body.APIVersion)
 	assert.Empty(t, body.Elements.Nodes)
 	assert.Empty(t, body.Elements.Edges)
+}
+
+// Probe issues an up{} query through the engine's querier — reachability for a
+// readiness check, surfacing the upstream error verbatim.
+func TestEngine_Probe(t *testing.T) {
+	t.Run("reachable", func(t *testing.T) {
+		q := promqlmocks.NewMockQuerier(t)
+		q.EXPECT().Instant(mock.Anything, "up", mock.Anything, mock.Anything).
+			Return(model.Vector{}, nil)
+		require.NoError(t, kubegraph.New(q, kubegraph.Options{}).Probe(context.Background()))
+	})
+	t.Run("unreachable", func(t *testing.T) {
+		q := promqlmocks.NewMockQuerier(t)
+		q.EXPECT().Instant(mock.Anything, "up", mock.Anything, mock.Anything).
+			Return(nil, errors.New("dial tcp: connection refused"))
+		require.Error(t, kubegraph.New(q, kubegraph.Options{}).Probe(context.Background()))
+	})
 }
 
 // A parse failure surfaces as a *ParseError before any build is attempted.

@@ -1,6 +1,7 @@
 package kubegraph
 
 import (
+	"fmt"
 	"net/url"
 	"strconv"
 	"time"
@@ -82,5 +83,5 @@ func parseTimestamp(s string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t.UTC(), nil
 	}
-	return time.Time{}, &ParseError{"invalid_timestamp", "timestamp must be RFC 3339 or Unix seconds: \"" + s + "\""}
+	return time.Time{}, fmt.Errorf("timestamp must be RFC 3339 or Unix seconds: %q", s)
 }
