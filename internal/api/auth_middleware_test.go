@@ -87,17 +87,6 @@ func TestAuth_OpenPaths_BypassWithoutKey(t *testing.T) {
 	}
 }
 
-func TestAuth_DocsAssets_BypassWithoutKey(t *testing.T) {
-	srv := authServer(t, "k1")
-
-	resp, err := http.Get(srv.URL + "/docs/assets/scalar.js")
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	// Either 200 (asset present) or 404 (asset missing in test bundle), but
-	// never 401: the route is exempt from auth.
-	assert.NotEqual(t, http.StatusUnauthorized, resp.StatusCode)
-}
-
 func TestAuth_GraphRoute_RequiresKey(t *testing.T) {
 	srv := authServer(t, "k1")
 

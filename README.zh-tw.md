@@ -65,7 +65,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 |---|---|---|---|
 | `traces_service_graph_request_total` | `pod-calls-pod` 邊（叢集內與跨叢集） | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` 等 | 選填（無 series 則無呼叫邊） |
 
-以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析時才輸出邊。當某端的 pod-UID 標籤為空時，會用內建的**連線字串判斷**（無旗標可調）解析其 `client`／`server` 人類可讀標籤：含字面 `://` 的標籤視為 URL——叢集內 `<service>.<namespace>.svc` 名稱會成為 `type="service"` 節點（並隨需產生指向其後端 pod 的 `service-selects-pod` 邊），headless 的 `<pod>.<service>.<namespace>.svc` 名稱會解析回真實後端 pod，無法解析的 URL 則成為 `others` 節點；非 URL（不含 `://`）的標籤則經 missing pod-UID human-label fallback 成為 `external` 節點。詳見 [連線字串端點解析](docs/others-substitution.md)。
+以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析時才輸出邊。當某端的 pod-UID 標籤為空時，會用內建的**連線字串判斷**（無旗標可調）解析其 `client`／`server` 人類可讀標籤：含字面 `://` 的標籤視為 URL——叢集內 `<service>.<namespace>.svc` 名稱會成為 `type="service"` 節點（並隨需產生指向其後端 pod 的 `service-selects-pod` 邊），headless 的 `<pod>.<service>.<namespace>.svc` 名稱會解析回真實後端 pod，無法解析的 URL 則成為 `others` 節點；非 URL（不含 `://`）的標籤則經 missing pod-UID human-label fallback 成為 `external` 節點。
 
 `servicegraph` connector 產生的**虛擬節點**——`client="user"`（未被 instrument 的呼叫端）與 `unknown`（無法解析的對端）——會在 query 層直接排除（`client!~"user|unknown",server!~"user|unknown"`），不會出現為任何節點或邊。比對為精確且大小寫敏感，因此 host 只是「包含」`user` 的 `://` 連線字串不受影響。
 
@@ -102,15 +102,16 @@ pod→node 關係**不**以邊表達，而是由 Cytoscape compound nesting（`c
 | `--api-keys` | `KSG_API_KEYS` | （空） | 逗號分隔字面 key；僅 dev 用途，設了 `--api-keys-file` 即忽略。 |
 | `--api-keys-reload-interval` | `KSG_API_KEYS_RELOAD_INTERVAL` | `30s` | `--api-keys-file` 重新讀取頻率；`0` 關閉熱重載。 |
 | `--log-level` | `KSG_LOG_LEVEL` | `info` | `debug \| info \| warn \| error`。 |
-| `--metric-prefix` | `KSG_METRIC_PREFIX` | （空） | 附加在拓樸 reader 查詢的 kube-state-metrics 系列名稱前的前綴（例如 `o11y_` → `o11y_kube_pod_info`）。**不**影響 `traces_service_graph_request_total` 或 `up{}`。詳見 [exporter 相容性合約](docs/operations.md#exporter-compatibility-contract)。 |
+| `--metric-prefix` | `KSG_METRIC_PREFIX` | （空） | 附加在拓樸 reader 查詢的 kube-state-metrics 系列名稱前的前綴（例如 `o11y_` → `o11y_kube_pod_info`）。**不**影響 `traces_service_graph_request_total` 或 `up{}`。metric 名稱字尾與每條 series 的標籤集，是任何相容 exporter 都必須遵守的固定合約。 |
 
 ## 文件
 
-- [API 參考](docs/api.md)（英文）
-- [多叢集部署](docs/multi-cluster.md)
-- [連線字串端點解析](docs/others-substitution.md)
-- [營運](docs/operations.md)
-- [架構與運作指南（繁體中文 HTML）](docs/repo-guide.zh-tw.html)
+完整 API 參考由執行中的 server 提供：
+
+- **互動式 API 參考（Scalar UI）：** [`/docs`](http://localhost:8080/docs)
+- **OpenAPI 3.1 規格：** [`/openapi.yaml`](http://localhost:8080/openapi.yaml) · [`/openapi.json`](http://localhost:8080/openapi.json)
+
+規格由原始碼註解產生（`make docs`）並嵌入 binary，因此永遠與執行中的 build 一致。Scalar UI 的前端 bundle 由 jsDelivr CDN 載入。
 
 ## 開發
 
@@ -135,7 +136,7 @@ make build          # 編譯主程式
 make test           # 單元 + 元件 + golden + property + integration（需 Docker）
 make lint           # golangci-lint
 make vuln           # govulncheck
-make check-docs     # OpenAPI 與嵌入靜態檔是否與 swag 產出一致（CI 亦跑）
+make check-docs     # OpenAPI 規格是否與 swag 產出一致（CI 亦跑）
 ```
 
 ### Mocks（mockery）

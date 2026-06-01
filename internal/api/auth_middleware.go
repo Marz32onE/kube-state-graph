@@ -14,13 +14,12 @@ const APIKeyHeader = "X-API-Key" //nolint:gosec // G101 false positive — heade
 // (operator gates it via NetworkPolicy / separate listen address), and the
 // OpenAPI / Scalar UI must load without keys so docs work in any browser.
 var openPaths = map[string]struct{}{
-	"/livez":             {},
-	"/readyz":            {},
-	"/metrics":           {},
-	"/openapi.yaml":      {},
-	"/openapi.json":      {},
-	"/docs":              {},
-	"/docs/assets/*path": {},
+	"/livez":        {},
+	"/readyz":       {},
+	"/metrics":      {},
+	"/openapi.yaml": {},
+	"/openapi.json": {},
+	"/docs":         {},
 }
 
 // apiKeyMiddleware enforces X-API-Key on protected routes when at least one

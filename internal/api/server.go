@@ -87,7 +87,6 @@ func (s *Server) Handler() http.Handler {
 	r.GET("/openapi.yaml", s.handleOpenAPIYAML)
 	r.GET("/openapi.json", s.handleOpenAPIJSON)
 	r.GET("/docs", s.handleDocs)
-	r.GET("/docs/assets/*path", s.handleDocsAsset)
 
 	return r
 }

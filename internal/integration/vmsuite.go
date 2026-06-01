@@ -69,7 +69,14 @@ func (s *VMSuite) SetupSuite() {
 		// `-search.latencyOffset=0` disables VM's default 30s ingestion-latency
 		// rewind so queries at time=T can immediately see samples ingested at T.
 		// Without this, fixtures pinned to fixedNow are invisible until 30s pass.
-		Cmd:        []string{"-search.latencyOffset=0s"},
+		//
+		// `-retentionPeriod=100y` keeps the statically-dated fixtures (anchored
+		// at fixedNow, a fixed absolute date) ingestable regardless of how far
+		// the container's real wall-clock has advanced past that date. VM's
+		// default retention is 1 month, so once real time passes fixedNow+1mo it
+		// rejects the samples as "too small timestamp ... outside the retention"
+		// and every query returns empty — a wall-clock time-bomb. 100y removes it.
+		Cmd:        []string{"-search.latencyOffset=0s", "-retentionPeriod=100y"},
 		WaitingFor: wait.ForHTTP("/health").WithPort("8428/tcp").WithStartupTimeout(60 * time.Second),
 	}
 	c, err := testcontainers.GenericContainer(s.ctx, testcontainers.GenericContainerRequest{

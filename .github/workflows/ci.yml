@@ -69,8 +69,8 @@ jobs:
         run: go mod download
 
       # Single source of truth: `make check-docs` regenerates the OpenAPI spec
-      # via the `swag` tool pinned in go.mod (`tool` directive) and diffs both
-      # docs/ and the embedded internal/api/static/openapi/ payload.
+      # via the `swag` tool pinned in go.mod (`tool` directive) and diffs the
+      # committed docs/ spec (embedded into the binary via docs/embed.go).
       - name: Verify docs in sync
         run: make check-docs
 

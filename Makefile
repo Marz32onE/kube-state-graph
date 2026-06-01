@@ -1,4 +1,4 @@
-.PHONY: build test vet lint vuln ci cover docs check-docs refresh-docs-ui clean \
+.PHONY: build test vet lint vuln ci cover docs check-docs clean \
         docker-build docker-push docker-buildx docker-run docker-docs docker-docs-stop \
         init init-go init-tools init-hooks doctor mocks verify-mocks tools-versions
 
@@ -164,21 +164,19 @@ cover:
 	go test ./... -coverprofile=coverage.out -covermode=atomic
 	go tool cover -func=coverage.out | tail -1
 
+## Regenerate the OpenAPI spec from swag annotations. Outputs only the JSON +
+## YAML spec into docs/ (no docs.go); docs/embed.go compiles them into the
+## binary, which serves them at /openapi.json and /openapi.yaml. The Scalar UI
+## at /docs loads from the CDN — no vendored assets to refresh.
 docs:
-	go tool swag init -g cmd/kube-state-graph/main.go --output docs --parseDependency --parseInternal --v3.1=true
-	go run ./tools/openapi-postprocess docs/swagger.json docs/swagger.yaml
-	@cp docs/swagger.yaml internal/api/static/openapi/openapi.yaml
-	@cp docs/swagger.json internal/api/static/openapi/openapi.json
+	go tool swag init -g cmd/kube-state-graph/main.go --output docs --outputTypes json,yaml --parseDependency --parseInternal --v3.1=true
 
 check-docs: docs
-	@if ! git diff --quiet -- docs/ internal/api/static/openapi/; then \
+	@if ! git diff --quiet -- docs/; then \
 		echo "FAIL: docs are out of sync. Run 'make docs' and commit."; \
-		git --no-pager diff -- docs/ internal/api/static/openapi/; \
+		git --no-pager diff -- docs/; \
 		exit 1; \
 	fi
-
-refresh-docs-ui:
-	./scripts/refresh-docs-ui.sh
 
 clean:
 	rm -rf $(BIN_DIR) coverage.out

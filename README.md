@@ -67,10 +67,8 @@ curl -H 'X-API-Key: my-secret-key' 'http://localhost:8080/v1/clusters'
 ```
 
 Health probes (`/livez`, `/readyz`), `/metrics`, and the docs routes
-(`/openapi.*`, `/docs`, `/docs/assets/*`) are exempt and require no key. With
-no keys configured the middleware is a no-op and every route is open — see
-[`docs/operations.md`](docs/operations.md) for the K8s `Secret` mount and
-rotation procedure.
+(`/openapi.*`, `/docs`) are exempt and require no key. With no keys configured
+the middleware is a no-op and every route is open.
 
 ## Upstream metrics consumed
 
@@ -112,8 +110,7 @@ in-cluster `<service>.<namespace>.svc` name becomes a `type="service"` node
 (with on-demand `service-selects-pod` edges to its backing pods), a headless
 `<pod>.<service>.<namespace>.svc` name resolves to the real backing pod, and an
 unresolvable URL becomes an `others` node. A non-URL label (no `://`) becomes
-an `external` node via the missing pod-UID human-label fallback. See
-[Connection-string resolution](docs/others-substitution.md).
+an `external` node via the missing pod-UID human-label fallback.
 
 The `servicegraph` connector's **virtual peers** — `client="user"` (an
 uninstrumented caller) and `unknown` (an unresolved peer) — are dropped at the
@@ -157,15 +154,18 @@ service-graph behaviour.
 | `--api-keys`                    | `KSG_API_KEYS`                   | (empty)              | Comma-separated literal keys. Dev only; ignored when `--api-keys-file` is set. |
 | `--api-keys-reload-interval`    | `KSG_API_KEYS_RELOAD_INTERVAL`   | `30s`                | How often `--api-keys-file` is re-read. Set to `0` to disable hot reload. |
 | `--log-level`                   | `KSG_LOG_LEVEL`                  | `info`               | `debug | info | warn | error`. |
-| `--metric-prefix`               | `KSG_METRIC_PREFIX`              | (empty)              | Additive prefix prepended to every kube-state-metrics-shaped series the topology reader queries (e.g. `o11y_` → `o11y_kube_pod_info`). Does **not** affect `traces_service_graph_request_total` or `up{}`. See [Exporter compatibility contract](docs/operations.md#exporter-compatibility-contract). |
+| `--metric-prefix`               | `KSG_METRIC_PREFIX`              | (empty)              | Additive prefix prepended to every kube-state-metrics-shaped series the topology reader queries (e.g. `o11y_` → `o11y_kube_pod_info`). Does **not** affect `traces_service_graph_request_total` or `up{}`. The metric-name suffix and per-series label set are a fixed contract any compatible exporter must honour. |
 
 ## Documentation
 
-- [API reference](docs/api.md)
-- [Multi-cluster setup](docs/multi-cluster.md)
-- [Connection-string endpoint resolution](docs/others-substitution.md)
-- [Operations](docs/operations.md)
-- [Architecture guide (繁體中文 HTML)](docs/repo-guide.zh-tw.html) — end-to-end flow, design rationale, and how to extend the codebase
+The full API reference is served by the running server:
+
+- **Interactive API reference (Scalar UI):** [`/docs`](http://localhost:8080/docs)
+- **OpenAPI 3.1 spec:** [`/openapi.yaml`](http://localhost:8080/openapi.yaml) · [`/openapi.json`](http://localhost:8080/openapi.json)
+
+The spec is generated from in-source annotations (`make docs`) and embedded into
+the binary, so it always matches the running build. The Scalar UI loads its
+front-end bundle from the jsDelivr CDN.
 
 ## Development
 
