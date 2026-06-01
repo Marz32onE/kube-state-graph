@@ -9,8 +9,8 @@ import (
 
 	"github.com/prometheus/common/model"
 
-	"github.com/marz32one/kube-state-graph/internal/graph"
-	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
 )
 
 // ServiceGraphResult is the typed output of the pod-service-graph reader.

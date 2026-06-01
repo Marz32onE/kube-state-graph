@@ -29,11 +29,11 @@ import (
 
 	"github.com/marz32one/kube-state-graph/internal/api"
 	"github.com/marz32one/kube-state-graph/internal/auth"
-	"github.com/marz32one/kube-state-graph/internal/build"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
-	"github.com/marz32one/kube-state-graph/internal/promql"
 	"github.com/marz32one/kube-state-graph/internal/telemetry"
+	"github.com/marz32one/kube-state-graph/pkg/build"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
 )
 
 // version is the build-time service version. Override with
@@ -85,7 +85,7 @@ func run() error {
 		return fmt.Errorf("api keys: %w", err)
 	}
 
-	builder := build.New(promClient, cfg, metrics, nil)
+	builder := build.New(promClient, build.Options{MetricPrefix: cfg.MetricPrefix, APITimeout: cfg.APITimeout}, metrics, nil)
 	server := api.New(cfg, builder, promClient, metrics, logger, keys, nil)
 
 	httpSrv := &http.Server{

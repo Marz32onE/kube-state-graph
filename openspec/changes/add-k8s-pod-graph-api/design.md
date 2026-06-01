@@ -975,6 +975,42 @@ Alternatives considered:
 - **`cluster > node > service > pod` (service nested under node)** (rejected — a Service spans nodes and a pod backs multiple Services; forcing it into the tree fragments service identity per node and breaks the single `pod-to-service` target + the on-demand service dedupe of D29).
 - **Model pod→node as an edge instead of (or in addition to) compound nesting** (rejected — the edge and the nesting double-represent the same fact; an edge from a pod to its enclosing node box is visual noise, and an edge type that no serialiser emits is dead weight in the registry / projection. Compound nesting via `labels.node` is the single, sufficient representation; the host node renders as the pod's container, not as an edge target).
 
+### D32. Reusable graph engine as a public `pkg/`; embeddable by other modules
+
+The graph-building stack — node / edge types, the multi-cluster `Build`, the `Project` projection, the PromQL `Querier` abstraction + `Renderer`, the `Clock`, and the Cytoscape serialiser — is promoted from `internal/` to a public `pkg/` tree so that **other Go modules can import the exact same graph engine in-process** instead of calling `GET /v1/graph` over HTTP and re-deserialising the JSON. `kube-state-graph` itself is refactored to consume its own `pkg/` (single source of truth — not a fork, not a vendored copy); the server in `internal/api` becomes a thin HTTP / auth shell over the `pkg/` engine.
+
+The first consumer is **`graph-api-gateway`** (a separate module, `github.com/marz32one/graph-api-gateway`), which today calls ksg over HTTP, decodes the body into its own `CytoscapeGraph` structs, then merges a second **switch (network-topology) graph** by IP (its own design D9). It replaces that HTTP-plus-decode hop with the embedded `pkg/` engine: it builds the kube graph in-process and obtains the identical Cytoscape DTO with zero JSON round-trip, keeping its IP-reconcile + merge pipeline (and the external switch backend) unchanged.
+
+**Package layout** (all under the existing `github.com/marz32one/kube-state-graph` module — same module, made importable by lifting out of `internal/`):
+
+| pkg | Origin | Public surface |
+|---|---|---|
+| `pkg/graph` | `internal/graph` | `Graph`, sealed `GraphNode` + the six node types, `Edge`, `Project`, `Scope` / `NewScope`, `View`, `SortNodes` / `SortEdges`, `EdgeTypes` |
+| `pkg/build` | `internal/build` | `Builder`, `New`, `Build`, the topology / service-graph readers |
+| `pkg/promql` | `internal/promql` | `Querier` interface, `Renderer` + `Query` constants + sentinel selector, the HTTP `Client` + `New` (consumers build a `Querier` straight from a VM URL) |
+| `pkg/clock` | `internal/clock` | `Clock`, `System`, `Fake` |
+| `pkg/cytoscape` | **new** — lifted from `internal/api/serialise.go` | the `Body` / node / edge DTO types and `Serialise(g, view) Body` |
+| `pkg/kubegraph` | **new** — convenience facade | `Engine`, `New(q promql.Querier, opts Options)`, `BuildFromValues(ctx, url.Values) (cytoscape.Body, error)`, plus the lower-level `Build(ctx, window, end) (*graph.Graph, error)` |
+
+**The `kubegraph.Engine` facade** is the "easy button": it folds parse → `Build` → `Project` → `Serialise` into one call so a consumer needs no knowledge of the internal stages. The request parsing that today lives in the gin handler (`start` / `end` validation → `(window, end)`; `cluster` / `namespace` / `edge_type` / `name` / `root` / `depth` / `direction` → `graph.Scope`) is **pulled out of gin** and down into the facade, operating on `url.Values` (not `*gin.Context`). ksg's own handler then calls the same facade, so the request contract is defined once and **cannot drift** between the server and an embedded consumer. `Options` is a small `{ MetricPrefix string; Clock clock.Clock; Metrics … }` value — the server's full `config.Config` (listen addr, API keys, log level) is **not** the engine's input.
+
+**Preserved contracts across the module boundary.** Lifting the code out of `internal/` does not relax any load-bearing rule:
+
+- The `GraphNode` seal (D11) stays — `isGraphNode()` remains unexported, so an external module **cannot** mint its own node types. This is deliberate and is precisely why the gateway merges its switch graph at the **Cytoscape DTO layer** (D9 / D31), not by constructing `GraphNode`s: the switch nodes never need to be `GraphNode`s, so the seal costs the consumer nothing.
+- Deterministic output (D6), the `{apiVersion, clusters, elements}` body shape (D9), the cluster-scoped IDs (D3), and the UUIDv5 edge IDs hold byte-for-byte — the refactor is a **pure relocation**, so the existing golden / property / component tests move with the packages and must stay green; the server's external wire output is unchanged.
+- Metrics and OTLP tracing are **injectable with a no-op default**, so an embedding module does not inherit ksg's `kube_state_graph_*` self-metrics or register them in its own Prometheus registry. ksg passes its real `observability.Metrics`; the gateway passes a no-op. Spans stay no-op until an OTLP endpoint is configured (D25), so the consumer pays nothing unless it opts in.
+
+Why:
+
+- The gateway's stated goal is to drop the serialise → HTTP → deserialise round-trip while reusing the *identical* graph logic; a shared in-process library is the only way to get byte-identical behaviour without forking. Promoting the already HTTP-decoupled stack (D11's pure `Build` / `Project`) to `pkg/` is nearly mechanical because the seam already exists.
+- Keeping it in the **same module** (just `pkg/` instead of `internal/`) avoids a third repository and release-coordination overhead for what is, today, a two-project setup maintained together.
+
+Alternatives considered:
+
+- **Separate shared repo / module** (e.g. `github.com/marz32one/graph-builder`) imported by both ksg and the gateway (rejected for now — most decoupled, but adds a third repo, an independent release cadence, and version-bump choreography a co-located two-project setup does not need. The `pkg/` boundary is clean enough that extracting it to its own module later, if a third consumer appears, is a non-breaking move).
+- **Literal copy / vendor of `pkg/` into the gateway** (rejected — the framing was "same logic", and a copy drifts: every bug fix and contract change would have to be applied twice, defeating the single-source-of-truth goal).
+- **Consumer operates on the native `*graph.Graph` end-to-end** instead of the Cytoscape DTO (rejected — the switch graph arrives from an external HTTP backend as Cytoscape JSON, so it must be decoded into *some* DTO regardless; converting it into native `graph` types would require an escape hatch through the `GraphNode` seal (D11) plus an extra conversion — i.e. **more** work than merging at the DTO layer the gateway already uses).
+
 ## Risks / Trade-offs
 
 - [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost.

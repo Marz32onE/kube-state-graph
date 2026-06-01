@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	authmocks "github.com/marz32one/kube-state-graph/internal/auth/mocks"
-	"github.com/marz32one/kube-state-graph/internal/build"
-	clockmocks "github.com/marz32one/kube-state-graph/internal/clock/mocks"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
-	"github.com/marz32one/kube-state-graph/internal/promql"
-	promqlmocks "github.com/marz32one/kube-state-graph/internal/promql/mocks"
+	"github.com/marz32one/kube-state-graph/pkg/build"
+	clockmocks "github.com/marz32one/kube-state-graph/pkg/clock/mocks"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
+	promqlmocks "github.com/marz32one/kube-state-graph/pkg/promql/mocks"
 )
 
 // TestHandleClusters_UsesInjectedClock proves the discovery handler queries
@@ -54,7 +54,7 @@ func TestHandleClusters_UsesInjectedClock(t *testing.T) {
 
 	logger := observability.NewLogger("error")
 	metrics := observability.NewMetrics()
-	builder := build.New(q, cfg, metrics, clk)
+	builder := build.New(q, build.Options{MetricPrefix: cfg.MetricPrefix, APITimeout: cfg.APITimeout}, metrics, clk)
 	srv := New(cfg, builder, q, metrics, logger, keys, clk)
 
 	httpSrv := httptest.NewServer(srv.Handler())

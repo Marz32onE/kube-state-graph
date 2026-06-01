@@ -1,4 +1,4 @@
-package api
+package cytoscape
 
 import (
 	"testing"
@@ -6,23 +6,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marz32one/kube-state-graph/internal/graph"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
 )
 
 // cy serialises a view into Cytoscape shape, building the *graph.Graph the
 // serialiser needs (it reads only g.ClusterNames()) from the supplied nodes.
-func cy(t *testing.T, nodes []graph.GraphNode, edges []*graph.Edge) cytoscapeBody {
+func cy(t *testing.T, nodes []graph.GraphNode, edges []*graph.Edge) Body {
 	t.Helper()
 	byID := make(map[string]graph.GraphNode, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID()] = n
 	}
-	return serialiseCytoscape(&graph.Graph{NodesByID: byID}, graph.View{Nodes: nodes, Edges: edges})
+	return Serialise(&graph.Graph{NodesByID: byID}, graph.View{Nodes: nodes, Edges: edges})
 }
 
 // cyNodesByID indexes the Cytoscape node data by node id for assertions.
-func cyNodesByID(b cytoscapeBody) map[string]cytoscapeNodeData {
-	m := make(map[string]cytoscapeNodeData, len(b.Elements.Nodes))
+func cyNodesByID(b Body) map[string]NodeData {
+	m := make(map[string]NodeData, len(b.Elements.Nodes))
 	for _, n := range b.Elements.Nodes {
 		m[n.Data.ID] = n.Data
 	}
@@ -30,7 +30,7 @@ func cyNodesByID(b cytoscapeBody) map[string]cytoscapeNodeData {
 }
 
 // assertNoClusterGroup fails if any emitted node is a synthetic cluster group.
-func assertNoClusterGroup(t *testing.T, nodes map[string]cytoscapeNodeData) {
+func assertNoClusterGroup(t *testing.T, nodes map[string]NodeData) {
 	t.Helper()
 	for id := range nodes {
 		assert.NotContains(t, id, "cluster/", "no cluster group node expected")

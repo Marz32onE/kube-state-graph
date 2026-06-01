@@ -7,7 +7,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/marz32one/kube-state-graph/internal/build"
+	"github.com/marz32one/kube-state-graph/pkg/build"
 )
 
 type errorBody struct {

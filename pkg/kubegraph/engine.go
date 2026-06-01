@@ -1,0 +1,74 @@
+// Package kubegraph is the convenience facade over the reusable graph engine.
+// It folds request parsing, the multi-cluster build, projection, and Cytoscape
+// serialisation into a single call so an embedding application can obtain the
+// exact /v1/graph response body in-process, with no HTTP hop and no JSON
+// round-trip. kube-state-graph's own HTTP handler shares the same parser
+// (ParseValues) so the request contract cannot drift between the server and an
+// embedded consumer.
+package kubegraph
+
+import (
+	"context"
+	"net/url"
+	"time"
+
+	"github.com/marz32one/kube-state-graph/pkg/build"
+	"github.com/marz32one/kube-state-graph/pkg/clock"
+	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
+)
+
+// Options configures an Engine. Clock and Metrics are optional: a nil Clock
+// falls back to the system clock, and a nil Metrics disables build self-metrics
+// (an embedder that does not want kube-state-graph's Prometheus series leaves it
+// nil). MetricPrefix and APITimeout mirror the build-layer settings.
+type Options struct {
+	// MetricPrefix is prepended to kube-state-metrics-shaped metric names (D26).
+	MetricPrefix string
+	// APITimeout bounds the cheap up{} retention probe inside the build.
+	APITimeout time.Duration
+	// Clock is the time source for "now"; nil means the system clock.
+	Clock clock.Clock
+	// Metrics records last-build observational gauges; nil means no-op.
+	Metrics build.Metrics
+}
+
+// Engine wraps a build.Builder and exposes the build → project → serialise
+// pipeline as a single call. Construct one per upstream Querier.
+type Engine struct {
+	builder *build.Builder
+}
+
+// New constructs an Engine querying through q. The caller owns q (typically a
+// *promql.Client built from a VictoriaMetrics URL, or any Querier).
+func New(q promql.Querier, opts Options) *Engine {
+	b := build.New(q, build.Options{
+		MetricPrefix: opts.MetricPrefix,
+		APITimeout:   opts.APITimeout,
+	}, opts.Metrics, opts.Clock)
+	return &Engine{builder: b}
+}
+
+// Build runs the multi-cluster build for [end-window, end] and returns the
+// immutable graph. The caller supplies any build deadline via ctx.
+func (e *Engine) Build(ctx context.Context, window time.Duration, end time.Time) (*graph.Graph, error) {
+	return e.builder.Build(ctx, window, end)
+}
+
+// BuildFromValues parses the /v1/graph query parameters, builds the graph,
+// applies the projection, and serialises to the Cytoscape body — the whole
+// pipeline in one call. Parsing failures are returned as *ParseError (HTTP 400
+// in kube-state-graph's API); build failures propagate the build layer's typed
+// errors. The caller supplies any build deadline via ctx.
+func (e *Engine) BuildFromValues(ctx context.Context, v url.Values) (cytoscape.Body, error) {
+	start, end, scope, err := ParseValues(v)
+	if err != nil {
+		return cytoscape.Body{}, err
+	}
+	g, err := e.builder.Build(ctx, end.Sub(start), end)
+	if err != nil {
+		return cytoscape.Body{}, err
+	}
+	return cytoscape.Serialise(g, graph.Project(g, scope)), nil
+}

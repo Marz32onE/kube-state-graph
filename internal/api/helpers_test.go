@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marz32one/kube-state-graph/internal/auth"
-	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
-	promqlmocks "github.com/marz32one/kube-state-graph/internal/promql/mocks"
+	"github.com/marz32one/kube-state-graph/pkg/build"
+	"github.com/marz32one/kube-state-graph/pkg/clock"
+	promqlmocks "github.com/marz32one/kube-state-graph/pkg/promql/mocks"
 )
 
 // fixtureSet maps a query-substring needle to the model.Vector returned when
@@ -78,7 +78,7 @@ func newServerWithMocksAndKeys(t *testing.T, q *promqlmocks.MockQuerier, ks *aut
 
 	logger := observability.NewLogger("error")
 	metrics := observability.NewMetrics()
-	builder := build.New(q, cfg, metrics, clock.System{})
+	builder := build.New(q, build.Options{MetricPrefix: cfg.MetricPrefix, APITimeout: cfg.APITimeout}, metrics, clock.System{})
 	return New(cfg, builder, q, metrics, logger, ks, clock.System{})
 }
 

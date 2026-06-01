@@ -16,7 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marz32one/kube-state-graph/internal/config"
-	promqlmocks "github.com/marz32one/kube-state-graph/internal/promql/mocks"
+	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
+	promqlmocks "github.com/marz32one/kube-state-graph/pkg/promql/mocks"
 )
 
 // TestServer_MetricPrefix_AppliedToTopologyQueries asserts that when the
@@ -53,7 +54,7 @@ func TestServer_MetricPrefix_AppliedToTopologyQueries(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode,
 		"build should produce non-empty topology against o11y_-prefixed fixtures")
 
-	var body cytoscapeBody
+	var body cytoscape.Body
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.NotEmpty(t, body.Elements.Nodes,
 		"prefixed fixtures should resolve to at least one node")

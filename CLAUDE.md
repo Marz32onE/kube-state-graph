@@ -52,7 +52,7 @@ make docs                                   # go tool swag init --outputTypes js
 make check-docs                             # CI docs-drift mirror (regen + git diff docs/)
 
 # Single test
-go test ./internal/graph/ -run TestProject_ClusterFilter -v
+go test ./pkg/graph/ -run TestProject_ClusterFilter -v
 go test ./internal/api/ -run TestGolden -v
 
 # Update golden files (after changing serialiser shape on purpose)
@@ -199,6 +199,34 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 - **OTLP tracing/logging is config'd by OTel env vars only** (`OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`). No bespoke `--otlp-*` flags. Telemetry defaults to no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (zero export overhead, no background goroutines). Tracing MUST NOT alter response bodies — resource attrs and span IDs live on spans, never in JSON. `otelgin` is mounted on `/v1/*` only; `/livez`, `/readyz`, `/metrics`, and `/docs/*` are deliberately untraced. The auth middleware MUST NEVER log or attribute the presented `X-API-Key` value via either the local handler or the OTLP slog bridge.
 - **Upstream metric-name prefix is an additive `KSG_METRIC_PREFIX` knob** applied to KSM-shaped series only (`kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels`, `kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels`, and the `kube_node_info`-backed cluster-discovery query). The prefix is prepended verbatim — trailing underscore is the operator's responsibility. NOT applied to `traces_service_graph_request_total` (different exporter family — Alloy/Tempo) or `up{}` (Prometheus-native). The D29 endpointslice → service join reads `kube_endpointslice_labels{label_kubernetes_io_service_name}`, which KSM only emits when `--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name]` is set (NOT exposed by default). The metric-name suffix and the label-name set per series are a fixed contract any compatible exporter MUST honour; see design.md D26. Threaded via `promql.Renderer{Prefix}` held on `build.Builder` and `api.Server`; the `Query` string constants remain bare so `query=` / `query_name=` dimensions on self-metrics and spans stay stable across deployments that differ only by prefix.
 
+### Reusable `pkg/` graph engine (D32)
+
+The graph engine lives under `pkg/` so other Go modules can import it in-process
+(no HTTP, no JSON round-trip); `internal/api` is a thin HTTP / auth shell over it:
+
+- `pkg/graph` — `Graph`, the sealed `GraphNode` + six node types, `Edge`,
+  `Project`, `Scope` / `NewScope`, `View`, `SortNodes` / `SortEdges`, `EdgeTypes`.
+- `pkg/build` — `Builder` + `Build`; topology / service-graph readers. Takes a
+  `build.Options{MetricPrefix, APITimeout}` and a no-op-tolerant `build.Metrics`
+  interface — **not** `internal/config` / `internal/observability`, whose
+  couplings were broken so the package is externally importable.
+- `pkg/promql` — `Querier`, `Renderer`, `Client`, and a no-op-tolerant
+  `promql.Metrics` interface.
+- `pkg/clock`; `pkg/cytoscape` — `Serialise(g, view) Body` plus the Cytoscape DTO.
+- `pkg/kubegraph` — the convenience facade: `Engine.BuildFromValues(ctx,
+  url.Values) (cytoscape.Body, error)` folds parse → build → project → serialise
+  into one call. `kubegraph.ParseValues` is the **single** request parser, shared
+  by `internal/api`'s handler and the facade, so the `/v1/graph` request contract
+  cannot drift between the server and an embedded consumer.
+
+`pkg/` packages MUST NOT import `internal/*` — Go's internal rule would block any
+external module from importing the engine. Metrics and OTLP tracing are injected
+with no-op defaults, so an embedder does not inherit ksg's `kube_state_graph_*`
+self-metrics; the concrete `*observability.Metrics` satisfies
+`build.Metrics` / `promql.Metrics` structurally via wrappers in
+`internal/observability/adapters.go`. The first external consumer is
+`graph-api-gateway` (its `embed-ksg-graph-engine` change).
+
 ### Sealed graph types
 
 `graph.GraphNode` is a sealed interface (`isGraphNode()` unexported). Concrete
@@ -215,14 +243,15 @@ switches in the serialiser. `IPAddress()` returns nil for `PVCNode` /
 Boundary rule: **unit tests must not contact a real upstream service**. Anything
 that needs a TCP socket fronting upstream is integration. Unit tests substitute
 upstream behind small interfaces (`promql.Querier`, `auth.Validator`,
-`clock.Clock`) using mockery-generated mocks under `internal/<pkg>/mocks/`.
+`clock.Clock`) using mockery-generated mocks under `pkg/{clock,promql}/mocks/`
+and `internal/auth/mocks/`.
 
 | Layer | Where | Real I/O? |
 |---|---|---|
-| Unit | `internal/{graph,build,promql,config,clock,auth,telemetry}/*_test.go` | None — pure functions: parsers, joins, projection, edge IDs, KeySet, Clock. |
+| Unit | `pkg/{graph,build,promql,clock,cytoscape,kubegraph}/*_test.go` + `internal/{config,auth,telemetry}/*_test.go` | None — pure functions: parsers, joins, projection, edge IDs, request parsing, serialiser, KeySet, Clock. |
 | Component | `internal/api/*_test.go` | None — gin handlers driven via a `MockQuerier` injected through `promql.Querier`; `httptest.NewServer` only wraps the server-under-test, never fakes upstream. Test helpers in `internal/api/helpers_test.go` (`newServerWithMocks`, `newMockQuerier`, `newErrQuerier`, `vec`). |
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | None. Wire-format snapshots; run with `-update` to refresh. |
-| Property | `internal/graph/property_test.go` | None. Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
+| Property | `pkg/graph/property_test.go` | None. Random multi-cluster graphs → invariants (orphan edges, traversal depth, ID uniqueness). |
 | Integration | `internal/integration/*` | **Docker required.** testcontainers-go VictoriaMetrics suite; gated `SkipIfDockerUnavailable` — skips locally without Docker, runs full on CI (ubuntu-latest). Inject hooks into the in-process API via `StartAPIServer(cfg, WithClock(...))`. |
 
 When **adding a unit test that needs to fake upstream PromQL**, use

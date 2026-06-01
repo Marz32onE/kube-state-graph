@@ -12,8 +12,8 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
+	"github.com/marz32one/kube-state-graph/pkg/clock"
 )
 
 // fixedNow is the absolute timestamp anchor every fixture and query uses.

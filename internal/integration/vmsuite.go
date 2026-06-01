@@ -20,11 +20,11 @@ import (
 
 	"github.com/marz32one/kube-state-graph/internal/api"
 	"github.com/marz32one/kube-state-graph/internal/auth"
-	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
-	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/pkg/build"
+	"github.com/marz32one/kube-state-graph/pkg/clock"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
 )
 
 // VMImage is the pinned VictoriaMetrics container image used across the
@@ -228,7 +228,7 @@ func (s *VMSuite) StartAPIServer(configure func(*config.Config), opts ...APIOpti
 	if cfg.APIKeysFile != "" {
 		s.Require().NoError(ks.LoadFile(cfg.APIKeysFile))
 	}
-	builder := build.New(prom, cfg, metrics, o.clk)
+	builder := build.New(prom, build.Options{MetricPrefix: cfg.MetricPrefix, APITimeout: cfg.APITimeout}, metrics, o.clk)
 	srv := api.New(cfg, builder, prom, metrics, logger, ks, o.clk)
 
 	httpSrv := httptest.NewServer(srv.Handler())

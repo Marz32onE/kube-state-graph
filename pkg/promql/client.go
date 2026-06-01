@@ -12,25 +12,28 @@ import (
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
-
-	"github.com/marz32one/kube-state-graph/internal/observability"
-	"github.com/marz32one/kube-state-graph/internal/telemetry"
 )
+
+// tracer is obtained from the global provider; it is a no-op until an
+// application installs an OpenTelemetry SDK. The instrumentation scope name is
+// kept stable ("kube-state-graph") so span dimensions are unchanged.
+var tracer = otel.Tracer("kube-state-graph")
 
 // Client wraps the Prometheus HTTP API and emits self-metrics for every call.
 type Client struct {
 	api     v1.API
-	metrics *observability.Metrics
+	metrics Metrics
 }
 
-// New constructs a Client targeting the supplied URL. The HTTP transport is
-// wrapped with otelhttp so outbound PromQL requests propagate W3C traceparent
-// headers and emit a client span per call.
-func New(promURL string, metrics *observability.Metrics) (*Client, error) {
+// New constructs a Client targeting the supplied URL. metrics may be nil
+// (no-op). The HTTP transport is wrapped with otelhttp so outbound PromQL
+// requests propagate W3C traceparent headers and emit a client span per call.
+func New(promURL string, metrics Metrics) (*Client, error) {
 	base := &http.Transport{
 		MaxIdleConnsPerHost: 16,
 		IdleConnTimeout:     30 * time.Second,
@@ -49,7 +52,7 @@ func New(promURL string, metrics *observability.Metrics) (*Client, error) {
 // metrics labelled with the supplied query name and emitting a `prometheus.query`
 // span carrying the rendered statement.
 func (c *Client) Instant(ctx context.Context, name, query string, ts time.Time) (model.Vector, error) {
-	ctx, span := telemetry.Tracer().Start(ctx, "prometheus.query",
+	ctx, span := tracer.Start(ctx, "prometheus.query",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
 			semconv.DBSystemKey.String("prometheus"),
@@ -67,11 +70,15 @@ func (c *Client) Instant(ctx context.Context, name, query string, ts time.Time) 
 
 	start := time.Now()
 	defer func() {
-		c.metrics.UpstreamQueryDur.WithLabelValues(name).Observe(time.Since(start).Seconds())
+		if c.metrics != nil {
+			c.metrics.ObserveQueryDuration(name, time.Since(start).Seconds())
+		}
 	}()
 	val, _, err := c.api.Query(ctx, query, ts)
 	if err != nil {
-		c.metrics.UpstreamQueryFail.WithLabelValues(name).Inc()
+		if c.metrics != nil {
+			c.metrics.IncQueryFailure(name)
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		slog.ErrorContext(ctx, "promql query failed",
@@ -84,7 +91,9 @@ func (c *Client) Instant(ctx context.Context, name, query string, ts time.Time) 
 	}
 	vec, ok := val.(model.Vector)
 	if !ok {
-		c.metrics.UpstreamQueryFail.WithLabelValues(name).Inc()
+		if c.metrics != nil {
+			c.metrics.IncQueryFailure(name)
+		}
 		err := fmt.Errorf("unexpected result type %T", val)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

@@ -4,20 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/graph"
-	"github.com/marz32one/kube-state-graph/internal/promql"
 	"github.com/marz32one/kube-state-graph/internal/telemetry"
+	"github.com/marz32one/kube-state-graph/pkg/build"
+	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
+	"github.com/marz32one/kube-state-graph/pkg/kubegraph"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
 )
 
 // ----- /v1/graph (Cytoscape.js) ---------------------------------------------
@@ -70,7 +70,7 @@ import (
 //	@Param			depth		query		int			false	"BFS traversal depth in hops. Range `0..6`. Defaults to `2` when `root` is set, ignored otherwise."	minimum(0)	maximum(6)	default(2)	example(2)
 //	@Param			direction	query		string		false	"Traversal direction relative to `root`. `out` = downstream edges, `in` = upstream edges, `both` = undirected. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
 //	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
-//	@Success		200			{object}	cytoscapeBody
+//	@Success		200			{object}	cytoscape.Body
 //	@Failure		400			{object}	errorBody	"Invalid parameters (missing/invalid start|end, invalid_range, depth_too_large, invalid_scope, outside_retention)"
 //	@Failure		401			{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
 //	@Failure		502			{object}	errorBody	"Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
@@ -90,7 +90,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 
 	view := s.projectWithSpan(c.Request.Context(), g, req.scope)
 	body := s.serialiseWithSpan(c.Request.Context(), "cytoscape", func() any {
-		return serialiseCytoscape(g, view)
+		return cytoscape.Serialise(g, view)
 	}, view)
 	s.writeJSON(c, body, "cytoscape")
 }
@@ -316,76 +316,27 @@ type graphRequest struct {
 	format string
 }
 
+// parseGraphRequest delegates parsing to the shared kubegraph.ParseValues (the
+// single source of truth for the /v1/graph request contract, also used by
+// Engine.BuildFromValues), then maps a *kubegraph.ParseError to the existing
+// HTTP 400 response with its stable reason code.
 func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
-	q := c.Request.URL.Query()
-	startStr := q.Get("start")
-	endStr := q.Get("end")
-	if startStr == "" {
-		writeError(c, http.StatusBadRequest, "missing_start", "start query parameter is required")
-		return graphRequest{}, fmt.Errorf("missing_start")
-	}
-	if endStr == "" {
-		writeError(c, http.StatusBadRequest, "missing_end", "end query parameter is required")
-		return graphRequest{}, fmt.Errorf("missing_end")
-	}
-	start, err := parseTimestamp(startStr)
+	start, end, scope, err := kubegraph.ParseValues(c.Request.URL.Query())
 	if err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_start", err.Error())
-		return graphRequest{}, err
-	}
-	end, err := parseTimestamp(endStr)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_end", err.Error())
-		return graphRequest{}, err
-	}
-	if !end.After(start) {
-		writeError(c, http.StatusBadRequest, "invalid_range", "end must be after start")
-		return graphRequest{}, fmt.Errorf("invalid_range")
-	}
-
-	depth := 0
-	if s := q.Get("depth"); s != "" {
-		v, err := strconv.Atoi(s)
-		if err != nil {
-			writeError(c, http.StatusBadRequest, "invalid_depth", "depth must be an integer")
-			return graphRequest{}, err
+		var pe *kubegraph.ParseError
+		if errors.As(err, &pe) {
+			writeError(c, http.StatusBadRequest, pe.Reason, pe.Message)
+		} else {
+			writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		}
-		depth = v
-	}
-	if depth > graph.MaxTraversalDepth {
-		writeError(c, http.StatusBadRequest, "depth_too_large", "depth exceeds maximum")
-		return graphRequest{}, fmt.Errorf("depth_too_large")
-	}
-	scope, err := graph.NewScope(
-		q["cluster"],
-		q["namespace"],
-		q["edge_type"],
-		q["name"],
-		q.Get("root"),
-		depth,
-		q.Get("direction"),
-	)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_scope", err.Error())
 		return graphRequest{}, err
 	}
-
 	return graphRequest{
 		start:  start,
 		end:    end,
 		scope:  scope,
 		format: "cytoscape",
 	}, nil
-}
-
-func parseTimestamp(s string) (time.Time, error) {
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return time.Unix(n, 0).UTC(), nil
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UTC(), nil
-	}
-	return time.Time{}, fmt.Errorf("timestamp must be RFC 3339 or Unix seconds: %q", s)
 }
 
 // ----- response helpers -----------------------------------------------------

@@ -1,6 +1,76 @@
 components:
   schemas:
-    github_com_marz32one_kube-state-graph_internal_graph.EdgeType:
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Body:
+      properties:
+        apiVersion:
+          type: string
+        clusters:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        elements:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Elements'
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Edge:
+      properties:
+        data:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.EdgeData'
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.EdgeData:
+      properties:
+        id:
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+        source:
+          type: string
+        target:
+          type: string
+        type:
+          type: string
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Elements:
+      properties:
+        edges:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Edge'
+          type: array
+          uniqueItems: false
+        nodes:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Node'
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Node:
+      properties:
+        data:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.NodeData'
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.NodeData:
+      properties:
+        id:
+          type: string
+        ipaddress:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+        name:
+          type: string
+        parent:
+          type: string
+        type:
+          type: string
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_graph.EdgeType:
       enum:
       - pod-mounts-pvc
       - pod-calls-pod
@@ -10,7 +80,7 @@ components:
       - EdgeTypePodMountsPVC
       - EdgeTypePodCallsPod
       - EdgeTypeServiceSelectsPod
-    github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition:
+    github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition:
       properties:
         description:
           type: string
@@ -18,25 +88,25 @@ components:
           type: boolean
         labels:
           items:
-            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel'
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeLabel'
           type: array
           uniqueItems: false
         may_cross_cluster:
           type: boolean
         source_type:
           items:
-            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.NodeType'
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.NodeType'
           type: array
           uniqueItems: false
         target_type:
           items:
-            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.NodeType'
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.NodeType'
           type: array
           uniqueItems: false
         type:
-          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeType'
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.EdgeType'
       type: object
-    github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeLabel:
+    github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeLabel:
       properties:
         description:
           type: string
@@ -45,7 +115,7 @@ components:
         value_type:
           type: string
       type: object
-    github_com_marz32one_kube-state-graph_internal_graph.NodeType:
+    github_com_marz32one_kube-state-graph_pkg_graph.NodeType:
       enum:
       - pod
       - node
@@ -76,83 +146,13 @@ components:
           type: array
           uniqueItems: false
       type: object
-    internal_api.cytoscapeBody:
-      properties:
-        apiVersion:
-          type: string
-        clusters:
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        elements:
-          $ref: '#/components/schemas/internal_api.cytoscapeElems'
-      type: object
-    internal_api.cytoscapeEdge:
-      properties:
-        data:
-          $ref: '#/components/schemas/internal_api.cytoscapeEdgeData'
-      type: object
-    internal_api.cytoscapeEdgeData:
-      properties:
-        id:
-          type: string
-        labels:
-          additionalProperties:
-            type: string
-          type: object
-        source:
-          type: string
-        target:
-          type: string
-        type:
-          type: string
-      type: object
-    internal_api.cytoscapeElems:
-      properties:
-        edges:
-          items:
-            $ref: '#/components/schemas/internal_api.cytoscapeEdge'
-          type: array
-          uniqueItems: false
-        nodes:
-          items:
-            $ref: '#/components/schemas/internal_api.cytoscapeNode'
-          type: array
-          uniqueItems: false
-      type: object
-    internal_api.cytoscapeNode:
-      properties:
-        data:
-          $ref: '#/components/schemas/internal_api.cytoscapeNodeData'
-      type: object
-    internal_api.cytoscapeNodeData:
-      properties:
-        id:
-          type: string
-        ipaddress:
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        labels:
-          additionalProperties:
-            type: string
-          type: object
-        name:
-          type: string
-        parent:
-          type: string
-        type:
-          type: string
-      type: object
     internal_api.edgeTypesBody:
       properties:
         apiVersion:
           type: string
         edge_types:
           items:
-            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_internal_graph.EdgeTypeDefinition'
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition'
           type: array
           uniqueItems: false
       type: object
@@ -493,7 +493,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/internal_api.cytoscapeBody'
+                $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Body'
           description: OK
         "400":
           content:

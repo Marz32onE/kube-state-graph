@@ -19,10 +19,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/marz32one/kube-state-graph/internal/auth"
-	"github.com/marz32one/kube-state-graph/internal/build"
-	"github.com/marz32one/kube-state-graph/internal/clock"
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/internal/observability"
+	"github.com/marz32one/kube-state-graph/pkg/build"
+	"github.com/marz32one/kube-state-graph/pkg/clock"
 )
 
 // installInMemoryTracer registers an in-memory exporter so tests can inspect
@@ -181,7 +181,7 @@ func TestAuth_NoAPIKeyInLogs(t *testing.T) {
 	metrics := observability.NewMetrics()
 	ks := auth.NewKeySet()
 	ks.LoadCSV("real-key-1,real-key-2")
-	builder := build.New(q, cfg, metrics, clock.System{})
+	builder := build.New(q, build.Options{MetricPrefix: cfg.MetricPrefix, APITimeout: cfg.APITimeout}, metrics, clock.System{})
 	server := New(cfg, builder, q, metrics, logger, ks, clock.System{})
 
 	srv := httptest.NewServer(server.Handler())

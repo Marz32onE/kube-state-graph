@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/marz32one/kube-state-graph/internal/graph"
+	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
 )
 
 var update = flag.Bool("update", false, "update golden files")
@@ -35,7 +36,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 			for _, n := range view.Nodes {
 				g.NodesByID[n.ID()] = n
 			}
-			body := serialiseCytoscape(g, view)
+			body := cytoscape.Serialise(g, view)
 			compareGolden(t, name+"-cytoscape.json", body)
 		})
 	}

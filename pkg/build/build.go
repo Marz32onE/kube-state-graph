@@ -7,40 +7,43 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/marz32one/kube-state-graph/internal/clock"
-	"github.com/marz32one/kube-state-graph/internal/config"
-	"github.com/marz32one/kube-state-graph/internal/graph"
-	"github.com/marz32one/kube-state-graph/internal/observability"
-	"github.com/marz32one/kube-state-graph/internal/promql"
-	"github.com/marz32one/kube-state-graph/internal/telemetry"
+	"github.com/marz32one/kube-state-graph/pkg/clock"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
 )
+
+// tracer is obtained from the global provider; it is a no-op until an
+// application installs an OpenTelemetry SDK. The instrumentation scope name is
+// kept stable ("kube-state-graph") so span dimensions are unchanged.
+var tracer = otel.Tracer("kube-state-graph")
 
 // Builder runs the topology + service-graph readers and assembles a
 // multi-cluster Graph for one bucketed time window.
 type Builder struct {
 	q       promql.Querier
 	r       promql.Renderer
-	cfg     config.Config
-	metrics *observability.Metrics
+	opts    Options
+	metrics Metrics
 	clk     clock.Clock
 }
 
-// New constructs a Builder. clk may be nil; nil falls back to clock.System.
-// The Renderer is derived from cfg.MetricPrefix and held on the Builder so
-// every PromQL query the build pipeline issues picks up the configured
-// upstream metric-name prefix (see design.md D26).
-func New(q promql.Querier, cfg config.Config, m *observability.Metrics, clk clock.Clock) *Builder {
+// New constructs a Builder. clk may be nil (falls back to clock.System); m may
+// be nil (no-op metrics). The Renderer is derived from opts.MetricPrefix and
+// held on the Builder so every PromQL query the build pipeline issues picks up
+// the configured upstream metric-name prefix (see design.md D26).
+func New(q promql.Querier, opts Options, m Metrics, clk clock.Clock) *Builder {
 	if clk == nil {
 		clk = clock.System{}
 	}
 	return &Builder{
 		q:       q,
-		r:       promql.Renderer{Prefix: cfg.MetricPrefix},
-		cfg:     cfg,
+		r:       promql.Renderer{Prefix: opts.MetricPrefix},
+		opts:    opts,
 		metrics: m,
 		clk:     clk,
 	}
@@ -49,7 +52,7 @@ func New(q promql.Querier, cfg config.Config, m *observability.Metrics, clk cloc
 // Build runs all upstream queries for [end - window, end] and returns the
 // joined multi-cluster Graph.
 func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time) (*graph.Graph, error) {
-	ctx, span := telemetry.Tracer().Start(ctx, "kube-state-graph.build",
+	ctx, span := tracer.Start(ctx, "kube-state-graph.build",
 		trace.WithAttributes(
 			attribute.Int64("kube_state_graph.window_seconds", int64(window.Seconds())),
 			attribute.Int64("kube_state_graph.end_unix", end.Unix()),
@@ -81,7 +84,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 				"start", startStr,
 				"end", endStr,
 				"window", window.String(),
-				"metric_prefix", b.cfg.MetricPrefix,
+				"metric_prefix", b.opts.MetricPrefix,
 			)
 			return nil, err
 		}
@@ -127,16 +130,12 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 		"end", end.UTC().Format(time.RFC3339),
 	)
 
-	// Self-metrics: observational gauges for last build.
-	b.metrics.GraphNodeCount.Reset()
-	for k, count := range g.NodeCountByKind() {
-		b.metrics.GraphNodeCount.WithLabelValues(k[0], k[1]).Set(float64(count))
+	// Self-metrics: observational gauges for last build (no-op when unset).
+	if b.metrics != nil {
+		b.metrics.SetGraphNodeCounts(g.NodeCountByKind())
+		b.metrics.SetGraphEdgeCounts(g.EdgeCountByType())
+		b.metrics.SetClustersObserved(len(topology.ClustersObserved))
 	}
-	b.metrics.GraphEdgeCount.Reset()
-	for k, count := range g.EdgeCountByType() {
-		b.metrics.GraphEdgeCount.WithLabelValues(k[0], k[1]).Set(float64(count))
-	}
-	b.metrics.ClustersObserved.Set(float64(len(topology.ClustersObserved)))
 
 	span.SetAttributes(
 		attribute.Int("kube_state_graph.cluster_count", len(topology.ClustersObserved)),
@@ -182,7 +181,7 @@ func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*g
 }
 
 func (b *Builder) upProbe(ctx context.Context) (bool, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, b.cfg.APITimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, b.opts.APITimeout)
 	defer cancel()
 	vec, err := b.q.Instant(probeCtx, string(promql.QUpProbe),
 		b.r.Render(promql.QUpProbe, 0), b.clk.Now().UTC())

@@ -11,8 +11,8 @@ import (
 	"github.com/prometheus/common/model"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/marz32one/kube-state-graph/internal/graph"
-	"github.com/marz32one/kube-state-graph/internal/promql"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
+	"github.com/marz32one/kube-state-graph/pkg/promql"
 )
 
 // PodPVCBinding records that a pod mounts a specific PVC. The reader emits

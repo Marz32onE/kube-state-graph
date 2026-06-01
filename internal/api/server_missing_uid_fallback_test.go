@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
 )
 
 // TestGraphEndpoint_MissingClientUID_PromotesToExternal exercises the
@@ -56,7 +58,7 @@ func TestGraphEndpoint_MissingClientUID_PromotesToExternal(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var body cytoscapeBody
+	var body cytoscape.Body
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 
 	// Locate the external/admin node.

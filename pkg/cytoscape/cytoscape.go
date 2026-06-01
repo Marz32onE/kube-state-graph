@@ -1,30 +1,45 @@
-package api
+// Package cytoscape serialises a built graph.Graph (projected to a graph.View)
+// into the deterministic Cytoscape.js response body served at /v1/graph. It is
+// part of the reusable graph engine: an embedding application calls Serialise
+// to obtain the exact same wire shape kube-state-graph emits, with no HTTP or
+// JSON round-trip. The serialiser is presentation-only — it adds synthetic
+// cluster group nodes and data.parent compound nesting (design.md D31) without
+// touching the core graph types.
+package cytoscape
 
 import (
 	"maps"
 	"slices"
 
-	"github.com/marz32one/kube-state-graph/internal/graph"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
 )
+
+// APIVersion is the value stamped on the body's apiVersion field (design.md D14).
+const APIVersion = "v1"
 
 // ----- Cytoscape.js shape ---------------------------------------------------
 
-type cytoscapeBody struct {
-	APIVersion string         `json:"apiVersion"`
-	Clusters   []string       `json:"clusters"`
-	Elements   cytoscapeElems `json:"elements"`
+// Body is the top-level /v1/graph response envelope.
+type Body struct {
+	APIVersion string   `json:"apiVersion"`
+	Clusters   []string `json:"clusters"`
+	Elements   Elements `json:"elements"`
 }
 
-type cytoscapeElems struct {
-	Nodes []cytoscapeNode `json:"nodes"`
-	Edges []cytoscapeEdge `json:"edges"`
+// Elements holds the node and edge collections.
+type Elements struct {
+	Nodes []Node `json:"nodes"`
+	Edges []Edge `json:"edges"`
 }
 
-type cytoscapeNode struct {
-	Data cytoscapeNodeData `json:"data"`
+// Node wraps a node's data in the Cytoscape `{ "data": {...} }` shape.
+type Node struct {
+	Data NodeData `json:"data"`
 }
 
-type cytoscapeNodeData struct {
+// NodeData is the serialised form of a graph node (plus synthetic cluster
+// group nodes and the presentation-only parent field).
+type NodeData struct {
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
 	Type      string            `json:"type"`
@@ -33,11 +48,13 @@ type cytoscapeNodeData struct {
 	Labels    map[string]string `json:"labels"`
 }
 
-type cytoscapeEdge struct {
-	Data cytoscapeEdgeData `json:"data"`
+// Edge wraps an edge's data in the Cytoscape `{ "data": {...} }` shape.
+type Edge struct {
+	Data EdgeData `json:"data"`
 }
 
-type cytoscapeEdgeData struct {
+// EdgeData is the serialised form of a graph edge.
+type EdgeData struct {
 	ID     string            `json:"id"`
 	Type   string            `json:"type"`
 	Source string            `json:"source"`
@@ -54,8 +71,10 @@ const nodeTypeCluster = "cluster"
 // clusterParentID is the synthetic group-node id for a cluster.
 func clusterParentID(cluster string) string { return "cluster/" + cluster }
 
-func serialiseCytoscape(g *graph.Graph, view graph.View) cytoscapeBody {
-	body := cytoscapeBody{
+// Serialise renders a projected view into the deterministic Cytoscape body.
+// g supplies only ClusterNames(); view supplies the in-scope nodes and edges.
+func Serialise(g *graph.Graph, view graph.View) Body {
+	body := Body{
 		APIVersion: APIVersion,
 		Clusters:   g.ClusterNames(),
 	}
@@ -73,12 +92,12 @@ func serialiseCytoscape(g *graph.Graph, view graph.View) cytoscapeBody {
 		}
 	}
 
-	body.Elements.Nodes = make([]cytoscapeNode, 0, len(view.Nodes)+len(clusterSeen))
+	body.Elements.Nodes = make([]Node, 0, len(view.Nodes)+len(clusterSeen))
 
 	// Synthetic cluster group nodes first, sorted by name (determinism, D6).
 	for _, c := range slices.Sorted(maps.Keys(clusterSeen)) {
-		body.Elements.Nodes = append(body.Elements.Nodes, cytoscapeNode{
-			Data: cytoscapeNodeData{
+		body.Elements.Nodes = append(body.Elements.Nodes, Node{
+			Data: NodeData{
 				ID:     clusterParentID(c),
 				Name:   c,
 				Type:   nodeTypeCluster,
@@ -88,8 +107,8 @@ func serialiseCytoscape(g *graph.Graph, view graph.View) cytoscapeBody {
 	}
 
 	for _, n := range view.Nodes {
-		body.Elements.Nodes = append(body.Elements.Nodes, cytoscapeNode{
-			Data: cytoscapeNodeData{
+		body.Elements.Nodes = append(body.Elements.Nodes, Node{
+			Data: NodeData{
 				ID:        n.ID(),
 				Name:      n.Name(),
 				Type:      string(n.Type()),
@@ -100,10 +119,10 @@ func serialiseCytoscape(g *graph.Graph, view graph.View) cytoscapeBody {
 		})
 	}
 
-	body.Elements.Edges = make([]cytoscapeEdge, 0, len(view.Edges))
+	body.Elements.Edges = make([]Edge, 0, len(view.Edges))
 	for _, e := range view.Edges {
-		body.Elements.Edges = append(body.Elements.Edges, cytoscapeEdge{
-			Data: cytoscapeEdgeData{
+		body.Elements.Edges = append(body.Elements.Edges, Edge{
+			Data: EdgeData{
 				ID:     e.ID,
 				Type:   string(e.Type),
 				Source: e.Source,

@@ -1,6 +1,6 @@
 package build
 
-import "github.com/marz32one/kube-state-graph/internal/graph"
+import "github.com/marz32one/kube-state-graph/pkg/graph"
 
 // TopologyEdges synthesises pod-mounts-pvc edges from a parsed Topology.
 // Edge IDs are deterministic UUIDv5 — see graph.NewEdge. The pod→node

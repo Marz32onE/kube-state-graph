@@ -693,3 +693,32 @@ Per design D31. The Cytoscape `/v1/graph` serialiser groups nodes into compound 
 - [x] 36.D.1 `openspec validate "add-k8s-pod-graph-api"`.
 - [x] 36.D.2 `make build`, `make vet`, `make test`, `make lint`.
 - [x] 36.D.3 `make verify-mocks` — no interface signatures change; should stay clean.
+
+## 37. Reusable graph engine as a public `pkg/` (capability: graph-api — D32)
+
+### 37.A Promote the graph stack to `pkg/`
+
+- [x] 37.A.1 Move `internal/graph` → `pkg/graph` (`Graph`, sealed `GraphNode` + the six node types, `Edge`, `Project`, `Scope`/`NewScope`, `View`, `SortNodes`/`SortEdges`, `EdgeTypes`). Keep `isGraphNode()` unexported — the seal is preserved across the module boundary (D11/D32). Update every importer.
+- [x] 37.A.2 Move `internal/build` → `pkg/build` (`Builder`, `New`, `Build`, the topology + service-graph readers). Update importers.
+- [x] 37.A.3 Move `internal/promql` → `pkg/promql` (`Querier`, `Renderer` + `Query` constants + `serviceGraphSentinelSelector`, the HTTP `Client` + `New`). Update importers.
+- [x] 37.A.4 Move `internal/clock` → `pkg/clock` (`Clock`, `System`, `Fake`). Update importers.
+- [x] 37.A.5 Lift the serialiser out of `internal/api/serialise.go` into a new `pkg/cytoscape`: the `Body` / node / edge DTO types (exported, JSON-tagged, including `data.ipaddress` and `data.parent`) and `Serialise(g, view) Body`. Point `internal/api` at it.
+
+### 37.B Convenience facade `pkg/kubegraph`
+
+- [x] 37.B.1 New `pkg/kubegraph`: `Engine`, `New(q promql.Querier, opts Options)`, `Options{MetricPrefix string; Clock clock.Clock; Metrics <iface>}` with a no-op `Metrics` default.
+- [x] 37.B.2 Pull the gin handler's request parsing — `start`/`end` validation → `(window, end)`; `cluster`/`namespace`/`edge_type`/`name`/`root`/`depth`/`direction` → `graph.Scope` — out of `internal/api` and down into `kubegraph`, operating on `url.Values` (not `*gin.Context`). Expose `BuildFromValues(ctx, url.Values) (cytoscape.Body, error)` plus the lower-level `Build(ctx, window, end) (*graph.Graph, error)`.
+- [x] 37.B.3 Refactor `internal/api` handlers to call `kubegraph.Engine` (DRY — the same parser the server used inline). The server keeps only the HTTP / auth / routing shell.
+- [x] 37.B.4 Make `observability.Metrics` injectable behind a small interface with a no-op default; ksg's server passes its real `*observability.Metrics`, embedders pass the no-op (so they do not register `kube_state_graph_*`).
+
+### 37.C Tests + determinism
+
+- [x] 37.C.1 Move the unit / golden / property tests with their packages; they MUST stay green — this is a pure relocation, so the external wire output is byte-identical (D6). Do NOT run golden `-update`.
+- [x] 37.C.2 New `pkg/kubegraph` test: `BuildFromValues` over a fixture `promql.Querier` yields the same `cytoscape.Body` as the pre-refactor handler path (golden parity), covering parse → build → project → serialise.
+- [x] 37.C.3 `make build`, `make vet`, `make test`, `make lint`, `make verify-mocks` all clean; golden fixtures unchanged.
+
+### 37.D Docs + validation
+
+- [x] 37.D.1 `CLAUDE.md`: document the `pkg/` public surface (`pkg/{graph,build,promql,clock,cytoscape,kubegraph}`), the `kubegraph.Engine` facade, and that `internal/api` is now a thin shell over it.
+- [ ] 37.D.2 Tag a module version once `pkg/` lands so `graph-api-gateway` can `require` it (see the gateway's `embed-ksg-graph-engine` change). _(pending commit + git tag)_
+- [x] 37.D.3 `make docs` (no wire change expected — confirm no `docs/` drift); `openspec validate "add-k8s-pod-graph-api"`.

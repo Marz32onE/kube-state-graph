@@ -17,7 +17,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	promqlmocks "github.com/marz32one/kube-state-graph/internal/promql/mocks"
+	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
+	promqlmocks "github.com/marz32one/kube-state-graph/pkg/promql/mocks"
 )
 
 // happyFixtures returns one pod and one node. Builder.Build emits a non-empty
@@ -63,7 +64,7 @@ func TestGraphEndpoint_HappyPath(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var body cytoscapeBody
+	var body cytoscape.Body
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "v1", body.APIVersion)
 	assert.NotEmpty(t, body.Elements.Nodes, "expected at least one node in cytoscape body")

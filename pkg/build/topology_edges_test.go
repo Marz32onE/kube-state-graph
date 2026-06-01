@@ -3,7 +3,7 @@ package build
 import (
 	"testing"
 
-	"github.com/marz32one/kube-state-graph/internal/graph"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
 )
 
 func TestTopologyEdges_PVCMountWithBinding(t *testing.T) {
