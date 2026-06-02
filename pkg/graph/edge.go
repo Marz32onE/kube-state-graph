@@ -13,6 +13,8 @@ const (
 	EdgeTypePodMountsPVC      EdgeType = "pod-mounts-pvc"
 	EdgeTypePodCallsPod       EdgeType = "pod-calls-pod"
 	EdgeTypeServiceSelectsPod EdgeType = "service-selects-pod"
+	EdgeTypeSwitchToSwitch    EdgeType = "switch-to-switch"
+	EdgeTypeNodeToSwitch      EdgeType = "node-to-switch"
 )
 
 // edgeNamespace is the fixed UUID namespace under which all edge IDs are
