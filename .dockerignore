@@ -23,8 +23,13 @@ local/
 deploy/grafana
 deploy/docker
 
-# Docs (not needed in the image)
-docs/
+# Docs: drop doc files but KEEP the embedded OpenAPI Go package — internal/api
+# imports github.com/marz32one/kube-state-graph/docs, which //go:embeds the
+# swagger spec into the binary, so these three files must reach the build stage.
+docs/*
+!docs/embed.go
+!docs/swagger.json
+!docs/swagger.yaml
 openspec/
 README.md
 README.zh-tw.md
