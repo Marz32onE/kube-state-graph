@@ -187,8 +187,7 @@ func TestUnflattenLabel_HeuristicLimits(t *testing.T) {
 // resolution indexes: kube_service_info → ServicesByNameNS (cluster_ip retained,
 // including the headless "None" sentinel); kube_endpointslice_labels +
 // kube_endpointslice_endpoints → EndpointsByService (slice→service via
-// label_kubernetes_io_service_name, endpoint→pod via targetref); kube_pod_info
-// → PodsByNameNS.
+// label_kubernetes_io_service_name, endpoint→pod via targetref).
 func TestParseTopology_ServiceAndEndpointSliceIndexes(t *testing.T) {
 	podVec := sampleVec(
 		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "pod": "payments-0", "uid": "p1", "node": "w0", "pod_ip": "10.0.1.1"}},
@@ -202,8 +201,8 @@ func TestParseTopology_ServiceAndEndpointSliceIndexes(t *testing.T) {
 		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "label_kubernetes_io_service_name": "payments"}},
 	)
 	epEndpointsVec := sampleVec(
-		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "targetref_kind": "Pod", "targetref_name": "payments-0", "targetref_namespace": "pay", "hostname": "payments-0"}},
-		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "targetref_kind": "Pod", "targetref_name": "payments-1", "targetref_namespace": "pay", "hostname": "payments-1"}},
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "targetref_kind": "Pod", "targetref_name": "payments-0", "targetref_namespace": "pay"}},
+		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "targetref_kind": "Pod", "targetref_name": "payments-1", "targetref_namespace": "pay"}},
 	)
 
 	tp := parseTopology(podVec, nil, nil, nil, nil, svcVec, epEndpointsVec, epLabelsVec)
@@ -217,18 +216,14 @@ func TestParseTopology_ServiceAndEndpointSliceIndexes(t *testing.T) {
 	eps := tp.EndpointsByService[serviceKey{"c-a", "pay", "payments"}]
 	require.Len(t, eps, 2, "both backing pods must resolve")
 	assert.ElementsMatch(t, []string{"c-a/p1", "c-a/p2"}, []string{eps[0].Pod.ID(), eps[1].Pod.ID()})
-
-	require.Contains(t, tp.PodsByNameNS, podNameKey{"c-a", "pay", "payments-0"})
-	assert.Equal(t, "c-a/p1", tp.PodsByNameNS[podNameKey{"c-a", "pay", "payments-0"}].ID())
 }
 
 // TestParseTopology_NoServiceSeriesYieldsEmptyIndexes — absence of
 // service/endpointslice series (KSM without those resources) yields empty
-// indexes and never errors; PodsByNameNS is still built from kube_pod_info.
+// indexes and never errors.
 func TestParseTopology_NoServiceSeriesYieldsEmptyIndexes(t *testing.T) {
 	podVec := sampleVec(model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "pod": "p", "uid": "u", "node": "w"}})
 	tp := parseTopology(podVec, nil, nil, nil, nil, nil, nil, nil)
 	assert.Empty(t, tp.ServicesByNameNS)
 	assert.Empty(t, tp.EndpointsByService)
-	assert.Len(t, tp.PodsByNameNS, 1)
 }

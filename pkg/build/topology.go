@@ -39,9 +39,9 @@ type podObs struct {
 // serviceKey identifies a Service by its cluster-scoped namespace/name (D29).
 type serviceKey struct{ cluster, namespace, service string }
 
-// podNameKey identifies a pod by its cluster-scoped namespace/name. Used for
-// the headless StatefulSet-convention fallback (pod-name == DNS hostname),
-// since kube-state-metrics does not expose spec.hostname (D29).
+// podNameKey identifies a pod by its cluster-scoped namespace/name. Used
+// internally to join an endpointslice `targetref_name` to its backing pod when
+// building EndpointsByService (D29).
 type podNameKey struct{ cluster, namespace, pod string }
 
 // ServiceObs carries the kube_service_info facts needed to materialise a
@@ -52,11 +52,9 @@ type ServiceObs struct {
 }
 
 // EndpointObs is one resolved backing pod of a Service (from
-// kube_endpointslice_endpoints), plus the endpoint hostname used for headless
-// pod-hostname matching.
+// kube_endpointslice_endpoints, joined to topology pods by targetref).
 type EndpointObs struct {
-	Pod      *graph.PodNode
-	Hostname string
+	Pod *graph.PodNode
 }
 
 // Topology is the typed result of reading kube-state-metrics-style series for
@@ -86,10 +84,8 @@ type Topology struct {
 	//
 	//   ServicesByNameNS   — (cluster, namespace, service) → cluster_ip facts
 	//   EndpointsByService — (cluster, namespace, service) → backing pods
-	//   PodsByNameNS       — (cluster, namespace, pod-name) → pod
 	ServicesByNameNS   map[serviceKey]ServiceObs
 	EndpointsByService map[serviceKey][]EndpointObs
-	PodsByNameNS       map[podNameKey]*graph.PodNode
 
 	ClustersObserved []string // sorted unique cluster values
 }
@@ -379,8 +375,8 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 
 	// EndpointsByService: resolve each endpoint's backing pod via
 	// (cluster, targetref_namespace, targetref_name) against the loaded pods,
-	// keyed by the owning service recovered from the slice->service map. The
-	// per-endpoint hostname is retained for headless pod-hostname matching.
+	// keyed by the owning service recovered from the slice->service map. This is
+	// the source of the Service → backing-pod fan-out (service-selects-pod edges).
 	endpointsByService := map[serviceKey][]EndpointObs{}
 	for _, s := range epEndpointsVec {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
@@ -406,10 +402,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 			continue
 		}
 		key := serviceKey{cluster, ns, svc}
-		endpointsByService[key] = append(endpointsByService[key], EndpointObs{
-			Pod:      pod,
-			Hostname: string(s.Metric["hostname"]),
-		})
+		endpointsByService[key] = append(endpointsByService[key], EndpointObs{Pod: pod})
 		clusters[cluster] = struct{}{}
 	}
 
@@ -427,7 +420,6 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 		PodsByUID:          podsByUID,
 		ServicesByNameNS:   servicesByNameNS,
 		EndpointsByService: endpointsByService,
-		PodsByNameNS:       podsByNameNS,
 		ClustersObserved:   clusterList,
 	}
 }

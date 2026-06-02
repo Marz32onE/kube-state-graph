@@ -223,6 +223,45 @@ traces_service_graph_request_total{client="checkout",server="https://payments-sv
 		"service-selects-pod edge resolves the backing cart pod via endpointslice targetref")
 }
 
+// TestConnStringHeadlessResolvesToServiceNodeNotPod exercises the D29 unified
+// resolution end-to-end against a real VM: a headless per-pod connection string
+// (checkout→redis://redis-0.redis-svc.shop.svc.cluster.local:6379, empty server
+// UID) drops the leading pod-hostname `redis-0` and resolves to the SERVICE node
+// `cluster-alpha/shop/redis-svc` (NOT the specific pod), fanning out a
+// service-selects-pod edge to the backing pod. The headless service carries
+// cluster_ip="None", so the service node has no ipaddress.
+func (s *GraphSuite) TestConnStringHeadlessResolvesToServiceNodeNotPod() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP kube_service_info dummy
+kube_service_info{cluster="cluster-alpha",namespace="shop",service="redis-svc",cluster_ip="None",test=%q} 1 %d
+kube_endpointslice_labels{cluster="cluster-alpha",namespace="shop",endpointslice="redis-svc-x1",label_kubernetes_io_service_name="redis-svc",test=%q} 1 %d
+kube_endpointslice_endpoints{cluster="cluster-alpha",namespace="shop",endpointslice="redis-svc-x1",targetref_kind="Pod",targetref_name="cart",targetref_namespace="shop",test=%q} 1 %d
+traces_service_graph_request_total{client="checkout",server="redis://redis-0.redis-svc.shop.svc.cluster.local:6379",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="redis://redis-0.redis-svc.shop.svc.cluster.local:6379",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t1, disc, t1, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	s.Require().True(s.WaitForSeries(`kube_service_info{service="redis-svc",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested headless kube_service_info")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// The headless per-pod string resolves to the SERVICE node, not pod redis-0.
+	s.Contains(bodyStr, `"id":"cluster-alpha/shop/redis-svc"`, "headless string must resolve to its service node")
+	s.Contains(bodyStr, `"target":"cluster-alpha/shop/redis-svc"`,
+		"pod-calls-pod target is the service node (pod-hostname dropped), not a specific pod")
+	// service-selects-pod fan-out reaches the backing pod (cart = alpha-2).
+	s.Contains(bodyStr, `"type":"service-selects-pod"`)
+	s.Contains(bodyStr, `"target":"cluster-alpha/alpha-2"`,
+		"service-selects-pod edge resolves the backing pod via endpointslice targetref")
+}
+
 // TestSentinelPeersExcludedAtQueryLayer exercises design.md D30 end-to-end
 // against a real VM: the servicegraph connector's virtual peers (client="user",
 // server="unknown") are dropped by the anchored selector matchers

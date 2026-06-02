@@ -195,7 +195,7 @@ kube_node_status_addresses{cluster, node, type="ExternalIP", address=...}
 kube_pod_spec_volumes_persistentvolumeclaims_info{cluster, namespace, pod, volume, claim_name, ...}
 kube_node_labels{cluster, node, label_*=...}
 kube_service_info{cluster, namespace, service, cluster_ip, ...}
-kube_endpointslice_endpoints{cluster, namespace, endpointslice, address, hostname, targetref_kind, targetref_name, targetref_namespace, ...}
+kube_endpointslice_endpoints{cluster, namespace, endpointslice, address, targetref_kind, targetref_name, targetref_namespace, ...}
 kube_endpointslice_labels{cluster, namespace, endpointslice, label_kubernetes_io_service_name, ...}
 
 # Service graph（每條 series 僅帶單一 source cluster；跨 cluster 由 build 時 UID index 還原）
@@ -317,25 +317,25 @@ Service-graph metrics 帶 Tempo 風格 `client` / `server` 人類可讀 label。
 **連線字串解析演算法：**
 
 1. 將 label 當 URL 解析，取 host（去除 scheme、userinfo、port、path/query）。無 host ⇒ unresolvable。
-2. 以 K8s DNS 文法比對 host。剝除可選的尾段 `.svc.<cluster-domain>`（如 `.svc.cluster.local`）；亦接受較短的 `<...>.svc` 與裸 `<a>.<b>` 形式。計算 service-relative 部分的點分 label 數：
-   - 2 個 label `<service>.<namespace>` ⇒ **SERVICE-LEVEL** 紀錄（一般 ClusterIP，或 headless 的 service-level 紀錄）。
-   - 3 個 label `<pod-hostname>.<service>.<namespace>` ⇒ **HEADLESS POD** 紀錄。
-3. **SERVICE-LEVEL** ⇒ 以 `(cluster, namespace, service)` 對 topology index `ServicesByNameNS`（由 `kube_service_info` 建）解析。HIT ⇒ 端點解析為 **service node**：`id="<cluster>/<namespace>/<service>"`、`type="service"`、`labels={cluster, namespace}`，`ipaddress=[cluster_ip]`（當 `cluster_ip != "None"`；headless 之 `cluster_ip="None"` 時省略）。Reader 並**按需且去重**地，自該 service node 對 topology index `EndpointsByService`（由 `kube_endpointslice_endpoints` 經 `(namespace, targetref_name)`→pod UID join topology pods 建）內每個後端 pod 各物化一條 `service-selects-pod` 邊。MISS（service 不在 topology）⇒ unresolvable。
-4. **HEADLESS POD** ⇒ 解析特定後端 pod。主路徑：`EndpointsByService[(cluster,namespace,service)]` 中 hostname label == `<pod-hostname>` 的 endpoint ⇒ `targetref_name`/`targetref_namespace` ⇒ topology pod（處理任意 `spec.hostname`）。無 endpointslice 命中時的 fallback：`PodsByNameNS[(cluster,namespace,pod-hostname)]`（StatefulSet 慣例 pod-name==hostname，因 KSM **不**暴露 `spec.hostname`）。HIT ⇒ 端點解析為**真實 pod node**（`id="<cluster>/<uid>"`），並於 client 側計為 pod（`srcIsPod=true`）。MISS ⇒ unresolvable。
-5. **CLUSTER 判定：** lookup 使用 trace 來源 cluster label（client 端），因 `.svc.cluster.local` 為 in-cluster DNS（target 與 caller 在同一 k8s cluster）。當 trace cluster 為空（如外部 client），改於所有 cluster 嘗試 **唯一** `(namespace, service|pod)` 比對；若不唯一或不存在 ⇒ unresolvable。
+2. 以 K8s DNS 文法比對 host。剝除可選的尾段 `.svc.<cluster-domain>`（如 `.svc.cluster.local`）；亦接受較短的 `<...>.svc` 與裸 `<a>.<b>` 形式。計算 service-relative 部分的點分 label 數，並將**兩種形式**都歸約為所定址的 `(service, namespace)`：
+   - 2 個 label `<service>.<namespace>` ⇒ 所定址的 service（一般 ClusterIP，或 headless 的 service-level 名稱）。
+   - 3 個 label `<pod-hostname>.<service>.<namespace>`（headless 每-pod DNS 名）⇒ **丟棄**前導 `<pod-hostname>`，解析為相同的 `<service>.<namespace>`。headless 每-pod 位址與裸 service 位址解析方式完全相同——**不再有**特定 pod 解析路徑。
+   - 其他 label 數 ⇒ unresolvable。
+3. 以 `(cluster, namespace, service)` 對 topology index `ServicesByNameNS`（由 `kube_service_info` 建）解析。HIT ⇒ 端點解析為 **service node**：`id="<cluster>/<namespace>/<service>"`、`type="service"`、`labels={cluster, namespace}`，`ipaddress=[cluster_ip]`（當 `cluster_ip != "None"`；headless 之 `cluster_ip="None"` 時省略）。Reader 並**按需且去重**地，自該 service node 對 topology index `EndpointsByService`（由 `kube_endpointslice_endpoints` 經 `(namespace, targetref_name)`→pod UID join topology pods 建）內每個後端 pod 各物化一條 `service-selects-pod` 邊；已知但無後端 endpoint 的 service 仍會物化 service node，僅無 fan-out 邊。MISS（service 不在 topology）⇒ unresolvable。
+4. **CLUSTER 判定：** lookup 使用 trace 來源 cluster label（client 端），因 `.svc.cluster.local` 為 in-cluster DNS（target 與 caller 在同一 k8s cluster）。reader 將缺漏的 `cluster` label bucket 為 `"unknown"`（`bucketCluster`），故 lookup 永遠 cluster-scoped；service 不在該 cluster topology ⇒ resolve 為 `others`。
 
 **unresolvable 之 `"://"` label**（host 非可解析之 k8s `.svc` 名、或 service／pod 不在 topology、或跨 cluster 模糊）⇒ fallback 為 **others node**：`id="others/<label>"`、`name="<label>"`（原文）、`type="others"`、`labels={}`（**空**——`pattern` key 已隨旋鈕移除）。如此可保留真正外部的 URL（如 `https://payments.partner.example/api`）與未知 k8s 名稱的可見性。
 
 **新的每端點解析順序：**
 
-1. 連線字串解析（hardcode `"://"`；僅在 UID 為空且 label 含 `"://"`）：service node（+ `service-selects-pod` 邊）或真實 pod，或（miss 時）`others/<label>` 且 `labels={}`。
+1. 連線字串解析（hardcode `"://"`；僅在 UID 為空且 label 含 `"://"`）：service node（+ `service-selects-pod` 邊）或（miss 時）`others/<label>` 且 `labels={}`。**永不為 pod**。
 2. 對 topology 的 pod-UID 解析／synth-pod fallback（僅在 UID 非空）。
 3. Missing-UID 人類 label fallback ⇒ `external/<label>`、`labels={}`（僅在 UID 為空且 label 非空且 label **不**含 `"://"`）。
 4. Drop（UID 與 label 皆空）。
 
 結論：含 `"://"` 且 UID 為空的 label **一律**走 stage 1，永不抵達 external fallback。`external` 現專指 **非 URL** 的 missing-UID label（producer-regression 訊號）。
 
-**Edge `labels.cluster` 規則（D9）精神不變：** 僅當 **client** 端解析為 **pod** 時才帶 `cluster`。Client 之 `"://"` label 若解析為真實 pod，現在 edge 會帶 `cluster`（改善）；client 解析為 service／others／external 時省略。Service node **不是** pod。
+**Edge `labels.cluster` 規則（D9）不變：** 僅當 **client** 端解析為 **pod**（來自非空 pod UID）時才帶 `cluster`。Client 之 `"://"` label 一律解析為 service／others（永不為 pod），故此類 edge 永遠**省略** `cluster`，與其他非-pod client 端一致。Service node **不是** pod。
 
 **節點語意：** `others` = 一段被辨識的 `"://"` 連線字串，但**未**解析為 in-cluster pod 或 service（宣告之外部依賴）。`external` = missing-UID 端點且其人類 label 為 **非 URL**（producer-regression 訊號）。兩者仍以 node `type` + id 命名空間 **disjoint**（`others/<label>` vs `external/<label>`），各有獨立 dedupe map；同一 label 字串被兩條 code path 命中時會產生兩個不同節點（intentional）。
 
@@ -351,21 +351,21 @@ Per-query cost（執行時間、樣本數、點數）完全交由上游 Victoria
 
 **(2) Hardcode `"://"` 偵測。** 僅針對 service-graph 之 `client`／`server` label 值求值。Client / server 兩側獨立：當端點 pod UID **為空** 且 label 含 substring `"://"` 時，於 missing-UID fallback（Stage 3）**之前**先跑 **連線字串解析（新 Stage 0）**。UID 非空時走原有 pod-UID 解析（連線字串僅在 UID 為空時出現）。
 
-**(3) 連線字串解析演算法。** (a) 將 label 當 URL 解析取 host（去 scheme、userinfo、port、path/query）；無 host ⇒ unresolvable。(b) 以 K8s DNS 文法比對：剝除可選尾段 `.svc.<cluster-domain>`（如 `.svc.cluster.local`），亦接受 `<...>.svc` 與裸 `<a>.<b>`；計算 service-relative 部分點分 label 數——2 個 ⇒ `<service>.<namespace>` SERVICE-LEVEL（一般 ClusterIP 或 headless 之 service-level 紀錄）；3 個 ⇒ `<pod-hostname>.<service>.<namespace>` HEADLESS POD。(c) SERVICE-LEVEL ⇒ 以 `(cluster, namespace, service)` 對 `ServicesByNameNS` 解析；HIT ⇒ service node 並按需物化 `service-selects-pod` 邊（見點 8）；MISS ⇒ unresolvable。(d) HEADLESS POD ⇒ 主路徑 `EndpointsByService` 中 hostname == `<pod-hostname>` 之 endpoint → `targetref_name`/`targetref_namespace` → topology pod（處理任意 `spec.hostname`）；fallback `PodsByNameNS[(cluster,namespace,pod-hostname)]`（StatefulSet 慣例，因 KSM 不暴露 `spec.hostname`）；HIT ⇒ 真實 pod node 且 client 側計為 pod；MISS ⇒ unresolvable。(e) CLUSTER 判定：lookup 以 trace 來源 cluster（client 端）為範圍，因 `.svc.cluster.local` 為 in-cluster DNS；reader 將缺漏的 `cluster` label bucket 為 `"unknown"`（`bucketCluster`），故 lookup 永遠 cluster-scoped；服務／pod 不在該 cluster 之 topology ⇒ resolve 為 `others`。
+**(3) 連線字串解析演算法。** (a) 將 label 當 URL 解析取 host（去 scheme、userinfo、port、path/query）；無 host ⇒ unresolvable。(b) 以 K8s DNS 文法比對：剝除可選尾段 `.svc.<cluster-domain>`（如 `.svc.cluster.local`），亦接受 `<...>.svc` 與裸 `<a>.<b>`；計算 service-relative 部分點分 label 數並將**兩種形式**歸約為 `(service, namespace)`——2 個 ⇒ `<service>.<namespace>`（一般 ClusterIP 或 headless 之 service-level 名稱）；3 個 ⇒ `<pod-hostname>.<service>.<namespace>`（headless 每-pod 名）**丟棄**前導 pod-hostname 後解析為相同 `<service>.<namespace>`，**不再有**特定 pod 解析；其他 label 數 ⇒ unresolvable。(c) 以 `(cluster, namespace, service)` 對 `ServicesByNameNS` 解析；HIT ⇒ service node 並按需物化 `service-selects-pod` 邊（見點 8；已知但零後端 endpoint 者仍物化 service node、無 fan-out 邊）；MISS ⇒ unresolvable。(d) CLUSTER 判定：lookup 以 trace 來源 cluster（client 端）為範圍，因 `.svc.cluster.local` 為 in-cluster DNS；reader 將缺漏的 `cluster` label bucket 為 `"unknown"`（`bucketCluster`），故 lookup 永遠 cluster-scoped；service 不在該 cluster 之 topology ⇒ resolve 為 `others`。
 
 **(4) unresolvable 之 `"://"` label** ⇒ fallback 為 others node：`id="others/<label>"`、`name="<label>"`（原文）、`type="others"`、`labels={}`（**空**——`pattern` key 隨旋鈕移除）。保留真正外部 URL 與未知 k8s 名稱的可見性。
 
-**(5) 每端點解析順序：**（1）連線字串解析（hardcode `"://"`；僅 UID 空且含 `"://"`）：service node（+ `service-selects-pod` 邊）或真實 pod，或（miss）`others/<label>` 且 `labels={}`；（2）pod-UID 解析／synth-pod fallback（僅 UID 非空）；（3）missing-UID 人類 label fallback ⇒ `external/<label>`、`labels={}`（僅 UID 空、label 非空且 label **不**含 `"://"`）；（4）drop（UID 與 label 皆空）。結論：含 `"://"` 且 UID 空之 label **一律**走 stage 1，永不抵達 external fallback；`external` 現專指 **非 URL** 的 missing-UID label。
+**(5) 每端點解析順序：**（1）連線字串解析（hardcode `"://"`；僅 UID 空且含 `"://"`）：service node（+ `service-selects-pod` 邊）或（miss）`others/<label>` 且 `labels={}`，**永不為 pod**；（2）pod-UID 解析／synth-pod fallback（僅 UID 非空）；（3）missing-UID 人類 label fallback ⇒ `external/<label>`、`labels={}`（僅 UID 空、label 非空且 label **不**含 `"://"`）；（4）drop（UID 與 label 皆空）。結論：含 `"://"` 且 UID 空之 label **一律**走 stage 1，永不抵達 external fallback；`external` 現專指 **非 URL** 的 missing-UID label。
 
 **(6) Others 節點 labels 改為 `{}`** （移除 `pattern` key）。新語意：`others` = 被辨識之 `"://"` 連線字串但**未**解析為 in-cluster pod 或 service（宣告之外部依賴）；`external` = missing-UID 端點且人類 label 為**非 URL**（producer-regression 訊號）。兩者仍以 node `type` + id 命名空間 disjoint（`others/<label>` vs `external/<label>`）。
 
-**(7) Edge `labels.cluster` 規則（D9）精神不變：** 僅當 **client** 端解析為 **pod** 時才帶。Client 之 `"://"` label 若解析為真實 pod，現在 edge 會帶 `cluster`（改善）；client 解析為 service／others／external 時省略。Service node 不是 pod。
+**(7) Edge `labels.cluster` 規則（D9）不變：** 僅當 **client** 端解析為 **pod**（來自非空 pod UID）時才帶。Client 之 `"://"` label 一律解析為 service／others（永不為 pod），故此類 edge 永遠**省略** `cluster`，與其他非-pod client 端一致。Service node 不是 pod。
 
 **(8) 新 graph 型別。** NodeType `"service"`；`ServiceNode` struct（`IDValue`、`NameValue`、`LabelsValue`、`IPAddressValue []string`），`IPAddress()` 回 `[cluster_ip]`（`"None"`／不存在時為 nil）；`ServiceID(cluster,namespace,service)="<cluster>/<namespace>/<service>"`。EdgeType `"service-selects-pod"`（directed `service`→`pod`、`may_cross_cluster=false`、intra-cluster；labels：可選 `namespace`，無必填），註冊於 `graph.EdgeTypes` 並由 `/v1/edge-types` 列出。`pod-calls-pod` 的 source_type／target_type 現在亦含 `"service"`（pod 可呼叫 service node），既有已含 `"pod"`、`"others"`、`"external"`。Service node + `service-selects-pod` 邊由 service-graph reader 對被引用的 service **按需物化**（不整批 emit，避免 graph 膨脹）。
 
-**(9) Topology reader 新增消費** `kube_service_info{cluster, namespace, service, cluster_ip, ...}`、`kube_endpointslice_endpoints{cluster, namespace, endpointslice, address, hostname, targetref_kind, targetref_name, targetref_namespace, ...}`、`kube_endpointslice_labels{cluster, namespace, endpointslice, label_kubernetes_io_service_name, ...}`（join slice→service 名）。它**只建 index**：`ServicesByNameNS`、`EndpointsByService`（service → 對 topology pods 解析後之 []pod）、`PodsByNameNS`（`(cluster,namespace,pod-name)`→pod）。**實機驗證待辦**：slice→service join 的精確 KSM label 為 `kube_endpointslice_labels` 上的 `label_kubernetes_io_service_name`，以 `(cluster,namespace,endpointslice)` join；並確認 `kube_endpointslice_endpoints` 帶 `hostname` 與 `targetref_*`。
+**(9) Topology reader 新增消費** `kube_service_info{cluster, namespace, service, cluster_ip, ...}`、`kube_endpointslice_endpoints{cluster, namespace, endpointslice, address, targetref_kind, targetref_name, targetref_namespace, ...}`、`kube_endpointslice_labels{cluster, namespace, endpointslice, label_kubernetes_io_service_name, ...}`（join slice→service 名）。它**只建 index**：`ServicesByNameNS`、`EndpointsByService`（service → 對 topology pods 經 `targetref_name` 解析後之 []pod，即 Service→後端 pod fan-out 的來源）。endpoint 的 `hostname` label **不再消費**——已移除的每-pod headless 解析是它唯一的讀者，故它退出 KSM 合約。**實機驗證待辦**：slice→service join 的精確 KSM label 為 `kube_endpointslice_labels` 上的 `label_kubernetes_io_service_name`，以 `(cluster,namespace,endpointslice)` join；並確認 `kube_endpointslice_endpoints` 帶 `targetref_*`。
 
-**(10) metric-prefix 範圍擴張**（英文 `design.md` D26）至 3 個新 kube_* metric（`kube_service_info`、`kube_endpointslice_endpoints`、`kube_endpointslice_labels`）——`KSG_METRIC_PREFIX` 套用之。Label-name 合約擴充：`service`、`cluster_ip`、`endpointslice`、`address`、`hostname`、`targetref_kind`、`targetref_name`、`targetref_namespace`、`label_kubernetes_io_service_name`。**不**套用於 `traces_service_graph_*` 或 `up{}`。
+**(10) metric-prefix 範圍擴張**（英文 `design.md` D26）至 3 個新 kube_* metric（`kube_service_info`、`kube_endpointslice_endpoints`、`kube_endpointslice_labels`）——`KSG_METRIC_PREFIX` 套用之。Label-name 合約擴充：`service`、`cluster_ip`、`endpointslice`、`address`、`targetref_kind`、`targetref_name`、`targetref_namespace`、`label_kubernetes_io_service_name`。**不**套用於 `traces_service_graph_*` 或 `up{}`。
 
 **(11) KSM 設定要求。** 生產 KSM 需於 `--resources` 與 `--metric-allowlist` 啟用 services + endpointslices，並擴充 RBAC（list/watch services、endpointslices）。`KSG_OTHERS_NAME_PATTERN` env 已整個移除（見點 1），無需於任何部署清單設定。（由 `tasks.md` 追蹤。）
 
@@ -400,6 +400,6 @@ Greenfield repository——無遷移。Rollback 為對 merge commit 做 `git rev
 - `/v1/edge-types` 是否應支援 time-window filter——延到 v1.1。
 - `/v1/clusters` 是否應在回應中附 per-cluster pod / node 計數，或維持極簡（僅名稱 + first-seen / last-seen）——延到 spec。
 - ~~Fake-fixtures program 形狀：持續 Deployment 穩態 metrics vs YAML 驅動 snapshot replayer~~——已決：無 fixtures 程式。整合測試（`internal/integration/`）以 `POST /api/v1/import/prometheus` 直接攝入 series 至 `testcontainers-go` 啟動的 VictoriaMetrics 容器。
-- ~~`KSG_OTHERS_NAME_PATTERN` 是否演進為 regex（`KSG_OTHERS_NAME_REGEX`）或接受多個逗號分隔 pattern~~——已決：旋鈕整個移除（D18 / D29）。改以 hardcode `"://"` 連線字串解析（service node / 真實 pod / `others` fallback）；可設定之 substring-match 機制不復存在。
-- ~~Others node 是否應暴露額外 `labels`（例如從 URL 形狀值解析出 scheme）~~——已決：`others` node `labels={}`（`pattern` key 隨旋鈕移除）。In-cluster 之連線字串改解析為 `service` node（`labels={cluster, namespace}`）或真實 pod node（見 D18 / D29）。
+- ~~`KSG_OTHERS_NAME_PATTERN` 是否演進為 regex（`KSG_OTHERS_NAME_REGEX`）或接受多個逗號分隔 pattern~~——已決：旋鈕整個移除（D18 / D29）。改以 hardcode `"://"` 連線字串解析（service node / `others` fallback）；可設定之 substring-match 機制不復存在。
+- ~~Others node 是否應暴露額外 `labels`（例如從 URL 形狀值解析出 scheme）~~——已決：`others` node `labels={}`（`pattern` key 隨旋鈕移除）。In-cluster 之連線字串一律解析為 `service` node（`labels={cluster, namespace}`，並 fan-out 至後端 pod；見 D18 / D29）。
 - Connection-string 解析中 cluster-domain 後綴是否需可設定（如非 `cluster.local` 之自訂 domain）——目前接受 `.svc.<cluster-domain>` / `<...>.svc` / 裸 `<a>.<b>`；依真實部署回饋延到 v1.x。

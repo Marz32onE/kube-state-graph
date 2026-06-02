@@ -85,7 +85,7 @@ The container-integration suite SHALL contain at least one test for each of the 
 - A single-cluster graph rendering with `pod-mounts-pvc` edges and pod→node compound nesting derived from each pod's `labels.node` (no edge links a pod to its host K8s node).
 - A multi-cluster graph with at least one `pod-calls-pod` edge whose source-node `labels.cluster` differs from its target-node `labels.cluster` (cross-cluster edge recovered via the topology pod-UID index).
 - A connection-string client/server label containing `"://"` that does NOT resolve to an in-cluster pod/service producing an `others`-typed node with `labels={}` (D29).
-- A headless-service connection string (`<pod>.<svc>.<ns>.svc.cluster.local`) resolving to a real pod node.
+- A headless per-pod connection string (`<pod>.<svc>.<ns>.svc.cluster.local`) resolving to its `type=service` node (the pod-hostname dropped) plus `service-selects-pod` fan-out edges — NOT to a specific pod.
 - A ClusterIP-service connection string resolving to a `type=service` node plus `service-selects-pod` edges to its backing pods.
 - The missing pod-UID human-label fallback producing an `external`-typed node (D27).
 - ETag round-trip: an initial response yields an `ETag`; a follow-up request with `If-None-Match: <etag>` returns 304.

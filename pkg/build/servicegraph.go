@@ -25,8 +25,9 @@ type ServiceGraphResult struct {
 // ReadServiceGraph fetches service-graph series for the window and joins each
 // endpoint against the supplied topology. Per D29, endpoints whose client /
 // server label is a "://" connection string are resolved to in-cluster
-// service / pod nodes (falling back to an others node) — there is no
-// configurable pattern knob. The Renderer is accepted for signature symmetry
+// service nodes (which fan out service-selects-pod edges to their backing
+// pods), falling back to an others node — there is no configurable pattern
+// knob. The Renderer is accepted for signature symmetry
 // with ReadTopology; the metric-name prefix is NOT applied to
 // traces_service_graph_request_total (different exporter family, design.md
 // D26), so r is effectively a no-op here today.
@@ -128,7 +129,8 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	for k, agg := range pairs {
 		// Edge `cluster` label is the trace-source / client-side cluster, but
 		// only when the client side is a pod (per design D9). A client "://"
-		// label that resolved to a real headless pod counts as a pod here.
+		// label resolves to a service or others node (never a pod), so such an
+		// edge never carries cluster.
 		labels := map[string]string{}
 		if agg.srcIsPod {
 			labels["cluster"] = agg.srcCluster
@@ -163,16 +165,16 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 
 // resolveEmptyUID resolves an endpoint that carries no pod UID — the shared
 // prologue for both the client and server sides. Per the D29 resolution order:
-//  1. a "://" label runs connection-string resolution (Stage 0: service / pod / others)
+//  1. a "://" label runs connection-string resolution (Stage 0: service / others)
 //  3. a non-URL label promotes to an external node (D27 fallback)
 //  4. a wholly empty endpoint drops
 //
 // (Step 2, pod-UID resolution, is the caller's responsibility and only runs
-// for non-empty UIDs.) Returns (id, isPod); isPod is true only when a headless
-// connection string resolved to a real pod.
+// for non-empty UIDs.) Returns (id, isPod); isPod is always false here — a
+// no-UID endpoint resolves to a service, others, or external node, never a pod.
 func (r *sgResolver) resolveEmptyUID(label, traceCluster string) (string, bool) {
 	if strings.Contains(label, "://") {
-		return r.resolveConnString(label, traceCluster) // Stage 0
+		return r.resolveConnString(label, traceCluster), false // Stage 0 — service or others, never a pod
 	}
 	if label != "" {
 		return r.external(label), false // D27 fallback (non-URL only)
@@ -181,9 +183,10 @@ func (r *sgResolver) resolveEmptyUID(label, traceCluster string) (string, bool) 
 }
 
 // resolveClient resolves the client side of a service-graph series. Returns
-// (id, isPod). isPod is true when the resolved endpoint is a pod — real,
-// synthesised, or a headless connection string that resolved to a real pod.
-// The client side knows its cluster from the metric's `cluster` label.
+// (id, isPod). isPod is true when the resolved endpoint is a pod — real or
+// synthesised from a non-empty UID. A "://" connection string resolves to a
+// service or others node (never a pod). The client side knows its cluster from
+// the metric's `cluster` label.
 func (r *sgResolver) resolveClient(label, traceCluster, podUID, namespace string) (string, bool) {
 	if podUID == "" {
 		return r.resolveEmptyUID(label, traceCluster)
@@ -212,31 +215,25 @@ func (r *sgResolver) resolveServer(label, traceCluster, podUID, namespace string
 	return graph.PodID("", podUID)
 }
 
-// resolveConnString implements D29 Stage 0 for a label containing "://".
-// Returns (id, isPod). A headless connection string that resolves to a real
-// pod is a pod (isPod=true); a service node or the unresolvable→others
-// fallback is not.
-func (r *sgResolver) resolveConnString(label, traceCluster string) (string, bool) {
+// resolveConnString implements D29 Stage 0 for a label containing "://". Every
+// recognised in-cluster reference resolves to its Service node — both the
+// <service>.<namespace> form and the headless <pod-hostname>.<service>.<namespace>
+// form resolve to the same Service, which fans out service-selects-pod edges to
+// all of its backing pods. An unparseable host, a non-2/3-label name, or a
+// service absent from the trace cluster's topology falls back to an others node.
+// The result is therefore never a pod — Stage 0 yields a service or an others node.
+func (r *sgResolver) resolveConnString(label, traceCluster string) string {
 	if host := connStringHost(label); host != "" {
-		svc, ns, podHost, kind := classifyK8sDNS(host)
-		switch kind {
-		case dnsService:
+		if svc, ns, ok := classifyK8sDNS(host); ok {
 			if id, ok := r.resolveServiceLevel(traceCluster, ns, svc); ok {
-				return id, false
+				return id
 			}
-		case dnsHeadlessPod:
-			if id, ok := r.resolveHeadlessPod(traceCluster, ns, svc, podHost); ok {
-				return id, true
-			}
-		case dnsNone:
-			// Not a recognised k8s .svc name → falls through to the others
-			// fallback below.
 		}
 	}
-	// Unresolvable: not a parseable host, not a k8s .svc name, or absent from
-	// the trace cluster's topology → others node (labels={}). Keeps
-	// truly-external URLs and unknown in-cluster names visible.
-	return r.othersNode(label), false
+	// Unresolvable: not a parseable host, not a 2/3-label k8s .svc name, or the
+	// service is absent from the trace cluster's topology → others node
+	// (labels={}). Keeps truly-external URLs and unknown in-cluster names visible.
+	return r.othersNode(label)
 }
 
 // resolveServiceLevel resolves a `<service>.<namespace>` record to a service
@@ -251,23 +248,6 @@ func (r *sgResolver) resolveServiceLevel(cluster, ns, svc string) (string, bool)
 		return "", false
 	}
 	return r.materializeService(cluster, ns, svc, obs), true
-}
-
-// resolveHeadlessPod resolves a `<pod-hostname>.<service>.<namespace>` record
-// to the specific backing pod within the trace-source cluster: first by
-// endpointslice hostname (handles an arbitrary spec.hostname), then by the
-// StatefulSet pod-name == hostname convention (kube-state-metrics does not
-// expose spec.hostname).
-func (r *sgResolver) resolveHeadlessPod(cluster, ns, svc, podHost string) (string, bool) {
-	for _, ep := range r.topology.EndpointsByService[serviceKey{cluster, ns, svc}] {
-		if ep.Hostname == podHost {
-			return ep.Pod.ID(), true
-		}
-	}
-	if pod, ok := r.topology.PodsByNameNS[podNameKey{cluster, ns, podHost}]; ok {
-		return pod.ID(), true
-	}
-	return "", false
 }
 
 // materializeService creates (once) a ServiceNode and its service-selects-pod
@@ -350,21 +330,15 @@ func connStringHost(label string) string {
 	return u.Hostname()
 }
 
-type dnsKind int
-
-const (
-	dnsNone dnsKind = iota
-	dnsService
-	dnsHeadlessPod
-)
-
-// classifyK8sDNS matches a host against Kubernetes Service DNS grammar. It
-// strips an optional trailing ".svc.<cluster-domain>" (or ".svc") and counts
-// the dotted labels of the service-relative part:
-//
-//	2 labels  <service>.<namespace>                 → service-level record
-//	3 labels  <pod-hostname>.<service>.<namespace>  → headless pod record
-func classifyK8sDNS(host string) (service, namespace, podHostname string, kind dnsKind) {
+// classifyK8sDNS matches a host against Kubernetes Service DNS grammar and
+// returns the addressed (service, namespace). It strips an optional trailing
+// ".svc.<cluster-domain>" (or ".svc") and resolves BOTH the service form
+// <service>.<namespace> and the headless pod form
+// <pod-hostname>.<service>.<namespace> to the same (service, namespace): every
+// recognised "://" in-cluster reference resolves to its Service node, which
+// fans out to all backing pods (D29). ok is false when the service-relative
+// part is not 2 or 3 dotted labels.
+func classifyK8sDNS(host string) (service, namespace string, ok bool) {
 	rel := host
 	if i := strings.Index(host, ".svc."); i >= 0 {
 		rel = host[:i]
@@ -373,11 +347,11 @@ func classifyK8sDNS(host string) (service, namespace, podHostname string, kind d
 	}
 	parts := strings.Split(rel, ".")
 	switch len(parts) {
-	case 2:
-		return parts[0], parts[1], "", dnsService
-	case 3:
-		return parts[1], parts[2], parts[0], dnsHeadlessPod
+	case 2: // <service>.<namespace>
+		return parts[0], parts[1], true
+	case 3: // <pod-hostname>.<service>.<namespace> → resolve to its service
+		return parts[1], parts[2], true
 	default:
-		return "", "", "", dnsNone
+		return "", "", false
 	}
 }

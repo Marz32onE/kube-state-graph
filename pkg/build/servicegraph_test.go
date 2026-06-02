@@ -43,36 +43,28 @@ func sampleTopology() Topology {
 	}
 }
 
-// sampleTopologyWithServices adds D29 service / endpoint / pod-name indexes:
+// sampleTopologyWithServices adds D29 service / endpoint indexes:
 //   - ClusterIP service "payments" (ns shop, cluster_ip 10.0.0.5) → pods pay0, pay1
-//   - headless service "mongo" (ns db, cluster_ip None) → endpoint hostname "mongo-0" → m0
-//   - headless service "redis" (ns db) with NO endpointslice hostname match, but
-//     PodsByNameNS has redis-0 (exercises the StatefulSet pod-name fallback)
+//   - headless service "mongo" (ns db, cluster_ip None) → backing pod mongo0
+//   - headless service "redis" (ns db, cluster_ip None) with NO endpointslice
+//     entries (a service that resolves to a node but fans out to zero pods)
 func sampleTopologyWithServices() Topology {
 	clientPod := &graph.PodNode{IDValue: "cluster-alpha/abc", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
 	pay0 := &graph.PodNode{IDValue: "cluster-alpha/pay0", NameValue: "payments-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
 	pay1 := &graph.PodNode{IDValue: "cluster-alpha/pay1", NameValue: "payments-1", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
 	mongo0 := &graph.PodNode{IDValue: "cluster-alpha/m0", NameValue: "mongo-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "db"}}
-	redis0 := &graph.PodNode{IDValue: "cluster-alpha/r0", NameValue: "redis-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "db"}}
 	return Topology{
-		Pods:      []*graph.PodNode{clientPod, pay0, pay1, mongo0, redis0},
-		PodsByUID: map[string]*graph.PodNode{"abc": clientPod, "pay0": pay0, "pay1": pay1, "m0": mongo0, "r0": redis0},
+		Pods:      []*graph.PodNode{clientPod, pay0, pay1, mongo0},
+		PodsByUID: map[string]*graph.PodNode{"abc": clientPod, "pay0": pay0, "pay1": pay1, "m0": mongo0},
 		ServicesByNameNS: map[serviceKey]ServiceObs{
 			{"cluster-alpha", "shop", "payments"}: {ClusterIP: "10.0.0.5"},
 			{"cluster-alpha", "db", "mongo"}:      {ClusterIP: "None"},
 			{"cluster-alpha", "db", "redis"}:      {ClusterIP: "None"},
 		},
 		EndpointsByService: map[serviceKey][]EndpointObs{
-			{"cluster-alpha", "shop", "payments"}: {{Pod: pay0, Hostname: "payments-0"}, {Pod: pay1, Hostname: "payments-1"}},
-			{"cluster-alpha", "db", "mongo"}:      {{Pod: mongo0, Hostname: "mongo-0"}},
-			// "redis" deliberately has no endpoint hostname match.
-		},
-		PodsByNameNS: map[podNameKey]*graph.PodNode{
-			{"cluster-alpha", "shop", "checkout"}:   clientPod,
-			{"cluster-alpha", "shop", "payments-0"}: pay0,
-			{"cluster-alpha", "shop", "payments-1"}: pay1,
-			{"cluster-alpha", "db", "mongo-0"}:      mongo0,
-			{"cluster-alpha", "db", "redis-0"}:      redis0,
+			{"cluster-alpha", "shop", "payments"}: {{Pod: pay0}, {Pod: pay1}},
+			{"cluster-alpha", "db", "mongo"}:      {{Pod: mongo0}},
+			// "redis" deliberately has no backing endpoints → zero fan-out edges.
 		},
 	}
 }
@@ -195,7 +187,10 @@ func TestParseServiceGraph_ConnString_ServiceLevelResolvesToServiceNode(t *testi
 	}
 }
 
-func TestParseServiceGraph_ConnString_HeadlessResolvesToPod_ViaEndpointHostname(t *testing.T) {
+func TestParseServiceGraph_ConnString_HeadlessResolvesToServiceNode_WithFanout(t *testing.T) {
+	// A headless <pod>.<service>.<namespace> string no longer resolves to the
+	// specific addressed pod: the pod-hostname is dropped and it resolves to its
+	// Service node, fanning out service-selects-pod edges to all backing pods.
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
 			"client":             "checkout",
@@ -208,18 +203,25 @@ func TestParseServiceGraph_ConnString_HeadlessResolvesToPod_ViaEndpointHostname(
 	})
 	res := parseServiceGraph(vec, sampleTopologyWithServices())
 
-	assert.Empty(t, res.ServiceNodes, "headless pod record resolves to a real pod, not a service node")
+	require.Len(t, res.ServiceNodes, 1, "headless string resolves to its service node")
+	assert.Equal(t, "cluster-alpha/db/mongo", res.ServiceNodes[0].IDValue)
 	assert.Empty(t, res.OthersNodes)
+
 	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
 	require.Len(t, pcp, 1)
 	assert.Equal(t, "cluster-alpha/abc", pcp[0].Source)
-	assert.Equal(t, "cluster-alpha/m0", pcp[0].Target, "endpointslice hostname mongo-0 → real pod")
-	assert.Equal(t, "cluster-alpha", pcp[0].Labels["cluster"])
+	assert.Equal(t, "cluster-alpha/db/mongo", pcp[0].Target, "target is the service node, not a specific pod")
+	assert.Equal(t, "cluster-alpha", pcp[0].Labels["cluster"], "client side is a pod → edge carries cluster")
+
+	ssp := edgesByType(res, graph.EdgeTypeServiceSelectsPod)
+	require.Len(t, ssp, 1, "mongo fans out to its single backing pod")
+	assert.Equal(t, "cluster-alpha/db/mongo", ssp[0].Source)
+	assert.Equal(t, "cluster-alpha/m0", ssp[0].Target)
 }
 
-func TestParseServiceGraph_ConnString_HeadlessResolvesToPod_ViaPodNameFallback(t *testing.T) {
-	// "redis" service has no endpointslice hostname match; resolution falls
-	// back to PodsByNameNS (pod-name == hostname).
+func TestParseServiceGraph_ConnString_HeadlessServiceWithNoEndpoints_StillResolvesToServiceNode(t *testing.T) {
+	// "redis" is a known headless service with NO backing endpoints. It still
+	// resolves to a service node (not others), with zero service-selects-pod edges.
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
 			"client":             "checkout",
@@ -231,16 +233,21 @@ func TestParseServiceGraph_ConnString_HeadlessResolvesToPod_ViaPodNameFallback(t
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, sampleTopologyWithServices())
+
+	require.Len(t, res.ServiceNodes, 1)
+	assert.Equal(t, "cluster-alpha/db/redis", res.ServiceNodes[0].IDValue)
+	assert.Empty(t, res.OthersNodes, "a known service with no endpoints is still a service node, not others")
+	assert.Empty(t, edgesByType(res, graph.EdgeTypeServiceSelectsPod), "no backing pods → no fan-out edges")
+
 	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
 	require.Len(t, pcp, 1)
-	assert.Equal(t, "cluster-alpha/r0", pcp[0].Target, "pod-name==hostname fallback resolves redis-0")
-	assert.Empty(t, res.OthersNodes)
+	assert.Equal(t, "cluster-alpha/db/redis", pcp[0].Target)
 }
 
-func TestParseServiceGraph_ConnString_ClientHeadlessPodMakesEdgeCarryCluster(t *testing.T) {
-	// A client-side connection string that resolves to a real headless pod
-	// now makes the edge carry labels.cluster (D29 improvement over the old
-	// others-only behaviour).
+func TestParseServiceGraph_ConnString_ClientHeadlessResolvesToServiceNode_OmitsCluster(t *testing.T) {
+	// A client-side headless connection string now resolves to a service node
+	// (never a pod), so the edge OMITS labels.cluster — consistent with every
+	// other non-pod client side (service / others / external).
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
 			"client":             "mongodb://mongo-0.mongo.db.svc.cluster.local:27017",
@@ -254,9 +261,9 @@ func TestParseServiceGraph_ConnString_ClientHeadlessPodMakesEdgeCarryCluster(t *
 	res := parseServiceGraph(vec, sampleTopologyWithServices())
 	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
 	require.Len(t, pcp, 1)
-	assert.Equal(t, "cluster-alpha/m0", pcp[0].Source, "client headless string → real pod")
+	assert.Equal(t, "cluster-alpha/db/mongo", pcp[0].Source, "client headless string → service node")
 	assert.Equal(t, "cluster-alpha/abc", pcp[0].Target)
-	assert.Equal(t, "cluster-alpha", pcp[0].Labels["cluster"], "client resolved to a pod → edge carries cluster")
+	assert.NotContains(t, pcp[0].Labels, "cluster", "client resolved to a service node → edge omits cluster")
 }
 
 func TestParseServiceGraph_ConnString_UnresolvableExternalURL_BecomesOthers(t *testing.T) {
@@ -307,11 +314,11 @@ func TestParseServiceGraph_ConnString_EmptyUIDWithURL_NeverExternal(t *testing.T
 func TestParseServiceGraph_ConnString_NonK8sHostBecomesOthers(t *testing.T) {
 	// A "://" connection string whose host is not a 2/3-label k8s .svc name —
 	// e.g. an IP:port or a bare single-label host — is not classifiable as a
-	// service/headless record and falls back to an others node.
+	// service record and falls back to an others node.
 	for _, server := range []string{
-		"grpc://10.0.0.5:50051",          // IP host → 4 dotted labels → dnsNone
-		"redis://my-redis:6379",          // single-label host → dnsNone
-		"amqp://broker.a.b.c.d.svc:5672", // >3 service-relative labels → dnsNone
+		"grpc://10.0.0.5:50051",          // IP host → 4 dotted labels → unclassifiable
+		"redis://my-redis:6379",          // single-label host → unclassifiable
+		"amqp://broker.a.b.c.d.svc:5672", // >3 service-relative labels → unclassifiable
 	} {
 		t.Run(server, func(t *testing.T) {
 			vec := sampleVec(model.Sample{
@@ -344,42 +351,6 @@ func TestParseServiceGraph_ConnString_UnknownServiceBecomesOthers(t *testing.T) 
 	assert.Equal(t, "others/https://ghost-svc.ghost-ns.svc.cluster.local/x", res.OthersNodes[0].IDValue)
 	assert.Empty(t, res.OthersNodes[0].LabelsValue)
 	assert.Empty(t, res.ServiceNodes, "unknown service must not materialise a service node")
-}
-
-func TestParseServiceGraph_ConnString_HeadlessArbitraryHostnameViaEndpointSlice(t *testing.T) {
-	// Pod NAME differs from its DNS hostname (arbitrary spec.hostname). Only the
-	// endpointslice hostname index can resolve it — PodsByNameNS (keyed by pod
-	// name) has NO "mongo-0" entry. Proves the endpointslice-hostname primary
-	// path independently of the StatefulSet pod-name fallback.
-	mongoPod := &graph.PodNode{IDValue: "cluster-alpha/m0", NameValue: "mongo-statefulset-xyz", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "db"}}
-	clientPod := &graph.PodNode{IDValue: "cluster-alpha/abc", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
-	topo := Topology{
-		Pods:      []*graph.PodNode{clientPod, mongoPod},
-		PodsByUID: map[string]*graph.PodNode{"abc": clientPod, "m0": mongoPod},
-		ServicesByNameNS: map[serviceKey]ServiceObs{
-			{"cluster-alpha", "db", "mongo"}: {ClusterIP: "None"},
-		},
-		EndpointsByService: map[serviceKey][]EndpointObs{
-			{"cluster-alpha", "db", "mongo"}: {{Pod: mongoPod, Hostname: "mongo-0"}},
-		},
-		PodsByNameNS: map[podNameKey]*graph.PodNode{
-			{"cluster-alpha", "shop", "checkout"}: clientPod,
-			// deliberately NO {"cluster-alpha","db","mongo-0"} — pod name is mongo-statefulset-xyz.
-			{"cluster-alpha", "db", "mongo-statefulset-xyz"}: mongoPod,
-		},
-	}
-	vec := sampleVec(model.Sample{
-		Metric: model.Metric{
-			"client": "checkout", "server": "mongodb://mongo-0.mongo.db.svc.cluster.local:27017",
-			"cluster": "cluster-alpha", "client_k8s_pod_uid": "abc", "server_k8s_pod_uid": "",
-		},
-		Value: 5,
-	})
-	res := parseServiceGraph(vec, topo)
-	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
-	require.Len(t, pcp, 1)
-	assert.Equal(t, "cluster-alpha/m0", pcp[0].Target, "arbitrary hostname mongo-0 resolved via endpointslice to pod m0")
-	assert.Empty(t, res.OthersNodes, "must resolve to the real pod, not fall back to others")
 }
 
 func TestParseServiceGraph_ConnString_ServiceMaterialisedOnceAcrossSeries(t *testing.T) {

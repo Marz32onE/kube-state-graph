@@ -107,10 +107,12 @@ resolve. When an endpoint's pod-UID label is empty, the human-readable
 `client`/`server` label is resolved by built-in **connection-string detection**
 (no knob): a label containing the literal `://` is parsed as a URL — an
 in-cluster `<service>.<namespace>.svc` name becomes a `type="service"` node
-(with on-demand `service-selects-pod` edges to its backing pods), a headless
-`<pod>.<service>.<namespace>.svc` name resolves to the real backing pod, and an
-unresolvable URL becomes an `others` node. A non-URL label (no `://`) becomes
-an `external` node via the missing pod-UID human-label fallback.
+(with on-demand `service-selects-pod` edges fanning out to its backing pods). A
+headless `<pod>.<service>.<namespace>.svc` name resolves to the **same** service
+node (the leading pod-hostname is dropped) and fans out the same way — a `://`
+endpoint is never a specific pod. An unresolvable URL becomes an `others` node. A
+non-URL label (no `://`) becomes an `external` node via the missing pod-UID
+human-label fallback.
 
 The `servicegraph` connector's **virtual peers** — `client="user"` (an
 uninstrumented caller) and `unknown` (an unresolved peer) — are dropped at the

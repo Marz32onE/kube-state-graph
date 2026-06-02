@@ -117,12 +117,12 @@ When the pod UID is non-empty, normal pod-UID resolution applies unchanged and c
 Connection-string resolution proceeds as follows:
 
 1. Parse the label as a URL and take the host (strip scheme, userinfo, port, and any path/query). If there is no host, the label is **unresolvable**.
-2. Match the host against the Kubernetes DNS grammar. Strip an optional trailing `.svc.<cluster-domain>` suffix (e.g. `.svc.cluster.local`); also accept the shorter `<...>.svc` and the bare `<a>.<b>` forms. Count the dotted labels of the service-relative part:
-   - 2 labels — `<service>.<namespace>` — a **service-level** record (regular ClusterIP service, or the service-level record of a headless service).
-   - 3 labels — `<pod-hostname>.<service>.<namespace>` — a **headless pod** record.
-3. **Service-level** → resolve `(cluster, namespace, service)` against the topology index `ServicesByNameNS` (built from `kube_service_info`). On a **hit**, the endpoint resolves to a **service** node: `id="<cluster>/<namespace>/<service>"`, `type="service"`, `labels={ cluster, namespace }`, `ipaddress=[cluster_ip]` when `cluster_ip != "None"` (omitted for headless services where `cluster_ip="None"`). The reader SHALL ALSO materialize, on demand and deduplicated, one `service-selects-pod` edge from this service node to EACH backing pod found in the topology index `EndpointsByService` (built from `kube_endpointslice_endpoints` joined to topology pods by `(namespace, targetref_name) → pod UID`). On a **miss** (the service is not in topology), the label is **unresolvable**.
-4. **Headless pod** → resolve the specific backing pod. Primary: the `EndpointsByService[(cluster, namespace, service)]` endpoint whose `hostname` label equals `<pod-hostname>` → `targetref_name` / `targetref_namespace` → topology pod (this handles an arbitrary `spec.hostname`). Fallback when no endpointslice match is found: `PodsByNameNS[(cluster, namespace, pod-hostname)]` (the StatefulSet convention where pod name equals hostname, used because KSM does NOT expose `spec.hostname`). On a **hit**, the endpoint resolves to the REAL pod node (`id="<cluster>/<uid>"`) and counts as a pod (so a client side that resolves this way makes the edge carry `labels.cluster`). On a **miss**, the label is **unresolvable**.
-5. **Cluster determination**: the topology lookup is scoped to the trace-source `cluster` label (the client-side cluster), because `.svc.cluster.local` is in-cluster DNS — the target is in the same Kubernetes cluster as the caller. A missing `cluster` label is bucketed to `"unknown"`, so the lookup is always cluster-scoped; a connection string whose service / pod is absent from that cluster's topology is **unresolvable**.
+2. Match the host against the Kubernetes DNS grammar. Strip an optional trailing `.svc.<cluster-domain>` suffix (e.g. `.svc.cluster.local`); also accept the shorter `<...>.svc` and the bare `<a>.<b>` forms. Count the dotted labels of the service-relative part and reduce BOTH forms to the addressed `(service, namespace)`:
+   - 2 labels — `<service>.<namespace>` — the addressed service (regular ClusterIP service, or a headless service's service-level name).
+   - 3 labels — `<pod-hostname>.<service>.<namespace>` — a headless per-pod DNS name; the reader SHALL DROP the leading `<pod-hostname>` and resolve the remaining `<service>.<namespace>`. A headless per-pod address and the bare service address resolve identically — there is NO per-pod resolution.
+   - any other label count — **unresolvable**.
+3. Resolve `(cluster, namespace, service)` against the topology index `ServicesByNameNS` (built from `kube_service_info`). On a **hit**, the endpoint resolves to a **service** node: `id="<cluster>/<namespace>/<service>"`, `type="service"`, `labels={ cluster, namespace }`, `ipaddress=[cluster_ip]` when `cluster_ip != "None"` (omitted for headless services where `cluster_ip="None"`). The reader SHALL ALSO materialize, on demand and deduplicated, one `service-selects-pod` edge from this service node to EACH backing pod found in the topology index `EndpointsByService` (built from `kube_endpointslice_endpoints` joined to topology pods by `(namespace, targetref_name) → pod UID`). A known service with zero backing endpoints still materializes the service node, with no fan-out edges. On a **miss** (the service is not in topology), the label is **unresolvable**.
+4. **Cluster determination**: the topology lookup is scoped to the trace-source `cluster` label (the client-side cluster), because `.svc.cluster.local` is in-cluster DNS — the target is in the same Kubernetes cluster as the caller. A missing `cluster` label is bucketed to `"unknown"`, so the lookup is always cluster-scoped; a connection string whose service is absent from that cluster's topology is **unresolvable**.
 
 When the `"://"` label is **unresolvable** — the host is not a parseable Kubernetes `.svc` name, OR the referenced service / pod is absent from the trace cluster's topology — the reader SHALL fall back to an **others** node:
 
@@ -133,12 +133,12 @@ When the `"://"` label is **unresolvable** — the host is not a parseable Kuber
 
 This keeps truly-external URLs (e.g. `https://payments.partner.example/api`) and unknown in-cluster names visible. The semantics are: an **others** node is a recognized `"://"` connection string that did NOT resolve to an in-cluster pod or service (a declared external dependency); an **external** node (see the missing pod-UID human-label fallback) is a missing-UID endpoint with a NON-URL human label (a producer-regression signal).
 
-The decision is per endpoint: a single edge MAY have a pod source and a service / others target, a service / others source and a pod target, two pods, or any mix. The edge `type` SHALL remain `pod-calls-pod` regardless of endpoint kinds. The edge `labels.cluster` rule for the client side applies: present when the client side resolves to a pod (including a real pod resolved from a headless connection string), omitted when the client side resolves to a service, others, or external node (service nodes are not pods).
+The decision is per endpoint: a single edge MAY have a pod source and a service / others target, a service / others source and a pod target, two pods, or any mix. The edge `type` SHALL remain `pod-calls-pod` regardless of endpoint kinds. The edge `labels.cluster` rule for the client side applies: present when the client side resolves to a pod (from a non-empty pod UID), omitted when the client side resolves to a service, others, or external node — including ANY `"://"` connection string, which never resolves to a pod.
 
-#### Scenario: Headless connection string resolves to a real pod
+#### Scenario: Headless connection string resolves to its service node and fans out to backing pods
 
-- **WHEN** the upstream contains a series with `client="checkout"`, `client_k8s_pod_uid="abc"` (resolving to a pod in `cluster-alpha`), `server="mongodb://mongo-0.mongo.db.svc.cluster.local:27017"`, `server_k8s_pod_uid=""`, `cluster="cluster-alpha"`, and topology has a headless `mongo` service in namespace `db` whose endpointslice (or `PodsByNameNS` fallback) maps pod hostname `mongo-0` to a topology pod with `uid="pod-mongo-0-uid"`
-- **THEN** the resulting edge has `type: "pod-calls-pod"`, `source: "cluster-alpha/abc"`, `target: "cluster-alpha/pod-mongo-0-uid"` (the REAL pod node, `type="pod"`), and the edge has `labels.cluster: "cluster-alpha"` (the client side is a pod)
+- **WHEN** the upstream contains a series with `client="checkout"`, `client_k8s_pod_uid="abc"` (resolving to a pod in `cluster-alpha`), `server="mongodb://mongo-0.mongo.db.svc.cluster.local:27017"`, `server_k8s_pod_uid=""`, `cluster="cluster-alpha"`, and topology has a headless `mongo` service in namespace `db` whose `EndpointsByService` entry maps to a backing pod `cluster-alpha/pod-mongo-0-uid`
+- **THEN** the leading pod-hostname `mongo-0` is dropped; the resulting `pod-calls-pod` edge has `source: "cluster-alpha/abc"`, `target: "cluster-alpha/db/mongo"` (a `type="service"` node, NOT a specific pod), and `labels.cluster: "cluster-alpha"` (the client side is a pod); and the graph ALSO contains a `service-selects-pod` edge from `cluster-alpha/db/mongo` to `cluster-alpha/pod-mongo-0-uid`
 
 #### Scenario: ClusterIP service connection string resolves to a service node with backing-pod edges
 
@@ -153,7 +153,7 @@ The decision is per endpoint: a single edge MAY have a pod source and a service 
 #### Scenario: "://" label with empty UID never becomes an external node
 
 - **WHEN** a series has an endpoint whose pod UID is empty and whose `client` / `server` label contains `"://"` (whether or not it resolves)
-- **THEN** that endpoint is resolved by connection-string resolution (a service node, a real pod, or — on miss — an `others/<label>` node) and the missing pod-UID human-label fallback is NEVER consulted for it; no `external/<label>` node is produced for a `"://"` label
+- **THEN** that endpoint is resolved by connection-string resolution (a service node or — on miss — an `others/<label>` node) and the missing pod-UID human-label fallback is NEVER consulted for it; no `external/<label>` node is produced for a `"://"` label
 
 ### Requirement: Missing pod-UID human-label fallback
 
@@ -176,7 +176,7 @@ When BOTH the pod UID AND the human label are empty for an endpoint, the reader 
 
 The per-endpoint resolution order is:
 
-1. Connection-string resolution (hardcoded `"://"` check; only when UID is empty AND label contains `"://"`) → service node (plus on-demand `service-selects-pod` edges), real pod, or — on miss — `others/<label>` node with `labels={}`.
+1. Connection-string resolution (hardcoded `"://"` check; only when UID is empty AND label contains `"://"`) → service node (plus on-demand `service-selects-pod` edges) or — on miss — `others/<label>` node with `labels={}`. Never a pod.
 2. Pod-UID resolution against topology / synth-pod fallback (only when UID is non-empty).
 3. Missing-UID human-label fallback (this requirement; only when UID is empty AND label is non-empty AND label does NOT contain `"://"`).
 4. Drop (both UID and label empty).

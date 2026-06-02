@@ -118,19 +118,21 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   independent (both sides of a single edge are evaluated separately); edge `type`
   stays `pod-calls-pod`. When a `"://"` label is found, its URL host is parsed and
   the optional `.svc.<domain>` suffix stripped, then resolved by dotted-label
-  count:
-  - **2 labels** `<service>.<namespace>` (service-level) → a `type="service"`
+  count. **Both** in-cluster DNS forms resolve to the **service** — there is no
+  per-pod resolution; a `"://"` endpoint is never a pod:
+  - **2 labels** `<service>.<namespace>` and **3 labels**
+    `<pod>.<service>.<namespace>` (headless per-pod) both → a `type="service"`
     node (`id="<cluster>/<namespace>/<service>"`, `labels={cluster,namespace}`,
     `ipaddress=[cluster_ip]` unless headless `cluster_ip="None"`) plus on-demand
-    `service-selects-pod` edges (service → pod, intra-cluster) to each backing
-    pod.
-  - **3 labels** `<pod>.<service>.<namespace>` (headless) → the real backing pod,
-    resolved via the endpointslice `hostname` (else `Topology.PodsByNameNS` with
-    pod-name == hostname).
-  - **unresolvable** → an `others` node (`id="others/<label>"`, `labels={}` — the
-    `pattern` key is GONE) with the verbatim label as `name`.
-  When the client side resolves to `service` or `others`, the edge
-  `labels.cluster` is omitted.
+    `service-selects-pod` edges (service → pod, intra-cluster) fanning out to each
+    backing pod. The 3-label form drops the leading pod-hostname and resolves as
+    its parent service. A known service with zero backing endpoints still
+    materialises the service node, with no fan-out edges.
+  - **unresolvable** (host not a 2/3-label `.svc` name, or service absent from
+    the trace cluster's topology) → an `others` node (`id="others/<label>"`,
+    `labels={}` — the `pattern` key is GONE) with the verbatim label as `name`.
+  A client-side `"://"` label resolves to `service` or `others` (never a pod), so
+  the edge `labels.cluster` is always omitted for it.
 - **Missing pod-UID human-label fallback** (D27, always on): when
   `client_k8s_pod_uid` or `server_k8s_pod_uid` is empty AND the corresponding
   `client`/`server` label is non-empty, that endpoint is promoted to
@@ -142,7 +144,8 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   producer-regression inferred endpoints carry different operational meaning;
   see D27 / D18). Per-endpoint resolution order:
   (1) connection-string resolution (`"://"` in the label, empty UID) →
-  `service` / pod / `others` per the D29 rule above;
+  `service` (+ `service-selects-pod` fan-out) or `others` per the D29 rule above
+  (never a pod);
   (2) UID-based pod resolution / synth-pod fallback (only when UID is non-empty);
   (3) missing-UID human-label fallback (this rule) → external with `labels={}`
   (**only for non-`"://"` labels**);

@@ -36,7 +36,7 @@ var EdgeTypes = []EdgeTypeDefinition{
 	},
 	{
 		Type:            EdgeTypePodCallsPod,
-		Description:     "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). An endpoint whose client/server label is a '://' connection string is resolved to a 'service' node or a real pod when it names an in-cluster Kubernetes Service / headless pod, and otherwise to an 'others' node (D29); endpoints with a missing pod UID and a non-URL label become 'external' nodes via the human-label fallback (D27).",
+		Description:     "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). An endpoint whose client/server label is a '://' connection string is resolved to a 'service' node (fanning out service-selects-pod edges to the service's backing pods) when it names an in-cluster Kubernetes Service — the headless per-pod form resolves to the same service, not a specific pod — and otherwise to an 'others' node (D29); endpoints with a missing pod UID and a non-URL label become 'external' nodes via the human-label fallback (D27).",
 		SourceType:      []NodeType{NodeTypePod, NodeTypeService, NodeTypeOthers, NodeTypeExternal},
 		TargetType:      []NodeType{NodeTypePod, NodeTypeService, NodeTypeOthers, NodeTypeExternal},
 		Directed:        true,
