@@ -111,13 +111,17 @@
                 "enum": [
                     "pod-mounts-pvc",
                     "pod-calls-pod",
-                    "service-selects-pod"
+                    "service-selects-pod",
+                    "switch-to-switch",
+                    "node-to-switch"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
                     "EdgeTypePodMountsPVC",
                     "EdgeTypePodCallsPod",
-                    "EdgeTypeServiceSelectsPod"
+                    "EdgeTypeServiceSelectsPod",
+                    "EdgeTypeSwitchToSwitch",
+                    "EdgeTypeNodeToSwitch"
                 ]
             },
             "github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition": {
@@ -179,7 +183,8 @@
                     "pvc",
                     "service",
                     "others",
-                    "external"
+                    "external",
+                    "switch"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -188,7 +193,8 @@
                     "NodeTypePVC",
                     "NodeTypeService",
                     "NodeTypeOthers",
-                    "NodeTypeExternal"
+                    "NodeTypeExternal",
+                    "NodeTypeSwitch"
                 ]
             },
             "internal_api.ClusterInfo": {

@@ -75,11 +75,15 @@ components:
       - pod-mounts-pvc
       - pod-calls-pod
       - service-selects-pod
+      - switch-to-switch
+      - node-to-switch
       type: string
       x-enum-varnames:
       - EdgeTypePodMountsPVC
       - EdgeTypePodCallsPod
       - EdgeTypeServiceSelectsPod
+      - EdgeTypeSwitchToSwitch
+      - EdgeTypeNodeToSwitch
     github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition:
       properties:
         description:
@@ -123,6 +127,7 @@ components:
       - service
       - others
       - external
+      - switch
       type: string
       x-enum-varnames:
       - NodeTypePod
@@ -131,6 +136,7 @@ components:
       - NodeTypeService
       - NodeTypeOthers
       - NodeTypeExternal
+      - NodeTypeSwitch
     internal_api.ClusterInfo:
       properties:
         name:
