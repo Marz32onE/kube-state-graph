@@ -106,7 +106,7 @@ type Topology struct {
 // The service / endpointslice queries (D29) are best-effort: an upstream that
 // does not export them (older KSM, or KSM started without
 // --resources=services,endpointslices) yields empty indexes, and "://"
-// connection-string endpoints simply fall back to `others/<label>`.
+// connection-string endpoints simply fall back to `external/<label>`.
 func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, window time.Duration, end time.Time) (Topology, error) {
 	var podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector
 	var svcVec, epEndpointsVec, epLabelsVec model.Vector
@@ -377,7 +377,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 	// EndpointSlice -> owning Service name, via the kubernetes.io/service-name
 	// label kube-state-metrics flattens to label_kubernetes_io_service_name
 	// (requires the operator to allowlist it; absent -> the slice's endpoints
-	// stay unmapped and the service falls back to others/<label> downstream).
+	// stay unmapped and the service falls back to external/<label> downstream).
 	type sliceKey struct{ cluster, namespace, slice string }
 	sliceToService := map[sliceKey]string{}
 	for _, s := range epLabelsVec {

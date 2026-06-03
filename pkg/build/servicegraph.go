@@ -26,7 +26,7 @@ type ServiceGraphResult struct {
 // endpoint against the supplied topology. Per D29, endpoints whose client /
 // server label is a "://" connection string are resolved to in-cluster
 // service nodes (which fan out service-selects-pod edges to their backing
-// pods), falling back to an others node — there is no configurable pattern
+// pods), falling back to an external node — there is no configurable pattern
 // knob. The Renderer is accepted for signature symmetry
 // with ReadTopology; the metric-name prefix is NOT applied to
 // traces_service_graph_request_total (different exporter family, design.md
@@ -172,13 +172,13 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 
 // resolveEmptyUID resolves an endpoint that carries no pod UID — the shared
 // prologue for both the client and server sides. Per the D29 resolution order:
-//  1. a "://" label runs connection-string resolution (Stage 0: service / others)
+//  1. a "://" label runs connection-string resolution (Stage 0: service / external)
 //  3. a non-URL label promotes to an external node (D27 fallback)
 //  4. a wholly empty endpoint drops
 //
 // (Step 2, pod-UID resolution, is the caller's responsibility and only runs
 // for non-empty UIDs.) Returns (id, isPod); isPod is always false here — a
-// no-UID endpoint resolves to a service, others, or external node, never a pod.
+// no-UID endpoint resolves to a service or external node, never a pod.
 func (r *sgResolver) resolveEmptyUID(label, traceCluster string) (string, bool) {
 	if strings.Contains(label, "://") {
 		return r.resolveConnString(label, traceCluster), false // Stage 0 — service or others, never a pod
@@ -227,8 +227,8 @@ func (r *sgResolver) resolveServer(label, traceCluster, podUID, namespace string
 // <service>.<namespace> form and the headless <pod-hostname>.<service>.<namespace>
 // form resolve to the same Service, which fans out service-selects-pod edges to
 // all of its backing pods. An unparseable host, a non-2/3-label name, or a
-// service absent from the trace cluster's topology falls back to an others node.
-// The result is therefore never a pod — Stage 0 yields a service or an others node.
+// service absent from the trace cluster's topology falls back to an external node.
+// The result is therefore never a pod — Stage 0 yields a service or an external node.
 func (r *sgResolver) resolveConnString(label, traceCluster string) string {
 	if host := connStringHost(label); host != "" {
 		if svc, ns, ok := classifyK8sDNS(host); ok {
@@ -238,9 +238,10 @@ func (r *sgResolver) resolveConnString(label, traceCluster string) string {
 		}
 	}
 	// Unresolvable: not a parseable host, not a 2/3-label k8s .svc name, or the
-	// service is absent from the trace cluster's topology → others node
-	// (labels={}). Keeps truly-external URLs and unknown in-cluster names visible.
-	return r.othersNode(label)
+	// service is absent from the trace cluster's topology → external node
+	// (labels={}, verbatim label as name). Keeps truly-external URLs and unknown
+	// in-cluster names visible.
+	return r.external(label)
 }
 
 // resolveServiceLevel resolves a `<service>.<namespace>` record to a service
@@ -304,7 +305,7 @@ func (r *sgResolver) external(label string) string {
 	return id
 }
 
-func (r *sgResolver) othersNode(label string) string {
+func (r *sgResolver) othersNode(label string) string { //nolint:unused // removed in Task 5
 	id := graph.OthersID(label)
 	if _, ok := r.others[id]; !ok {
 		r.others[id] = &graph.OthersNode{

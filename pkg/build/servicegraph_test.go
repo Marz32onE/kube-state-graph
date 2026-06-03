@@ -283,7 +283,7 @@ func TestParseServiceGraph_ConnString_ClientHeadlessResolvesToServiceNode_OmitsC
 	assert.NotContains(t, pcp[0].Labels, "cluster", "client resolved to a service node → edge omits cluster")
 }
 
-func TestParseServiceGraph_ConnString_UnresolvableExternalURL_BecomesOthers(t *testing.T) {
+func TestParseServiceGraph_ConnString_UnresolvableExternalURL_BecomesExternal(t *testing.T) {
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
 			"client":             "checkout",
@@ -296,23 +296,22 @@ func TestParseServiceGraph_ConnString_UnresolvableExternalURL_BecomesOthers(t *t
 	})
 	res := parseServiceGraph(vec, sampleTopologyWithServices())
 
-	require.Len(t, res.OthersNodes, 1)
-	oth := res.OthersNodes[0]
-	assert.Equal(t, "others/https://payments.partner.example/api", oth.IDValue)
-	assert.Equal(t, "https://payments.partner.example/api", oth.NameValue)
-	assert.Empty(t, oth.LabelsValue, "others node carries empty labels (no pattern key)")
-	assert.Empty(t, res.ExternalNodes, `"://" labels never reach the external fallback`)
+	require.Len(t, res.ExternalNodes, 1)
+	ext := res.ExternalNodes[0]
+	assert.Equal(t, "external/https://payments.partner.example/api", ext.IDValue)
+	assert.Equal(t, "https://payments.partner.example/api", ext.NameValue)
+	assert.Empty(t, ext.LabelsValue, "external node carries empty labels")
+	assert.Empty(t, res.OthersNodes, `unresolvable "://" strings now fall back to external, not others`)
 
 	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
 	require.Len(t, pcp, 1)
-	assert.Equal(t, "others/https://payments.partner.example/api", pcp[0].Target)
+	assert.Equal(t, "external/https://payments.partner.example/api", pcp[0].Target)
 	assert.Equal(t, "cluster-alpha", pcp[0].Labels["cluster"], "client side is a pod")
 }
 
-func TestParseServiceGraph_ConnString_EmptyUIDWithURL_NeverExternal(t *testing.T) {
-	// Both endpoints have empty UID; both labels are "://" URLs. Neither becomes
-	// an external node — connection-string resolution handles them (here: both
-	// unresolvable → others).
+func TestParseServiceGraph_ConnString_EmptyUIDWithURL_BothExternal(t *testing.T) {
+	// Both endpoints have empty UID; both labels are "://" URLs. Both are
+	// unresolvable → both fall back to external nodes (not others).
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
 			"client":             "https://a.partner.example",
@@ -324,14 +323,14 @@ func TestParseServiceGraph_ConnString_EmptyUIDWithURL_NeverExternal(t *testing.T
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, sampleTopologyWithServices())
-	assert.Empty(t, res.ExternalNodes, `no external node may be produced for a "://" label`)
-	assert.Len(t, res.OthersNodes, 2)
+	assert.Len(t, res.ExternalNodes, 2, `unresolvable "://" labels now fall back to external`)
+	assert.Empty(t, res.OthersNodes, `others nodes must not be produced for unresolvable "://" labels`)
 }
 
-func TestParseServiceGraph_ConnString_NonK8sHostBecomesOthers(t *testing.T) {
+func TestParseServiceGraph_ConnString_NonK8sHostBecomesExternal(t *testing.T) {
 	// A "://" connection string whose host is not a 2/3-label k8s .svc name —
 	// e.g. an IP:port or a bare single-label host — is not classifiable as a
-	// service record and falls back to an others node.
+	// service record and falls back to an external node.
 	for _, server := range []string{
 		"grpc://10.0.0.5:50051",          // IP host → 4 dotted labels → unclassifiable
 		"redis://my-redis:6379",          // single-label host → unclassifiable
@@ -346,16 +345,17 @@ func TestParseServiceGraph_ConnString_NonK8sHostBecomesOthers(t *testing.T) {
 				Value: 5,
 			})
 			res := parseServiceGraph(vec, sampleTopologyWithServices())
-			require.Len(t, res.OthersNodes, 1)
-			assert.Equal(t, graph.OthersID(server), res.OthersNodes[0].IDValue)
+			require.Len(t, res.ExternalNodes, 1)
+			assert.Equal(t, graph.ExternalID(server), res.ExternalNodes[0].IDValue)
+			assert.Empty(t, res.OthersNodes)
 			assert.Empty(t, res.ServiceNodes)
 		})
 	}
 }
 
-func TestParseServiceGraph_ConnString_UnknownServiceBecomesOthers(t *testing.T) {
+func TestParseServiceGraph_ConnString_UnknownServiceBecomesExternal(t *testing.T) {
 	// A 2-label service-level connection string whose service is absent from the
-	// trace cluster's topology resolves to an others node (labels={}).
+	// trace cluster's topology resolves to an external node (labels={}).
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
 			"client": "checkout", "server": "https://ghost-svc.ghost-ns.svc.cluster.local/x",
@@ -364,9 +364,10 @@ func TestParseServiceGraph_ConnString_UnknownServiceBecomesOthers(t *testing.T) 
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, sampleTopologyWithServices())
-	require.Len(t, res.OthersNodes, 1)
-	assert.Equal(t, "others/https://ghost-svc.ghost-ns.svc.cluster.local/x", res.OthersNodes[0].IDValue)
-	assert.Empty(t, res.OthersNodes[0].LabelsValue)
+	require.Len(t, res.ExternalNodes, 1)
+	assert.Equal(t, "external/https://ghost-svc.ghost-ns.svc.cluster.local/x", res.ExternalNodes[0].IDValue)
+	assert.Empty(t, res.ExternalNodes[0].LabelsValue)
+	assert.Empty(t, res.OthersNodes, "unknown service must not produce an others node")
 	assert.Empty(t, res.ServiceNodes, "unknown service must not materialise a service node")
 }
 
@@ -569,8 +570,9 @@ func TestParseServiceGraph_UIDAndLabelBothEmpty_EdgeDropped_ServerSide(t *testin
 
 func TestParseServiceGraph_ConnStringWinsOverMissingUIDFallback(t *testing.T) {
 	// A "://" client label with empty UID is handled by connection-string
-	// resolution (here unresolvable → others, labels={}); the missing-UID
-	// external fallback must NOT run for it.
+	// resolution (here unresolvable → external, labels={}); the missing-UID
+	// external fallback path is the same destination but connection-string
+	// resolution still runs first (Stage 0 wins).
 	alphaPod := &graph.PodNode{IDValue: "cluster-alpha/abc", LabelsValue: map[string]string{"cluster": "cluster-alpha"}}
 	topo := Topology{Pods: []*graph.PodNode{alphaPod}, PodsByUID: map[string]*graph.PodNode{"abc": alphaPod}}
 	vec := sampleVec(model.Sample{
@@ -582,15 +584,17 @@ func TestParseServiceGraph_ConnStringWinsOverMissingUIDFallback(t *testing.T) {
 	})
 	res := parseServiceGraph(vec, topo)
 
-	require.Len(t, res.OthersNodes, 1)
-	assert.Empty(t, res.ExternalNodes, "connection-string resolution wins; external fallback must NOT run")
-	assert.Equal(t, "others/http://api.example.com", res.OthersNodes[0].IDValue)
-	assert.Empty(t, res.OthersNodes[0].LabelsValue, "others node carries empty labels (no pattern key)")
+	require.Len(t, res.ExternalNodes, 1)
+	assert.Equal(t, "external/http://api.example.com", res.ExternalNodes[0].IDValue)
+	assert.Empty(t, res.ExternalNodes[0].LabelsValue, "external node carries empty labels")
+	assert.Empty(t, res.OthersNodes, "unresolvable connection strings now fall back to external, not others")
 }
 
-func TestParseServiceGraph_OthersAndExternalCoexistInOneParse(t *testing.T) {
-	// One parse can produce BOTH an `others` node (unresolvable "://" string)
-	// AND an `external` node (non-URL missing-UID label) — disjoint maps/types.
+func TestParseServiceGraph_ConnStringAndMissingUIDBothExternal(t *testing.T) {
+	// One parse can produce TWO distinct external nodes: one from an unresolvable
+	// "://" string (connection-string resolution falls back to external) and one
+	// from a non-URL missing-UID label (D27 fallback). Both produce external nodes
+	// with distinct IDs (the verbatim labels differ); no others nodes remain.
 	betaPod := &graph.PodNode{IDValue: "cluster-beta/def", LabelsValue: map[string]string{"cluster": "cluster-beta"}}
 	topo := Topology{Pods: []*graph.PodNode{betaPod}, PodsByUID: map[string]*graph.PodNode{"def": betaPod}}
 	vec := sampleVec(
@@ -611,12 +615,15 @@ func TestParseServiceGraph_OthersAndExternalCoexistInOneParse(t *testing.T) {
 	)
 	res := parseServiceGraph(vec, topo)
 
-	require.Len(t, res.OthersNodes, 1, `unresolvable "://" string → one others node`)
-	require.Len(t, res.ExternalNodes, 1, "non-URL missing-UID label → one external node")
-	assert.Equal(t, "others/https://ext.partner.example/x", res.OthersNodes[0].IDValue)
-	assert.Empty(t, res.OthersNodes[0].LabelsValue)
-	assert.Equal(t, "external/stray-caller", res.ExternalNodes[0].IDValue)
-	assert.Empty(t, res.ExternalNodes[0].LabelsValue)
+	assert.Empty(t, res.OthersNodes, "no others nodes: unresolvable \"://\" now falls back to external")
+	require.Len(t, res.ExternalNodes, 2, `both "://" fallback and missing-UID fallback produce external nodes`)
+	gotIDs := map[string]bool{}
+	for _, ext := range res.ExternalNodes {
+		gotIDs[ext.IDValue] = true
+		assert.Empty(t, ext.LabelsValue)
+	}
+	assert.True(t, gotIDs["external/https://ext.partner.example/x"], `unresolvable "://" string → external/<verbatim label>`)
+	assert.True(t, gotIDs["external/stray-caller"], "non-URL missing-UID label → external/<verbatim label>")
 }
 
 func TestProperty_ParseServiceGraph_EveryEdgeHasNonEmptyEndpoints(t *testing.T) {
