@@ -94,7 +94,7 @@ reflects the most recent value within the requested `[start, end]` window.
 
 | Metric | Used for | Labels read | Required? |
 |---|---|---|---|
-| `traces_service_graph_request_total` | `pod-calls-pod` edges (intra- and cross-cluster) | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` | Optional (no series ⇒ no call edges) |
+| `traces_service_graph_request_total` | `pod-calls-pod` / `pod-calls-service` edges (intra- and cross-cluster) | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` | Optional (no series ⇒ no call edges) |
 
 Wrapped in `rate(traces_service_graph_request_total[<window>]) @ <end>`. Each
 series carries a single `cluster` external label representing the trace source
@@ -110,8 +110,8 @@ in-cluster `<service>.<namespace>.svc` name becomes a `type="service"` node
 (with on-demand `service-selects-pod` edges fanning out to its backing pods). A
 headless `<pod>.<service>.<namespace>.svc` name resolves to the **same** service
 node (the leading pod-hostname is dropped) and fans out the same way — a `://`
-endpoint is never a specific pod. An unresolvable URL becomes an `others` node. A
-non-URL label (no `://`) becomes an `external` node via the missing pod-UID
+endpoint is never a specific pod. An unresolvable URL becomes an `external` node.
+A non-URL label (no `://`) also becomes an `external` node via the missing pod-UID
 human-label fallback.
 
 The `servicegraph` connector's **virtual peers** — `client="user"` (an
@@ -133,6 +133,7 @@ merely *contains* `user` is unaffected.
 |---|---|
 | `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
 | `pod-calls-pod` | `traces_service_graph_request_total` |
+| `pod-calls-service` | `traces_service_graph_request_total` (when target resolves to a service node via connection-string resolution) |
 | `service-selects-pod` | `traces_service_graph_request_total` (connection-string resolution + `kube_endpointslice_*` join) |
 
 ### Multi-cluster and cross-cluster coverage

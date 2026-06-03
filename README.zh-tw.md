@@ -63,9 +63,9 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 
 | 指標 | 用途 | 會讀的標籤 | 必填？ |
 |---|---|---|---|
-| `traces_service_graph_request_total` | `pod-calls-pod` 邊（叢集內與跨叢集） | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` 等 | 選填（無 series 則無呼叫邊） |
+| `traces_service_graph_request_total` | `pod-calls-pod` / `pod-calls-service` 邊（叢集內與跨叢集） | `cluster`, `client`, `server`, `client_k8s_pod_uid`, `server_k8s_pod_uid` 等 | 選填（無 series 則無呼叫邊） |
 
-以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析時才輸出邊。當某端的 pod-UID 標籤為空時，會用內建的**連線字串判斷**（無旗標可調）解析其 `client`／`server` 人類可讀標籤：含字面 `://` 的標籤視為 URL——叢集內 `<service>.<namespace>.svc` 名稱會成為 `type="service"` 節點（並隨需產生指向其後端 pod 的 `service-selects-pod` fan-out 邊）。headless 的 `<pod>.<service>.<namespace>.svc` 名稱會解析為**相同的** service 節點（丟棄前導 pod-hostname）並以相同方式 fan-out——`://` endpoint 永不為特定 pod。無法解析的 URL 則成為 `others` 節點；非 URL（不含 `://`）的標籤則經 missing pod-UID human-label fallback 成為 `external` 節點。
+以 `rate(traces_service_graph_request_total[<window>]) @ <end>` 評估。每條 series 帶單一 `cluster` external label，代表追蹤來源（通常是執行 Tempo metrics-generator 的 cluster），即呼叫的 **client 端** cluster。**Server 端** cluster 由 build 時把 `server_k8s_pod_uid` 對全域 topology pod-UID index join 還原——K8s pod UID 在實務上跨 cluster 唯一，lookup 可明確還原。僅在兩端都能解析時才輸出邊。當某端的 pod-UID 標籤為空時，會用內建的**連線字串判斷**（無旗標可調）解析其 `client`／`server` 人類可讀標籤：含字面 `://` 的標籤視為 URL——叢集內 `<service>.<namespace>.svc` 名稱會成為 `type="service"` 節點（並隨需產生指向其後端 pod 的 `service-selects-pod` fan-out 邊），呼叫邊類型為 `pod-calls-service`。headless 的 `<pod>.<service>.<namespace>.svc` 名稱會解析為**相同的** service 節點（丟棄前導 pod-hostname）並以相同方式 fan-out——`://` endpoint 永不為特定 pod。無法解析的 URL 則成為 `external` 節點；非 URL（不含 `://`）的標籤則經 missing pod-UID human-label fallback 亦成為 `external` 節點。
 
 `servicegraph` connector 產生的**虛擬節點**——`client="user"`（未被 instrument 的呼叫端）與 `unknown`（無法解析的對端）——會在 query 層直接排除（`client!~"user|unknown",server!~"user|unknown"`），不會出現為任何節點或邊。比對為精確且大小寫敏感，因此 host 只是「包含」`user` 的 `://` 連線字串不受影響。
 
@@ -82,6 +82,7 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 |---|---|
 | `pod-mounts-pvc` | `kube_pod_spec_volumes_persistentvolumeclaims_info` |
 | `pod-calls-pod` | `traces_service_graph_request_total` |
+| `pod-calls-service` | `traces_service_graph_request_total`（目標透過連線字串解析為 service 節點時） |
 | `service-selects-pod` | `traces_service_graph_request_total`（連線字串解析隨需產生） |
 
 pod→node 關係**不**以邊表達，而是由 Cytoscape compound nesting（`cluster > node > pod`，依每個 pod 的 `labels.node` 推導）呈現；K8s `node` 節點本身無邊，純粹作為 compound 容器（仍在 `ipaddress` 屬性帶 `external_ip`）。因此鎖定某 pod 的 `name` 過濾或 `root` 遍歷**不會**再帶入其宿主 K8s node；而 `?namespace=` 過濾會**排除** K8s node（無 namespace 標籤、無邊），namespace 收斂後的視圖僅含具名空間實體。

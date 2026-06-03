@@ -99,24 +99,24 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 - **`labels` is strict `map[string]string`** on both nodes and edges. No bools,
   no numbers, no string-encoded numbers. Numeric edge metrics (`rate`, `p99_ms`,
   `error_rate`) and boolean flags (`cross_cluster`, `ghost`) are **deferred to a
-  future typed struct field**. `pod-calls-pod` edges carry a single
-  `labels.cluster` (the trace source / client-side cluster, omitted when the
-  client side is external). Cross-cluster status is derived by comparing the
-  resolved source-node and target-node `labels.cluster` — D9.
+  future typed struct field**. `pod-calls-pod` and `pod-calls-service` edges
+  carry a single `labels.cluster` (the trace source / client-side cluster,
+  omitted when the client side is non-pod). Cross-cluster status is derived by
+  comparing the resolved source-node and target-node `labels.cluster` — D9.
 - **Edge IDs are UUIDv5** with a fixed compiled-in namespace (`graph.edgeNamespace`)
   and the canonical input `<type>|<source>|<target>`. Stable across rebuilds —
   required for golden tests. Bumping the namespace UUID is a v2 break.
 - **Cluster-scoped IDs everywhere.** Pods: `<cluster>/<uid>`, K8s nodes:
-  `<cluster>/<node>`, PVCs: `<cluster>/<namespace>/<claim>`, others:
-  `others/<value>`, externals: `external/<value>`. Node names are not globally
-  unique without the prefix.
+  `<cluster>/<node>`, PVCs: `<cluster>/<namespace>/<claim>`, externals:
+  `external/<value>`. Node names are not globally unique without the prefix.
 - **Connection-string resolution rule** (D29, hardcoded — no knob): for any
   service-graph endpoint whose pod UID is empty, the verbatim `client`/`server`
   label is checked for a `"://"` connection string. The `KSG_OTHERS_NAME_PATTERN`
   env var / `--others-name-pattern` flag / `config.OthersNamePattern` field are
   **REMOVED entirely** — there is no operator-tunable substring. Per-endpoint
   independent (both sides of a single edge are evaluated separately); edge `type`
-  stays `pod-calls-pod`. When a `"://"` label is found, its URL host is parsed and
+  is `pod-calls-service` when the target resolves to a service node, otherwise
+  `pod-calls-pod`. When a `"://"` label is found, its URL host is parsed and
   the optional `.svc.<domain>` suffix stripped, then resolved by dotted-label
   count. **Both** in-cluster DNS forms resolve to the **service** — there is no
   per-pod resolution; a `"://"` endpoint is never a pod:
@@ -129,30 +129,25 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
     its parent service. A known service with zero backing endpoints still
     materialises the service node, with no fan-out edges.
   - **unresolvable** (host not a 2/3-label `.svc` name, or service absent from
-    the trace cluster's topology) → an `others` node (`id="others/<label>"`,
-    `labels={}` — the `pattern` key is GONE) with the verbatim label as `name`.
-  A client-side `"://"` label resolves to `service` or `others` (never a pod), so
-  the edge `labels.cluster` is always omitted for it.
+    the trace cluster's topology) → an `external` node (`id="external/<label>"`,
+    `labels={}`) with the verbatim label as `name`.
+  A client-side `"://"` label resolves to `service` or `external` (never a pod),
+  so the edge `labels.cluster` is always omitted for it.
 - **Missing pod-UID human-label fallback** (D27, always on): when
   `client_k8s_pod_uid` or `server_k8s_pod_uid` is empty AND the corresponding
-  `client`/`server` label is non-empty, that endpoint is promoted to
-  `external/<label>` (no cluster prefix; `labels={}`, no `pattern` key)
-  instead of dropping the edge. The `external/<label>` ID space is
-  **disjoint** from the `others/<label>` ID space — separate dedupe maps,
-  separate node `type`. A label string matched by both code paths produces
-  two distinct nodes (intentional — declared third-party endpoints vs
-  producer-regression inferred endpoints carry different operational meaning;
-  see D27 / D18). Per-endpoint resolution order:
+  `client`/`server` label is non-empty AND the label does NOT contain `"://"`,
+  that endpoint is promoted to `external/<label>` (no cluster prefix; `labels={}`)
+  instead of dropping the edge. Per-endpoint resolution order:
   (1) connection-string resolution (`"://"` in the label, empty UID) →
-  `service` (+ `service-selects-pod` fan-out) or `others` per the D29 rule above
+  `service` (+ `service-selects-pod` fan-out) or `external` per the D29 rule above
   (never a pod);
   (2) UID-based pod resolution / synth-pod fallback (only when UID is non-empty);
   (3) missing-UID human-label fallback (this rule) → external with `labels={}`
   (**only for non-`"://"` labels**);
-  (4) drop (both UID and label empty). A `"://"` label never reaches the external
-  fallback — it is resolved (or dropped to `others`) at step (1). Edge
+  (4) drop (both UID and label empty). A `"://"` label never reaches this fallback
+  — it is resolved (or produces an `external` node) at step (1). Edge
   `labels.cluster` is omitted whenever the client side resolves to a non-pod node,
-  whether via the connection-string rule (`service` / `others`) or this fallback
+  whether via the connection-string rule (`service` / `external`) or this fallback
   (`external`).
 - **Sentinel-endpoint exclusion at the query layer** (D30, hardcoded — no knob):
   the `servicegraph` connector emits virtual peers for endpoints it cannot pair
@@ -161,7 +156,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   **upstream** via anchored negative matchers —
   `rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unknown"}[w])`
   — so the series never reach the resolver: no node (`pod` / synth / `service` /
-  `others` / `external`) and no edge is produced for a `user` / `unknown` peer.
+  `external`) and no edge is produced for a `user` / `unknown` peer.
   PromQL `!~` is fully anchored, so the match is **exact** and **case-sensitive**
   (a `http://user/...` connection string is NOT excluded — it is not equal to
   `user`). Applied to both `client` and `server` (either side matching drops the
@@ -183,9 +178,11 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 - **`/v1/edge-types` reads from `graph.EdgeTypes` only** — a single in-code
   registry shared with the builder. Adding an edge type = update both the
   builder and the registry in the same change; the API can never list a type
-  the builder cannot produce. Current edge types include `pod-calls-pod` and
-  `service-selects-pod` (directed service → pod, intra-cluster; emitted on
-  demand by the D29 connection-string resolution).
+  the builder cannot produce. Current edge types include `pod-calls-pod`,
+  `pod-calls-service` (emitted when a `"://"` connection-string resolves to an
+  in-cluster service node; always intra-cluster), and `service-selects-pod`
+  (directed service → pod, intra-cluster; emitted on demand by the D29
+  connection-string resolution).
 - **API-key auth is the only HTTP auth in v1.** Header is `X-API-Key`. Keys
   come from `--api-keys-file` (K8s `Secret` mount, hot-reloaded) or
   `--api-keys`. Empty keyset = auth disabled (dev default). Open paths
@@ -197,8 +194,8 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   do NOT add early-return optimisations to `auth.KeySet.Validate`. Logs must
   never include the presented key value.
 - **Deterministic response body.** The serialiser produces byte-identical output for the same `(window, filters, upstream-data)`: node/edge slices MUST go through `graph.SortNodes`/`SortEdges`, `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Don't add timestamps, random IDs, or unsorted map iteration to the response — golden tests will break.
-- **IP addresses live on the typed `ipaddress` attribute, never in `labels`.** `PodNode.IPAddress()` carries `[pod_ip]` from `kube_pod_info` (when present). `K8sNode.IPAddress()` carries `[external_ip]` from `kube_node_status_addresses{type="ExternalIP"}` (when present). `ServiceNode.IPAddress()` carries `[cluster_ip]` from `kube_service_info` (when present, omitted for headless `cluster_ip="None"`). `PVCNode`, `OthersNode`, and `ExternalNode` always return nil. `host_ip` from `kube_pod_info` is intentionally dropped — it is the node's IP, surfaced via the node entry instead. The serialiser emits `data.ipaddress` (with `omitempty`); `labels.pod_ip`, `labels.host_ip`, `labels.external_ip`, and `labels.cluster_ip` MUST NOT appear.
-- **Cytoscape compound nodes are presentation-only (D31).** `serialiseCytoscape` synthesises a `type="cluster"` group node per cluster (`id="cluster/<name>"`, `labels={}`, no `ipaddress`, sorted first) and sets `data.parent` (`omitempty`) for nesting: `cluster > node > pod` (pod → its `labels.node`, falling back to its cluster group when that node is out of scope), and `cluster > service` / `cluster > pvc` (services/PVCs are cluster-level siblings, NEVER pod containers — a Service spans nodes and a pod can back many Services). `others`/`external` get no parent. There is **no `pod-runs-on-node` edge type** — the `cluster > node > pod` nesting (from each pod's `labels.node`) is the sole representation of the pod→node relationship, so K8s `node` nodes carry no edges. A consequence: a `name` filter or a traversal anchored on a pod no longer pulls in its host node. A `?namespace=` filter is the exception — although a K8s node carries no namespace label of its own, it is **retained iff some pod that survived the namespace filter is scheduled on it** (its `labels.node`), so `cluster > node > pod` nesting is preserved for nodes hosting the filtered pods while nodes hosting none of them drop. This host-of-in-scope-pod rule lives in `graph.Project`/`filterNodes` (`k8sNodePassesFilters`) — the one place K8s-node admission is namespace-aware; the nesting itself stays presentation-only. Cluster group nodes are serialiser-synthesised DTOs, not `GraphNode`s. The pod→node parent derives from `labels.node` (a contract field), so the nesting is independent of any edge and survives `?edge_type=` projection.
+- **IP addresses live on the typed `ipaddress` attribute, never in `labels`.** `PodNode.IPAddress()` carries `[pod_ip]` from `kube_pod_info` (when present). `K8sNode.IPAddress()` carries `[external_ip]` from `kube_node_status_addresses{type="ExternalIP"}` (when present). `ServiceNode.IPAddress()` carries `[cluster_ip]` from `kube_service_info` (when present, omitted for headless `cluster_ip="None"`). `PVCNode` and `ExternalNode` always return nil. `host_ip` from `kube_pod_info` is intentionally dropped — it is the node's IP, surfaced via the node entry instead. The serialiser emits `data.ipaddress` (with `omitempty`); `labels.pod_ip`, `labels.host_ip`, `labels.external_ip`, and `labels.cluster_ip` MUST NOT appear.
+- **Cytoscape compound nodes are presentation-only (D31).** `serialiseCytoscape` synthesises a `type="cluster"` group node per cluster (`id="cluster/<name>"`, `labels={}`, no `ipaddress`, sorted first) and sets `data.parent` (`omitempty`) for nesting: `cluster > node > pod` (pod → its `labels.node`, falling back to its cluster group when that node is out of scope), and `cluster > service` / `cluster > pvc` (services/PVCs are cluster-level siblings, NEVER pod containers — a Service spans nodes and a pod can back many Services). `external` nodes get no parent. There is **no `pod-runs-on-node` edge type** — the `cluster > node > pod` nesting (from each pod's `labels.node`) is the sole representation of the pod→node relationship, so K8s `node` nodes carry no edges. A consequence: a `name` filter or a traversal anchored on a pod no longer pulls in its host node. A `?namespace=` filter is the exception — although a K8s node carries no namespace label of its own, it is **retained iff some pod that survived the namespace filter is scheduled on it** (its `labels.node`), so `cluster > node > pod` nesting is preserved for nodes hosting the filtered pods while nodes hosting none of them drop. This host-of-in-scope-pod rule lives in `graph.Project`/`filterNodes` (`k8sNodePassesFilters`) — the one place K8s-node admission is namespace-aware; the nesting itself stays presentation-only. Cluster group nodes are serialiser-synthesised DTOs, not `GraphNode`s. The pod→node parent derives from `labels.node` (a contract field), so the nesting is independent of any edge and survives `?edge_type=` projection.
 - **OTLP tracing/logging is config'd by OTel env vars only** (`OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`). No bespoke `--otlp-*` flags. Telemetry defaults to no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (zero export overhead, no background goroutines). Tracing MUST NOT alter response bodies — resource attrs and span IDs live on spans, never in JSON. `otelgin` is mounted on `/v1/*` only; `/livez`, `/readyz`, `/metrics`, and `/docs/*` are deliberately untraced. The auth middleware MUST NEVER log or attribute the presented `X-API-Key` value via either the local handler or the OTLP slog bridge.
 - **Upstream metric-name prefix is an additive `KSG_METRIC_PREFIX` knob** applied to KSM-shaped series only (`kube_pod_info`, `kube_node_info`, `kube_node_status_addresses`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_node_labels`, `kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels`, and the `kube_node_info`-backed cluster-discovery query). The prefix is prepended verbatim — trailing underscore is the operator's responsibility. NOT applied to `traces_service_graph_request_total` (different exporter family — Alloy/Tempo) or `up{}` (Prometheus-native). The D29 endpointslice → service join reads `kube_endpointslice_labels{label_kubernetes_io_service_name}`, which KSM only emits when `--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name]` is set (NOT exposed by default). The metric-name suffix and the label-name set per series are a fixed contract any compatible exporter MUST honour; see design.md D26. Threaded via `promql.Renderer{Prefix}` held on `build.Builder` and `api.Server`; the `Query` string constants remain bare so `query=` / `query_name=` dimensions on self-metrics and spans stay stable across deployments that differ only by prefix.
 
@@ -207,7 +204,7 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
 The graph engine lives under `pkg/` so other Go modules can import it in-process
 (no HTTP, no JSON round-trip); `internal/api` is a thin HTTP / auth shell over it:
 
-- `pkg/graph` — `Graph`, the sealed `GraphNode` + six node types, `Edge`,
+- `pkg/graph` — `Graph`, the sealed `GraphNode` + five node types, `Edge`,
   `Project`, `Scope` / `NewScope`, `View`, `SortNodes` / `SortEdges`, `EdgeTypes`.
 - `pkg/build` — `Builder` + `Build`; topology / service-graph readers. Takes a
   `build.Options{MetricPrefix, APITimeout}` and a no-op-tolerant `build.Metrics`
@@ -233,11 +230,11 @@ self-metrics; the concrete `*observability.Metrics` satisfies
 ### Sealed graph types
 
 `graph.GraphNode` is a sealed interface (`isGraphNode()` unexported). Concrete
-types: `PodNode`, `K8sNode`, `PVCNode`, `ServiceNode`, `OthersNode`,
-`ExternalNode`. All expose `ID()`, `Name()`, `Type()`, `Labels()`,
-`IPAddress()`. Serialisation goes through these methods — never through type
-switches in the serialiser. `IPAddress()` returns nil for `PVCNode` /
-`OthersNode` / `ExternalNode`; `PodNode` returns `[pod_ip]` when known;
+types: `PodNode`, `K8sNode`, `PVCNode`, `ServiceNode`, `ExternalNode`. All
+expose `ID()`, `Name()`, `Type()`, `Labels()`, `IPAddress()`. Serialisation
+goes through these methods — never through type switches in the serialiser.
+`IPAddress()` returns nil for `PVCNode` / `ExternalNode`; `PodNode` returns
+`[pod_ip]` when known;
 `K8sNode` returns `[external_ip]` when known; `ServiceNode` returns
 `[cluster_ip]` when known (nil when headless `cluster_ip="None"`).
 

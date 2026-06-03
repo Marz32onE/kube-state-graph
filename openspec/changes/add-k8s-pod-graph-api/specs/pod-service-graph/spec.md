@@ -37,7 +37,7 @@ Matching semantics:
 
 This exclusion is distinct from — and SHALL NOT affect — the `cluster="unknown"` bucketing applied to series missing a `cluster` external label (a different label on a different dimension): the sentinel matchers are evaluated ONLY against the `client` and `server` endpoint labels.
 
-Because the excluded series never arrive, no endpoint resolution runs for them: no pod, synthesised-pod, `service`, `others`, or `external` node is materialised for a `user` / `unknown` sentinel peer, and no edge touching such a peer is emitted.
+Because the excluded series never arrive, no endpoint resolution runs for them: no pod, synthesised-pod, `service`, or `external` node is materialised for a `user` / `unknown` sentinel peer, and no edge touching such a peer is emitted.
 
 When the deferred numeric service-graph metrics (`traces_service_graph_request_failed_total`, `traces_service_graph_request_server_seconds_bucket`) are queried in a future spec revision, the same `client` / `server` sentinel matchers SHALL be applied to their selectors so the edge set stays consistent across metric families.
 
@@ -68,7 +68,7 @@ When the deferred numeric service-graph metrics (`traces_service_graph_request_f
 
 ### Requirement: Edge cluster label
 
-For every emitted `pod-calls-pod` edge whose **client side resolves to a pod**, the reader SHALL set `labels.cluster = <client-pod-cluster>` from the metric's `cluster` label. The label represents the cluster that originated the RPC. When the **client side resolves to an external node**, the reader SHALL omit the `cluster` key from the edge's `labels` (external endpoints are not cluster-scoped). The reader SHALL NOT emit `client_cluster` or `server_cluster` keys on edge `labels` (server-side cluster is derivable from `target` node's `labels.cluster`). The reader SHALL NOT encode a `cross_cluster` boolean inside `labels` (booleans are deferred to a future typed field); cross-cluster status is derived by comparing the resolved source and target nodes' `labels.cluster` values.
+For every emitted `pod-calls-pod` or `pod-calls-service` edge whose **client side resolves to a pod**, the reader SHALL set `labels.cluster = <client-pod-cluster>` from the metric's `cluster` label. The label represents the cluster that originated the RPC. When the **client side resolves to a non-pod node** (service or external), the reader SHALL omit the `cluster` key from the edge's `labels` (non-pod endpoints are not cluster-scoped). The reader SHALL NOT emit `client_cluster` or `server_cluster` keys on edge `labels` (server-side cluster is derivable from `target` node's `labels.cluster`). The reader SHALL NOT encode a `cross_cluster` boolean inside `labels` (booleans are deferred to a future typed field); cross-cluster status is derived by comparing the resolved source and target nodes' `labels.cluster` values.
 
 #### Scenario: Intra-cluster RPC
 
@@ -86,7 +86,7 @@ The reader SHALL NOT attach numeric edge metrics (`rate`, `p99_ms`, `error_rate`
 
 #### Scenario: No numeric labels emitted in v1
 
-- **WHEN** the reader emits any `pod-calls-pod` edge in v1
+- **WHEN** the reader emits any `pod-calls-pod` or `pod-calls-service` edge in v1
 - **THEN** the edge's `labels` map contains no `rate`, no `error_rate`, and no `p99_ms` key
 
 #### Scenario: Histogram absence does not produce labels
@@ -101,7 +101,7 @@ The reader SHALL treat an empty or sparse service-graph dataset as a valid input
 #### Scenario: Window with no service-graph data
 
 - **WHEN** centralised VictoriaMetrics has no `traces_service_graph_*` series in the requested window but topology queries return data
-- **THEN** the build completes with a graph containing topology nodes, zero `pod-calls-pod` edges, and a 200 response
+- **THEN** the build completes with a graph containing topology nodes, zero call edges (`pod-calls-pod` or `pod-calls-service`), and a 200 response
 
 ### Requirement: Connection-string endpoint resolution
 
@@ -124,36 +124,36 @@ Connection-string resolution proceeds as follows:
 3. Resolve `(cluster, namespace, service)` against the topology index `ServicesByNameNS` (built from `kube_service_info`). On a **hit**, the endpoint resolves to a **service** node: `id="<cluster>/<namespace>/<service>"`, `type="service"`, `labels={ cluster, namespace }`, `ipaddress=[cluster_ip]` when `cluster_ip != "None"` (omitted for headless services where `cluster_ip="None"`). The reader SHALL ALSO materialize, on demand and deduplicated, one `service-selects-pod` edge from this service node to EACH backing pod found in the topology index `EndpointsByService` (built from `kube_endpointslice_endpoints` joined to topology pods by `(namespace, targetref_name) → pod UID`). A known service with zero backing endpoints still materializes the service node, with no fan-out edges. On a **miss** (the service is not in topology), the label is **unresolvable**.
 4. **Cluster determination**: the topology lookup is scoped to the trace-source `cluster` label (the client-side cluster), because `.svc.cluster.local` is in-cluster DNS — the target is in the same Kubernetes cluster as the caller. A missing `cluster` label is bucketed to `"unknown"`, so the lookup is always cluster-scoped; a connection string whose service is absent from that cluster's topology is **unresolvable**.
 
-When the `"://"` label is **unresolvable** — the host is not a parseable Kubernetes `.svc` name, OR the referenced service / pod is absent from the trace cluster's topology — the reader SHALL fall back to an **others** node:
+When the `"://"` label is **unresolvable** — the host is not a parseable Kubernetes `.svc` name, OR the referenced service / pod is absent from the trace cluster's topology — the reader SHALL fall back to an **external** node:
 
-- `id`     = `others/<label_value>`
+- `id`     = `external/<label_value>`
 - `name`   = `<label_value>` (verbatim — no normalisation, no trimming)
-- `type`   = `"others"`
-- `labels` = `{}` (empty map — no `cluster` key, no `pattern` key)
+- `type`   = `"external"`
+- `labels` = `{}` (empty map — no `cluster` key)
 
-This keeps truly-external URLs (e.g. `https://payments.partner.example/api`) and unknown in-cluster names visible. The semantics are: an **others** node is a recognized `"://"` connection string that did NOT resolve to an in-cluster pod or service (a declared external dependency); an **external** node (see the missing pod-UID human-label fallback) is a missing-UID endpoint with a NON-URL human label (a producer-regression signal).
+This keeps truly-external URLs (e.g. `https://payments.partner.example/api`) and unknown in-cluster names visible. All non-pod, non-service endpoints use the `external` node type — whether they arise from an unresolvable `"://"` connection string or from the missing pod-UID human-label fallback.
 
-The decision is per endpoint: a single edge MAY have a pod source and a service / others target, a service / others source and a pod target, two pods, or any mix. The edge `type` SHALL remain `pod-calls-pod` regardless of endpoint kinds. The edge `labels.cluster` rule for the client side applies: present when the client side resolves to a pod (from a non-empty pod UID), omitted when the client side resolves to a service, others, or external node — including ANY `"://"` connection string, which never resolves to a pod.
+The decision is per endpoint: a single edge MAY have a pod source and a service or external target, an external source and a pod target, two pods, or any mix. The edge `type` is `pod-calls-service` when the target resolves to a service node, otherwise `pod-calls-pod`. The edge `labels.cluster` rule for the client side applies: present when the client side resolves to a pod (from a non-empty pod UID), omitted when the client side resolves to a service or external node — including ANY `"://"` connection string, which never resolves to a pod.
 
 #### Scenario: Headless connection string resolves to its service node and fans out to backing pods
 
 - **WHEN** the upstream contains a series with `client="checkout"`, `client_k8s_pod_uid="abc"` (resolving to a pod in `cluster-alpha`), `server="mongodb://mongo-0.mongo.db.svc.cluster.local:27017"`, `server_k8s_pod_uid=""`, `cluster="cluster-alpha"`, and topology has a headless `mongo` service in namespace `db` whose `EndpointsByService` entry maps to a backing pod `cluster-alpha/pod-mongo-0-uid`
-- **THEN** the leading pod-hostname `mongo-0` is dropped; the resulting `pod-calls-pod` edge has `source: "cluster-alpha/abc"`, `target: "cluster-alpha/db/mongo"` (a `type="service"` node, NOT a specific pod), and `labels.cluster: "cluster-alpha"` (the client side is a pod); and the graph ALSO contains a `service-selects-pod` edge from `cluster-alpha/db/mongo` to `cluster-alpha/pod-mongo-0-uid`
+- **THEN** the leading pod-hostname `mongo-0` is dropped; the resulting `pod-calls-service` edge has `source: "cluster-alpha/abc"`, `target: "cluster-alpha/db/mongo"` (a `type="service"` node, NOT a specific pod), and `labels.cluster: "cluster-alpha"` (the client side is a pod); and the graph ALSO contains a `service-selects-pod` edge from `cluster-alpha/db/mongo` to `cluster-alpha/pod-mongo-0-uid`
 
 #### Scenario: ClusterIP service connection string resolves to a service node with backing-pod edges
 
 - **WHEN** the upstream contains a series with `client="checkout"`, `client_k8s_pod_uid="abc"` (resolving to a pod in `cluster-alpha`), `server="https://payments.payments-ns.svc.cluster.local/api"`, `server_k8s_pod_uid=""`, `cluster="cluster-alpha"`, and topology has a ClusterIP `payments` service in namespace `payments-ns` with `cluster_ip="10.0.0.5"` whose `EndpointsByService` entry maps to two backing pods `cluster-alpha/p1` and `cluster-alpha/p2`
-- **THEN** the resulting edge has `target: "cluster-alpha/payments-ns/payments"`; the target node has `type: "service"`, `name="payments"` (or service identity per the graph-api capability), `labels={ cluster: "cluster-alpha", namespace: "payments-ns" }`, and `ipaddress: ["10.0.0.5"]`; and the graph ALSO contains two `service-selects-pod` edges from `cluster-alpha/payments-ns/payments` to `cluster-alpha/p1` and `cluster-alpha/p2` respectively; the original edge has `labels.cluster: "cluster-alpha"` (the client side is a pod)
+- **THEN** the resulting `pod-calls-service` edge has `target: "cluster-alpha/payments-ns/payments"`; the target node has `type: "service"`, `name="payments"` (or service identity per the graph-api capability), `labels={ cluster: "cluster-alpha", namespace: "payments-ns" }`, and `ipaddress: ["10.0.0.5"]`; and the graph ALSO contains two `service-selects-pod` edges from `cluster-alpha/payments-ns/payments` to `cluster-alpha/p1` and `cluster-alpha/p2` respectively; the original edge has `labels.cluster: "cluster-alpha"` (the client side is a pod)
 
-#### Scenario: Unresolvable external URL becomes an others node
+#### Scenario: Unresolvable external URL becomes an external node
 
 - **WHEN** the upstream contains a series with `client="checkout"`, `client_k8s_pod_uid="abc"` (resolving to a pod in `cluster-alpha`), `server="https://payments.partner.example/api"`, `server_k8s_pod_uid=""`, `cluster="cluster-alpha"`, and the host `payments.partner.example` is not a parseable Kubernetes `.svc` name (no service or pod in topology)
-- **THEN** the resulting edge has `target: "others/https://payments.partner.example/api"`; the target node has `type: "others"`, `name: "https://payments.partner.example/api"`, `labels={}` (empty — no `pattern` key, no `cluster` key); and the edge has `labels.cluster: "cluster-alpha"` (the client side is a pod)
+- **THEN** the resulting `pod-calls-pod` edge has `target: "external/https://payments.partner.example/api"`; the target node has `type: "external"`, `name: "https://payments.partner.example/api"`, `labels={}` (empty — no `cluster` key); and the edge has `labels.cluster: "cluster-alpha"` (the client side is a pod)
 
-#### Scenario: "://" label with empty UID never becomes an external node
+#### Scenario: "://" label with empty UID is always handled by connection-string resolution
 
 - **WHEN** a series has an endpoint whose pod UID is empty and whose `client` / `server` label contains `"://"` (whether or not it resolves)
-- **THEN** that endpoint is resolved by connection-string resolution (a service node or — on miss — an `others/<label>` node) and the missing pod-UID human-label fallback is NEVER consulted for it; no `external/<label>` node is produced for a `"://"` label
+- **THEN** that endpoint is resolved by connection-string resolution (a service node or — on miss — an `external/<label>` node) and the missing pod-UID human-label fallback is NEVER consulted for it
 
 ### Requirement: Missing pod-UID human-label fallback
 
@@ -166,17 +166,17 @@ For the affected endpoint, the reader SHALL produce a node with:
 - `id`     = `external/<label_value>`  (no cluster prefix — the endpoint is not a pod and has no cluster identity)
 - `name`   = `<label_value>` (verbatim — no normalisation, no trimming)
 - `type`   = `"external"`
-- `labels` = `{}` (empty map — no `cluster` key, no `pattern` key)
+- `labels` = `{}` (empty map — no `cluster` key)
 
-The `external/<label_value>` ID space is **disjoint** from the `others/<label_value>` ID space produced by connection-string resolution. The two node types and their dedupe maps are independent: a `"://"` connection string that does not resolve to an in-cluster pod or service produces `others/<label>` (`type=others`); a NON-URL missing-UID human label produces `external/<label>` (`type=external`). Operators MAY see two nodes with the same `name` but different `type` and `id`.
+Both unresolvable `"://"` connection strings (from connection-string resolution) and NON-URL missing-UID human labels (from this fallback) produce `external/<label>` nodes sharing the same dedupe map and `id` namespace.
 
-The edge `labels.cluster` rule is unchanged: present (set to the metric's `cluster` label) when the **client** side resolves to a pod; omitted when the client side is non-pod — whether the client became `others` / `service` via connection-string resolution or `external` via this missing-UID fallback.
+The edge `labels.cluster` rule is unchanged: present (set to the metric's `cluster` label) when the **client** side resolves to a pod; omitted when the client side is non-pod — whether the client became `service` via connection-string resolution or `external` via this missing-UID fallback or the unresolvable connection-string path.
 
 When BOTH the pod UID AND the human label are empty for an endpoint, the reader SHALL drop the edge (no identity remains to construct any node).
 
 The per-endpoint resolution order is:
 
-1. Connection-string resolution (hardcoded `"://"` check; only when UID is empty AND label contains `"://"`) → service node (plus on-demand `service-selects-pod` edges) or — on miss — `others/<label>` node with `labels={}`. Never a pod.
+1. Connection-string resolution (hardcoded `"://"` check; only when UID is empty AND label contains `"://"`) → service node (plus on-demand `service-selects-pod` edges; edge type `pod-calls-service`) or — on miss — `external/<label>` node with `labels={}` (edge type `pod-calls-pod`). Never a pod.
 2. Pod-UID resolution against topology / synth-pod fallback (only when UID is non-empty).
 3. Missing-UID human-label fallback (this requirement; only when UID is empty AND label is non-empty AND label does NOT contain `"://"`).
 4. Drop (both UID and label empty).
@@ -204,17 +204,17 @@ The per-endpoint resolution order is:
 #### Scenario: Connection-string resolution wins over missing-UID fallback
 
 - **WHEN** a series has `client="https://api.example.com"` with `client_k8s_pod_uid` also empty (the label contains `"://"` but the host does not resolve to any in-cluster service or pod)
-- **THEN** the client side resolves via connection-string resolution to `others/https://api.example.com` (`type="others"`, `labels={}`); the missing-UID fallback is NOT consulted (the label contains `"://"`, so connection-string resolution already produced the others node)
+- **THEN** the client side resolves via connection-string resolution to `external/https://api.example.com` (`type="external"`, `labels={}`); the missing-UID fallback is NOT consulted (the label contains `"://"`, so connection-string resolution already produced the external node)
 
 #### Scenario: UID present — fallback does not fire
 
 - **WHEN** a series has `client="checkout"` with `client_k8s_pod_uid="abc"`
 - **THEN** the client side resolves via pod-UID lookup (with the synth-pod fallback on topology miss); the missing-UID fallback is NOT consulted (UID is non-empty)
 
-#### Scenario: Others and external nodes coexist within one parse
+#### Scenario: Unresolvable connection-string and non-URL missing-UID endpoints both become external nodes
 
 - **WHEN** series A has `client="https://api.example.com"`, `client_k8s_pod_uid=""` (label contains `"://"`, host unresolvable) and series B has `client="stray-caller"`, `client_k8s_pod_uid=""` (NON-URL label; UID empty so the fallback fires)
-- **THEN** series A's client resolves to `id="others/https://api.example.com"` (`type="others"`, `labels={}`) via connection-string resolution and series B's client resolves to `id="external/stray-caller"` (`type="external"`, `labels={}`) via the missing-UID fallback. Both nodes appear in the same response, disjoint by node `type` and `id` namespace.
+- **THEN** series A's client resolves to `id="external/https://api.example.com"` (`type="external"`, `labels={}`) via connection-string resolution and series B's client resolves to `id="external/stray-caller"` (`type="external"`, `labels={}`) via the missing-UID fallback. Both nodes appear in the same response as `type="external"` nodes.
 
 ### Requirement: Synthesised pod node fallback
 
