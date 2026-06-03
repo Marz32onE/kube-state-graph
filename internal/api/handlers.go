@@ -33,9 +33,9 @@ import (
 //	@Description
 //	@Description	**Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
 //	@Description
-//	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `others`, `external`. **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`.
+//	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `external`. **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`.
 //	@Description
-//	@Description	**Endpoint resolution**: for a `pod-calls-pod` endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): a `<service>.<namespace>` host yields a `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to each backing pod; a `<pod>.<service>.<namespace>` host resolves to the real backing pod; an unresolvable host yields an `others` node (`others/<value>`). A non-URL missing-UID label still yields an `external` node (`external/<value>`).
+//	@Description	**Endpoint resolution**: for a call endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): both a `<service>.<namespace>` host and a headless `<pod>.<service>.<namespace>` host resolve to the same `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to each backing pod — the call edge is then typed `pod-calls-service`; an unresolvable host yields an `external` node (`external/<value>`). A non-URL missing-UID label also yields an `external` node. Calls whose target is not a service stay typed `pod-calls-pod`.
 //	@Description
 //	@Description	Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
 //	@Description
@@ -64,9 +64,9 @@ import (
 //	@Param			end			query		string		true	"Window end. RFC 3339 or Unix seconds. Must be > start."	example(2026-05-05T12:00:00Z)
 //	@Param			cluster		query		[]string	false	"Restrict to listed clusters (repeatable, OR-combined). Names match the upstream `cluster` label."	collectionFormat(multi)	example(prod-eu)
 //	@Param			namespace	query		[]string	false	"Restrict to listed Kubernetes namespaces (repeatable, OR-combined)."	collectionFormat(multi)	example(payments)
-//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-mounts-pvc,pod-calls-pod,service-selects-pod)	example(pod-calls-pod)
-//	@Param			name		query		[]string	false	"Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, service, others, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
-//	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, services `<cluster>/<ns>/<service>`, others `others/<value>`, externals `external/<value>`."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
+//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-mounts-pvc,pod-calls-pod,pod-calls-service,service-selects-pod)	example(pod-calls-pod)
+//	@Param			name		query		[]string	false	"Restrict to nodes whose name matches exactly across every node type (pod, K8s node, PVC, service, external). Repeatable; name collisions across types or clusters return all matches. Edges incident on a matching node are kept and the partner endpoint is re-added subject to other filters."	collectionFormat(multi)	example(checkout-7d9f6c8b8-abcde)
+//	@Param			root		query		string		false	"Cluster-scoped node ID anchoring a traversal. Format depends on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`, services `<cluster>/<ns>/<service>`, externals `external/<value>`."	example(prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab)
 //	@Param			depth		query		int			false	"BFS traversal depth in hops. Range `0..6`. Defaults to `2` when `root` is set, ignored otherwise."	minimum(0)	maximum(6)	default(2)	example(2)
 //	@Param			direction	query		string		false	"Traversal direction relative to `root`. `out` = downstream edges, `in` = upstream edges, `both` = undirected. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
 //	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
@@ -250,10 +250,11 @@ func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 //	@Description	| type | source → target | directed | cross-cluster |
 //	@Description	|---|---|---|---|
 //	@Description	| `pod-mounts-pvc` | pod → pvc | yes | no |
-//	@Description	| `pod-calls-pod` | pod \| service \| others \| external → pod \| service \| others \| external | yes | yes |
+//	@Description	| `pod-calls-pod` | pod \| service \| external → pod \| external | yes | yes |
+//	@Description	| `pod-calls-service` | pod \| service \| external → service | yes | no |
 //	@Description	| `service-selects-pod` | service → pod | yes | no |
 //	@Description
-//	@Description	A `pod-calls-pod` endpoint whose pod UID is empty and whose `client`/`server` label is a `://` connection string is resolved (detection hardcoded, no operator knob) to a `service` node, the real backing pod, or an `others` node; a non-URL missing-UID label resolves to an `external` node. `service-selects-pod` edges are materialised on demand from `service` nodes to their backing pods.
+//	@Description	A call endpoint whose pod UID is empty and whose `client`/`server` label is a `://` connection string is resolved (detection hardcoded, no operator knob) to a `service` node (when it names an in-cluster Service — the call edge is then `pod-calls-service`) or an `external` node otherwise; a non-URL missing-UID label resolves to an `external` node. `service-selects-pod` edges are materialised on demand from `service` nodes to their backing pods.
 //	@Description
 //	@Description	</details>
 //	@Tags			discovery

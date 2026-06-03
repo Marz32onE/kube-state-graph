@@ -174,7 +174,7 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 // no-UID endpoint resolves to a service or external node, never a pod.
 func (r *sgResolver) resolveEmptyUID(label, traceCluster string) (string, bool) {
 	if strings.Contains(label, "://") {
-		return r.resolveConnString(label, traceCluster), false // Stage 0 — service or others, never a pod
+		return r.resolveConnString(label, traceCluster), false // Stage 0 — service or external, never a pod
 	}
 	if label != "" {
 		return r.external(label), false // D27 fallback (non-URL only)
@@ -185,7 +185,7 @@ func (r *sgResolver) resolveEmptyUID(label, traceCluster string) (string, bool) 
 // resolveClient resolves the client side of a service-graph series. Returns
 // (id, isPod). isPod is true when the resolved endpoint is a pod — real or
 // synthesised from a non-empty UID. A "://" connection string resolves to a
-// service or others node (never a pod). The client side knows its cluster from
+// service or external node (never a pod). The client side knows its cluster from
 // the metric's `cluster` label.
 func (r *sgResolver) resolveClient(label, traceCluster, podUID, namespace string) (string, bool) {
 	if podUID == "" {

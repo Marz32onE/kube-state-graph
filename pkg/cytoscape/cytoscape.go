@@ -139,7 +139,7 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 //	pod              → its K8s node (labels.node) when present in the view,
 //	                   else its cluster group, else "" (unknown cluster)
 //	node/service/pvc → its cluster group (cluster/<cluster>)
-//	others/external  → "" (no cluster identity)
+//	external         → "" (no cluster identity)
 func compoundParent(n graph.GraphNode, present map[string]struct{}) string {
 	labels := n.Labels()
 	// A pod nests under its scheduling K8s node (labels.node) when that node is
@@ -152,7 +152,7 @@ func compoundParent(n graph.GraphNode, present map[string]struct{}) string {
 		}
 	}
 	// node / service / pvc — and any pod whose node is out of scope — nest
-	// under their cluster group. others / external carry no cluster label
+	// under their cluster group. external nodes carry no cluster label
 	// (labels={}), so they fall through to no parent.
 	if c := labels["cluster"]; c != "" {
 		return clusterParentID(c)

@@ -893,7 +893,7 @@ A `"://"`-bearing label with an empty UID therefore always flows through Stage 1
 
 - `NodeType "service"`; `ServiceNode` struct (`IDValue`, `NameValue`, `LabelsValue`, `IPAddressValue []string`). `IPAddress()` returns `[cluster_ip]` (nil when `"None"` / absent). `ServiceID(cluster, namespace, service) = "<cluster>/<namespace>/<service>"`.
 - `EdgeType "service-selects-pod"` (directed service → pod, `may_cross_cluster=false`, always intra-cluster; labels: optional `namespace`, none required). Registered in `graph.EdgeTypes` and listed by `/v1/edge-types`.
-- `pod-calls-pod` `source_type` / `target_type` now **also** include `"service"` (a pod can call a service node), in addition to the existing `"pod"`, `"others"`, `"external"`.
+- A call whose target resolves to a service node is typed `pod-calls-service` (a separate edge type, `target_type` exactly `["service"]`, always intra-cluster). `pod-calls-pod` `source_type` is `["pod", "service", "external"]` and its `target_type` is `["pod", "external"]` — service targets move to `pod-calls-service`.
 
 **Topology reader additions.** The cluster-topology source newly consumes `kube_service_info{cluster, namespace, service, cluster_ip, ...}`, `kube_endpointslice_endpoints{cluster, namespace, endpointslice, address, targetref_kind, targetref_name, targetref_namespace, ...}`, and `kube_endpointslice_labels{cluster, namespace, endpointslice, label_kubernetes_io_service_name, ...}` (used to join slice → service name). The reader builds **indexes only**: `ServicesByNameNS` and `EndpointsByService` (service → `[]pod` resolved against topology pods by `targetref_name`). The endpoint `hostname` label is no longer consumed — the removed per-pod headless resolution was its only reader, so it drops out of the KSM contract. Service nodes and `service-selects-pod` edges are **materialised on demand** by the service-graph reader, for referenced services only — they are **not** emitted wholesale, to avoid graph bloat from services nothing calls.
 
@@ -958,8 +958,8 @@ The Cytoscape `/v1/graph` serialiser groups nodes into compound (parent / child)
 **Containment hierarchy** — a single strict tree, because Cytoscape allows each node exactly one parent:
 
 - `cluster > node > pod` — a synthetic `type="cluster"` group node contains the K8s nodes; each K8s node contains the pods scheduled on it. A K8s `node` node is an **edgeless** graph node that exists purely as a compound container (it still carries its `external_ip` on the `ipaddress` attribute); the pod→node relationship is expressed by this nesting and nothing else.
-- `cluster > service`, `cluster > pvc` — services and PVCs are cluster-level **siblings** of K8s nodes. They are NOT compound parents of pods: a Kubernetes Service spans multiple nodes and a pod can back multiple Services, so service→pod containment is many-to-many and cannot map to a single-parent tree. The pod ↔ service / pod ↔ pvc relationships stay as edges (`pod-to-service` / `service-selects-pod` / `pod-mounts-pvc`).
-- `others` / `external` endpoints have no cluster identity → no parent (top-level).
+- `cluster > service`, `cluster > pvc` — services and PVCs are cluster-level **siblings** of K8s nodes. They are NOT compound parents of pods: a Kubernetes Service spans multiple nodes and a pod can back multiple Services, so service→pod containment is many-to-many and cannot map to a single-parent tree. The pod ↔ service / pod ↔ pvc relationships stay as edges (`pod-calls-service` / `service-selects-pod` / `pod-mounts-pvc`).
+- `external` endpoints have no cluster identity → no parent (top-level).
 
 **Synthetic cluster group nodes.** Cytoscape's `data.parent` must reference a node present in `elements.nodes`, so the serialiser emits one `{ data: { id: "cluster/<name>", name: "<name>", type: "cluster", labels: {} } }` group node per distinct `labels.cluster` value observed on an emitted node — no `parent`, no `ipaddress`. They are synthesised in the serialiser only (they are not `GraphNode`s). Emitted first, sorted by cluster name, for body determinism (D6).
 
@@ -967,7 +967,7 @@ The Cytoscape `/v1/graph` serialiser groups nodes into compound (parent / child)
 
 - `pod` → its K8s node id, taken from the pod's `labels.node` (the cluster-scoped node id), when that node is present in the response; else its cluster group `cluster/<cluster>`; else (unknown / empty cluster) no parent.
 - `node` / `service` / `pvc` → `cluster/<labels.cluster>`.
-- `others` / `external` / `cluster` → no parent.
+- `external` / `cluster` → no parent.
 
 The pod→node parent derives from the pod's own `labels.node` attribute (a contract field in `graph-api`), so it survives edge-type projection.
 
