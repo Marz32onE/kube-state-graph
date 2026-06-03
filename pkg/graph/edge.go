@@ -12,6 +12,7 @@ type EdgeType string
 const (
 	EdgeTypePodMountsPVC      EdgeType = "pod-mounts-pvc"
 	EdgeTypePodCallsPod       EdgeType = "pod-calls-pod"
+	EdgeTypePodCallsService   EdgeType = "pod-calls-service"
 	EdgeTypeServiceSelectsPod EdgeType = "service-selects-pod"
 	EdgeTypeSwitchToSwitch    EdgeType = "switch-to-switch"
 	EdgeTypeNodeToSwitch      EdgeType = "node-to-switch"
