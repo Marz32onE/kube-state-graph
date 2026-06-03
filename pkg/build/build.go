@@ -75,8 +75,17 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 		if up, _ := b.upProbe(ctx); up {
 			startStr := end.Add(-window).UTC().Format(time.RFC3339)
 			endStr := end.UTC().Format(time.RFC3339)
-			msg := fmt.Sprintf("no topology rows in window [%s, %s] (window=%s); upstream healthy",
-				startStr, endStr, window)
+			podRaw := topology.RawSeriesCount[string(promql.QPodInfo)]
+			nodeRaw := topology.RawSeriesCount[string(promql.QNodeInfo)]
+			msg := fmt.Sprintf(
+				"no topology rows in window [%s, %s] (window=%s); upstream healthy. "+
+					"%s matched %d raw series (parsed to %d pods); "+
+					"%s matched %d raw series (parsed to %d nodes) — "+
+					"a non-zero raw count with zero parsed means rows were returned but filtered (e.g. empty uid)",
+				startStr, endStr, window,
+				promql.QPodInfo, podRaw, len(topology.Pods),
+				promql.QNodeInfo, nodeRaw, len(topology.Nodes),
+			)
 			err := NewError(ReasonOutsideRetention, msg, nil)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, string(ReasonOutsideRetention))
@@ -85,6 +94,9 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 				"end", endStr,
 				"window", window.String(),
 				"metric_prefix", b.opts.MetricPrefix,
+				"raw_series_counts", topology.RawSeriesCount,
+				"pod_info_query", b.r.Render(promql.QPodInfo, window),
+				"node_info_query", b.r.Render(promql.QNodeInfo, window),
 			)
 			return nil, err
 		}

@@ -88,6 +88,14 @@ type Topology struct {
 	EndpointsByService map[serviceKey][]EndpointObs
 
 	ClustersObserved []string // sorted unique cluster values
+
+	// RawSeriesCount records how many raw upstream series each topology query
+	// returned BEFORE parsing/filtering, keyed by query name. Diagnostic only:
+	// the build pipeline uses it to enrich the outside-retention error so an
+	// operator can tell which upstream metric came back empty (0 raw series)
+	// versus returned rows that were all filtered out (raw > 0 but parsed 0,
+	// e.g. kube_pod_info samples with an empty uid).
+	RawSeriesCount map[string]int
 }
 
 // ReadTopology runs the topology queries in parallel and assembles the
@@ -148,7 +156,18 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 		return Topology{}, fmt.Errorf("topology fan-out: %w", err)
 	}
 
-	return parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec), nil
+	t := parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec)
+	t.RawSeriesCount = map[string]int{
+		string(promql.QPodInfo):                len(podVec),
+		string(promql.QNodeInfo):               len(nodeVec),
+		string(promql.QNodeAddresses):          len(addrVec),
+		string(promql.QPVCBindings):            len(pvcVec),
+		string(promql.QNodeLabels):             len(labelVec),
+		string(promql.QServiceInfo):            len(svcVec),
+		string(promql.QEndpointSliceEndpoints): len(epEndpointsVec),
+		string(promql.QEndpointSliceLabels):    len(epLabelsVec),
+	}
+	return t, nil
 }
 
 func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec model.Vector) Topology {
