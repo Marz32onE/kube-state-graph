@@ -169,12 +169,17 @@ func TestParseServiceGraph_ConnString_ServiceLevelResolvesToServiceNode(t *testi
 	assert.Equal(t, map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}, svc.LabelsValue)
 	assert.Equal(t, []string{"10.0.0.5"}, svc.IPAddressValue)
 
-	// pod-calls-pod edge points at the service node, carrying cluster (client is a pod).
-	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
-	require.Len(t, pcp, 1)
-	assert.Equal(t, "cluster-alpha/abc", pcp[0].Source)
-	assert.Equal(t, "cluster-alpha/shop/payments", pcp[0].Target)
-	assert.Equal(t, "cluster-alpha", pcp[0].Labels["cluster"])
+	// The call edge to a resolved service node is now typed pod-calls-service.
+	var pcs []*graph.Edge
+	for _, e := range res.Edges {
+		if e.Type == graph.EdgeTypePodCallsService {
+			pcs = append(pcs, e)
+		}
+	}
+	require.Len(t, pcs, 1, "one pod-calls-service edge to the service node")
+	assert.Equal(t, "cluster-alpha/abc", pcs[0].Source)
+	assert.Equal(t, "cluster-alpha/shop/payments", pcs[0].Target, "target is the service node")
+	assert.Equal(t, "cluster-alpha", pcs[0].Labels["cluster"], "client side is a pod → edge carries cluster")
 
 	// service-selects-pod edges fan out to both backing pods.
 	ssp := edgesByType(res, graph.EdgeTypeServiceSelectsPod)
@@ -207,11 +212,17 @@ func TestParseServiceGraph_ConnString_HeadlessResolvesToServiceNode_WithFanout(t
 	assert.Equal(t, "cluster-alpha/db/mongo", res.ServiceNodes[0].IDValue)
 	assert.Empty(t, res.OthersNodes)
 
-	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
-	require.Len(t, pcp, 1)
-	assert.Equal(t, "cluster-alpha/abc", pcp[0].Source)
-	assert.Equal(t, "cluster-alpha/db/mongo", pcp[0].Target, "target is the service node, not a specific pod")
-	assert.Equal(t, "cluster-alpha", pcp[0].Labels["cluster"], "client side is a pod → edge carries cluster")
+	// The call edge to a resolved service node is now typed pod-calls-service.
+	var pcs []*graph.Edge
+	for _, e := range res.Edges {
+		if e.Type == graph.EdgeTypePodCallsService {
+			pcs = append(pcs, e)
+		}
+	}
+	require.Len(t, pcs, 1, "one pod-calls-service edge to the service node")
+	assert.Equal(t, "cluster-alpha/abc", pcs[0].Source)
+	assert.Equal(t, "cluster-alpha/db/mongo", pcs[0].Target, "target is the service node, not a specific pod")
+	assert.Equal(t, "cluster-alpha", pcs[0].Labels["cluster"], "client side is a pod → edge carries cluster")
 
 	ssp := edgesByType(res, graph.EdgeTypeServiceSelectsPod)
 	require.Len(t, ssp, 1, "mongo fans out to its single backing pod")
@@ -239,9 +250,15 @@ func TestParseServiceGraph_ConnString_HeadlessServiceWithNoEndpoints_StillResolv
 	assert.Empty(t, res.OthersNodes, "a known service with no endpoints is still a service node, not others")
 	assert.Empty(t, edgesByType(res, graph.EdgeTypeServiceSelectsPod), "no backing pods → no fan-out edges")
 
-	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
-	require.Len(t, pcp, 1)
-	assert.Equal(t, "cluster-alpha/db/redis", pcp[0].Target)
+	// The call edge to a resolved service node is now typed pod-calls-service.
+	var pcs []*graph.Edge
+	for _, e := range res.Edges {
+		if e.Type == graph.EdgeTypePodCallsService {
+			pcs = append(pcs, e)
+		}
+	}
+	require.Len(t, pcs, 1, "one pod-calls-service edge to the service node")
+	assert.Equal(t, "cluster-alpha/db/redis", pcs[0].Target, "target is the service node")
 }
 
 func TestParseServiceGraph_ConnString_ClientHeadlessResolvesToServiceNode_OmitsCluster(t *testing.T) {
@@ -373,8 +390,8 @@ func TestParseServiceGraph_ConnString_ServiceMaterialisedOnceAcrossSeries(t *tes
 	require.Len(t, res.ServiceNodes, 1, "service node materialised once despite two referencing series")
 	ssp := edgesByType(res, graph.EdgeTypeServiceSelectsPod)
 	require.Len(t, ssp, 2, "payments has two backing pods; each service-selects-pod edge deduped to one")
-	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
-	require.Len(t, pcp, 2, "two distinct clients → two pod-calls-pod edges to the service")
+	pcs := edgesByType(res, graph.EdgeTypePodCallsService)
+	require.Len(t, pcs, 2, "two distinct clients → two pod-calls-service edges to the service")
 }
 
 func TestParseServiceGraph_UIDPresentSkipsConnStringResolution(t *testing.T) {

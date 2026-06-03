@@ -129,13 +129,20 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	for k, agg := range pairs {
 		// Edge `cluster` label is the trace-source / client-side cluster, but
 		// only when the client side is a pod (per design D9). A client "://"
-		// label resolves to a service or others node (never a pod), so such an
-		// edge never carries cluster.
+		// label resolves to a service or external node (never a pod), so such
+		// an edge never carries cluster.
 		labels := map[string]string{}
 		if agg.srcIsPod {
 			labels["cluster"] = agg.srcCluster
 		}
-		edges = append(edges, graph.NewEdge(graph.EdgeTypePodCallsPod, k.src, k.tgt, labels))
+		// Edge type is target-driven: a target that resolved to a service node
+		// (via the D29 "://" connection-string rule) yields pod-calls-service;
+		// every other target (pod, synth-pod, external) stays pod-calls-pod.
+		edgeType := graph.EdgeTypePodCallsPod
+		if _, isSvc := res.services[k.tgt]; isSvc {
+			edgeType = graph.EdgeTypePodCallsService
+		}
+		edges = append(edges, graph.NewEdge(edgeType, k.src, k.tgt, labels))
 	}
 	for _, e := range res.svcEdges {
 		edges = append(edges, e)
