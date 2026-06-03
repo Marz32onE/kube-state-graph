@@ -2,6 +2,7 @@ package cytoscape
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,6 +114,23 @@ func TestSerialiseCytoscape_Parents(t *testing.T) {
 			}
 		})
 	}
+}
+
+// End-to-end (project → serialise): under a namespace filter the host K8s node
+// is retained because it hosts an in-scope pod, so the pod nests under its node
+// (cluster > node > pod) instead of falling back to the cluster group. Guards
+// the regression where a namespace filter dropped the node and reparented the
+// pod to the cluster. See design.md D31.
+func TestSerialiseCytoscape_NamespaceFilterKeepsPodUnderNode(t *testing.T) {
+	pod := &graph.PodNode{IDValue: "c1/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "c1", "namespace": "shop", "node": "c1/worker-0"}}
+	node := &graph.K8sNode{IDValue: "c1/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "c1"}}
+	g := graph.NewGraph([]graph.GraphNode{pod, node}, nil, time.Now())
+
+	view := graph.Project(g, graph.Scope{Namespaces: map[string]struct{}{"shop": {}}})
+	nodes := cyNodesByID(Serialise(g, view))
+
+	require.Contains(t, nodes, "c1/worker-0", "host node retained under namespace filter")
+	assert.Equal(t, "c1/worker-0", nodes["c1/p1"].Parent, "pod nests under its node, not the cluster group")
 }
 
 // Cluster group nodes are emitted first, sorted by cluster name, so the body

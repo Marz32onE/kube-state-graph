@@ -142,16 +142,20 @@ func TestProject_DepthZero(t *testing.T) {
 	assert.Equal(t, "cluster-alpha/p1", v.Nodes[0].ID())
 }
 
-// Namespace filter drops K8sNode: K8s nodes are cluster-scoped (no namespace
-// label) and carry no edges, so a namespace-narrowed view contains only
-// namespaced entities. The pod→node relationship is compound nesting via
-// labels.node, not an edge — see design.md D31.
-func TestProject_NamespaceFilter_DropsK8sNode(t *testing.T) {
+// Namespace filter retains a K8sNode iff an in-scope pod is scheduled on it
+// (design.md D31). K8s nodes carry no namespace label of their own, so rather
+// than dropping every node under a namespace filter, a node is kept when some
+// pod that survived the namespace filter is hosted on it (labels.node). This
+// restores the cluster>node>pod nesting for nodes relevant to the filtered
+// pods, without surfacing nodes that host none of them.
+func TestProject_NamespaceFilter_KeepsHostingK8sNode(t *testing.T) {
 	g := sampleGraph()
 	v := Project(g, Scope{Namespaces: map[string]struct{}{"shop": {}}})
 
+	ids := map[string]bool{}
 	var k8sCount, podCount int
 	for _, n := range v.Nodes {
+		ids[n.ID()] = true
 		switch n.Type() {
 		case NodeTypeK8sNode:
 			k8sCount++
@@ -161,7 +165,39 @@ func TestProject_NamespaceFilter_DropsK8sNode(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, podCount, "expected 2 pods in shop namespace")
-	assert.Equal(t, 0, k8sCount, "K8s nodes carry no namespace and must drop under a namespace filter")
+	// cluster-alpha/worker-0 hosts p1+p2 (both in shop) → retained.
+	assert.True(t, ids["cluster-alpha/worker-0"], "host node of an in-scope pod must be retained")
+	// cluster-beta/worker-0 hosts only p3 (billing) → no in-scope pod → dropped.
+	assert.False(t, ids["cluster-beta/worker-0"], "node hosting no in-scope pod must drop")
+	assert.Equal(t, 1, k8sCount, "only nodes hosting an in-scope pod survive a namespace filter")
+}
+
+// A K8sNode hosting no pod at all can never have an in-scope pod, so it drops
+// under a namespace filter — but is retained when no namespace filter is set
+// (no regression to the full-topology view).
+func TestProject_NamespaceFilter_DropsPodlessK8sNode(t *testing.T) {
+	all := []GraphNode{
+		&PodNode{IDValue: "c/p1", NameValue: "web", LabelsValue: map[string]string{"cluster": "c", "namespace": "shop", "node": "c/worker-0"}},
+		&K8sNode{IDValue: "c/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "c"}},
+		&K8sNode{IDValue: "c/worker-1", NameValue: "worker-1", LabelsValue: map[string]string{"cluster": "c"}}, // hosts nothing
+	}
+	g := NewGraph(all, nil, time.Now())
+
+	v := Project(g, Scope{Namespaces: map[string]struct{}{"shop": {}}})
+	ids := map[string]bool{}
+	for _, n := range v.Nodes {
+		ids[n.ID()] = true
+	}
+	assert.True(t, ids["c/worker-0"], "node hosting the in-scope pod is retained")
+	assert.False(t, ids["c/worker-1"], "podless node drops under a namespace filter")
+
+	// Sanity: with no namespace filter both nodes remain (full-topology view).
+	vAll := Project(g, Scope{})
+	idsAll := map[string]bool{}
+	for _, n := range vAll.Nodes {
+		idsAll[n.ID()] = true
+	}
+	assert.True(t, idsAll["c/worker-1"], "podless node retained when no namespace filter is set")
 }
 
 // multiClusterPodSampleGraph extends sampleGraph with a `payments` pod in
