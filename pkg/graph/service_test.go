@@ -52,12 +52,15 @@ func TestServiceID_Format(t *testing.T) {
 func TestEdgeTypeServiceSelectsPod_Registered(t *testing.T) {
 	var serviceSelectsPod *EdgeTypeDefinition
 	var podCallsPod *EdgeTypeDefinition
+	var podCallsService *EdgeTypeDefinition
 	for i := range EdgeTypes {
 		switch EdgeTypes[i].Type {
 		case EdgeTypeServiceSelectsPod:
 			serviceSelectsPod = &EdgeTypes[i]
 		case EdgeTypePodCallsPod:
 			podCallsPod = &EdgeTypes[i]
+		case EdgeTypePodCallsService:
+			podCallsService = &EdgeTypes[i]
 		default:
 			// other edge types are not under test here
 		}
@@ -79,11 +82,24 @@ func TestEdgeTypeServiceSelectsPod_Registered(t *testing.T) {
 	if podCallsPod == nil {
 		t.Fatal("EdgeTypePodCallsPod is not registered")
 	}
-	if !containsNodeType(podCallsPod.SourceType, NodeTypeService) {
-		t.Errorf("pod-calls-pod source_type = %v, want to include service", podCallsPod.SourceType)
+	if containsNodeType(podCallsPod.TargetType, NodeTypeService) {
+		t.Errorf("pod-calls-pod target_type = %v, must NOT include service (service targets use pod-calls-service)", podCallsPod.TargetType)
 	}
-	if !containsNodeType(podCallsPod.TargetType, NodeTypeService) {
-		t.Errorf("pod-calls-pod target_type = %v, want to include service", podCallsPod.TargetType)
+	if containsNodeType(podCallsPod.TargetType, NodeTypeOthers) {
+		t.Errorf("pod-calls-pod target_type = %v, must NOT include others (others removed)", podCallsPod.TargetType)
+	}
+
+	if podCallsService == nil {
+		t.Fatal("EdgeTypePodCallsService is not registered")
+	}
+	if podCallsService.MayCrossCluster {
+		t.Error("pod-calls-service must be intra-cluster (may_cross_cluster=false)")
+	}
+	if !containsNodeType(podCallsService.TargetType, NodeTypeService) {
+		t.Errorf("pod-calls-service target_type = %v, want to contain service", podCallsService.TargetType)
+	}
+	if len(podCallsService.TargetType) != 1 {
+		t.Errorf("pod-calls-service target_type = %v, want exactly [service]", podCallsService.TargetType)
 	}
 }
 
