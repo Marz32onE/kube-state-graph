@@ -56,8 +56,8 @@
     "edges": [
       {
         "data": {
-          "id": "8c67d50f-d94a-5518-9a04-6a9ccd8f5711",
-          "type": "pod-calls-pod",
+          "id": "6be35925-314c-5efb-9bf7-02371cf0d820",
+          "type": "pod-calls-service",
           "source": "cluster-alpha/p1",
           "target": "cluster-alpha/shop/payments",
           "labels": {

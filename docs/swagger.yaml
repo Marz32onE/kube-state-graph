@@ -74,6 +74,7 @@ components:
       enum:
       - pod-mounts-pvc
       - pod-calls-pod
+      - pod-calls-service
       - service-selects-pod
       - switch-to-switch
       - node-to-switch
@@ -81,6 +82,7 @@ components:
       x-enum-varnames:
       - EdgeTypePodMountsPVC
       - EdgeTypePodCallsPod
+      - EdgeTypePodCallsService
       - EdgeTypeServiceSelectsPod
       - EdgeTypeSwitchToSwitch
       - EdgeTypeNodeToSwitch
@@ -125,7 +127,6 @@ components:
       - node
       - pvc
       - service
-      - others
       - external
       - switch
       type: string
@@ -134,7 +135,6 @@ components:
       - NodeTypeK8sNode
       - NodeTypePVC
       - NodeTypeService
-      - NodeTypeOthers
       - NodeTypeExternal
       - NodeTypeSwitch
     internal_api.ClusterInfo:

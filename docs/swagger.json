@@ -111,6 +111,7 @@
                 "enum": [
                     "pod-mounts-pvc",
                     "pod-calls-pod",
+                    "pod-calls-service",
                     "service-selects-pod",
                     "switch-to-switch",
                     "node-to-switch"
@@ -119,6 +120,7 @@
                 "x-enum-varnames": [
                     "EdgeTypePodMountsPVC",
                     "EdgeTypePodCallsPod",
+                    "EdgeTypePodCallsService",
                     "EdgeTypeServiceSelectsPod",
                     "EdgeTypeSwitchToSwitch",
                     "EdgeTypeNodeToSwitch"
@@ -182,7 +184,6 @@
                     "node",
                     "pvc",
                     "service",
-                    "others",
                     "external",
                     "switch"
                 ],
@@ -192,7 +193,6 @@
                     "NodeTypeK8sNode",
                     "NodeTypePVC",
                     "NodeTypeService",
-                    "NodeTypeOthers",
                     "NodeTypeExternal",
                     "NodeTypeSwitch"
                 ]

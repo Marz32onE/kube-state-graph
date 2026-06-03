@@ -92,7 +92,7 @@ func buildWithService() graph.View {
 	svc := &graph.ServiceNode{IDValue: "cluster-alpha/shop/payments", NameValue: "payments", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}, IPAddressValue: []string{"10.0.0.5"}}
 	pay0 := &graph.PodNode{IDValue: "cluster-alpha/pay0", NameValue: "payments-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
 	edges := []*graph.Edge{
-		graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, svc.IDValue, map[string]string{"cluster": "cluster-alpha"}),
+		graph.NewEdge(graph.EdgeTypePodCallsService, pod.IDValue, svc.IDValue, map[string]string{"cluster": "cluster-alpha"}),
 		graph.NewEdge(graph.EdgeTypeServiceSelectsPod, svc.IDValue, pay0.IDValue, map[string]string{"namespace": "shop"}),
 	}
 	return graph.View{Nodes: []graph.GraphNode{pod, svc, pay0}, Edges: edges}
