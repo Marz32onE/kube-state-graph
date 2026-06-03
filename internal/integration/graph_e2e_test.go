@@ -172,12 +172,12 @@ func (s *GraphSuite) TestNameFilter_UnknownReturnsEmpty() {
 	s.Contains(bodyStr, `"edges":[]`)
 }
 
-func (s *GraphSuite) TestConnStringUnresolvableProducesOthersNode() {
+func (s *GraphSuite) TestConnStringUnresolvableProducesExternalNode() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	s.Contains(string(body), `"type":"others"`)
+	s.Contains(string(body), `"type":"external"`)
 	s.Contains(string(body), `"name":"https://payments.partner.example/api"`)
 }
 

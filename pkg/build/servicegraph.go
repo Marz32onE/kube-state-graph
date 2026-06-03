@@ -17,7 +17,6 @@ import (
 type ServiceGraphResult struct {
 	Edges         []*graph.Edge
 	ServiceNodes  []*graph.ServiceNode
-	OthersNodes   []*graph.OthersNode
 	ExternalNodes []*graph.ExternalNode
 	SynthPods     []*graph.PodNode
 }
@@ -58,7 +57,6 @@ type sgResolver struct {
 	topology  Topology
 	podByID   map[string]*graph.PodNode // client side: cluster known from metric
 	podByUID  map[string]*graph.PodNode // server side: cluster recovered via index
-	others    map[string]*graph.OthersNode
 	externals map[string]*graph.ExternalNode
 	synthPods map[string]*graph.PodNode
 	services  map[string]*graph.ServiceNode // keyed by service id
@@ -79,7 +77,6 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 		topology:  topology,
 		podByID:   podByID,
 		podByUID:  topology.PodsByUID,
-		others:    map[string]*graph.OthersNode{},
 		externals: map[string]*graph.ExternalNode{},
 		synthPods: map[string]*graph.PodNode{},
 		services:  map[string]*graph.ServiceNode{},
@@ -151,15 +148,11 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	out := ServiceGraphResult{
 		Edges:         edges,
 		ServiceNodes:  make([]*graph.ServiceNode, 0, len(res.services)),
-		OthersNodes:   make([]*graph.OthersNode, 0, len(res.others)),
 		ExternalNodes: make([]*graph.ExternalNode, 0, len(res.externals)),
 		SynthPods:     make([]*graph.PodNode, 0, len(res.synthPods)),
 	}
 	for _, sv := range res.services {
 		out.ServiceNodes = append(out.ServiceNodes, sv)
-	}
-	for _, o := range res.others {
-		out.OthersNodes = append(out.OthersNodes, o)
 	}
 	for _, ext := range res.externals {
 		out.ExternalNodes = append(out.ExternalNodes, ext)
@@ -297,18 +290,6 @@ func (r *sgResolver) external(label string) string {
 	id := graph.ExternalID(label)
 	if _, ok := r.externals[id]; !ok {
 		r.externals[id] = &graph.ExternalNode{
-			IDValue:     id,
-			NameValue:   label,
-			LabelsValue: map[string]string{},
-		}
-	}
-	return id
-}
-
-func (r *sgResolver) othersNode(label string) string { //nolint:unused // removed in Task 5
-	id := graph.OthersID(label)
-	if _, ok := r.others[id]; !ok {
-		r.others[id] = &graph.OthersNode{
 			IDValue:     id,
 			NameValue:   label,
 			LabelsValue: map[string]string{},

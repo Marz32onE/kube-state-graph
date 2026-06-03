@@ -210,7 +210,6 @@ func TestParseServiceGraph_ConnString_HeadlessResolvesToServiceNode_WithFanout(t
 
 	require.Len(t, res.ServiceNodes, 1, "headless string resolves to its service node")
 	assert.Equal(t, "cluster-alpha/db/mongo", res.ServiceNodes[0].IDValue)
-	assert.Empty(t, res.OthersNodes)
 
 	// The call edge to a resolved service node is now typed pod-calls-service.
 	var pcs []*graph.Edge
@@ -247,7 +246,6 @@ func TestParseServiceGraph_ConnString_HeadlessServiceWithNoEndpoints_StillResolv
 
 	require.Len(t, res.ServiceNodes, 1)
 	assert.Equal(t, "cluster-alpha/db/redis", res.ServiceNodes[0].IDValue)
-	assert.Empty(t, res.OthersNodes, "a known service with no endpoints is still a service node, not others")
 	assert.Empty(t, edgesByType(res, graph.EdgeTypeServiceSelectsPod), "no backing pods → no fan-out edges")
 
 	// The call edge to a resolved service node is now typed pod-calls-service.
@@ -301,7 +299,6 @@ func TestParseServiceGraph_ConnString_UnresolvableExternalURL_BecomesExternal(t 
 	assert.Equal(t, "external/https://payments.partner.example/api", ext.IDValue)
 	assert.Equal(t, "https://payments.partner.example/api", ext.NameValue)
 	assert.Empty(t, ext.LabelsValue, "external node carries empty labels")
-	assert.Empty(t, res.OthersNodes, `unresolvable "://" strings now fall back to external, not others`)
 
 	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
 	require.Len(t, pcp, 1)
@@ -324,7 +321,6 @@ func TestParseServiceGraph_ConnString_EmptyUIDWithURL_BothExternal(t *testing.T)
 	})
 	res := parseServiceGraph(vec, sampleTopologyWithServices())
 	assert.Len(t, res.ExternalNodes, 2, `unresolvable "://" labels now fall back to external`)
-	assert.Empty(t, res.OthersNodes, `others nodes must not be produced for unresolvable "://" labels`)
 }
 
 func TestParseServiceGraph_ConnString_NonK8sHostBecomesExternal(t *testing.T) {
@@ -347,7 +343,6 @@ func TestParseServiceGraph_ConnString_NonK8sHostBecomesExternal(t *testing.T) {
 			res := parseServiceGraph(vec, sampleTopologyWithServices())
 			require.Len(t, res.ExternalNodes, 1)
 			assert.Equal(t, graph.ExternalID(server), res.ExternalNodes[0].IDValue)
-			assert.Empty(t, res.OthersNodes)
 			assert.Empty(t, res.ServiceNodes)
 		})
 	}
@@ -367,7 +362,6 @@ func TestParseServiceGraph_ConnString_UnknownServiceBecomesExternal(t *testing.T
 	require.Len(t, res.ExternalNodes, 1)
 	assert.Equal(t, "external/https://ghost-svc.ghost-ns.svc.cluster.local/x", res.ExternalNodes[0].IDValue)
 	assert.Empty(t, res.ExternalNodes[0].LabelsValue)
-	assert.Empty(t, res.OthersNodes, "unknown service must not produce an others node")
 	assert.Empty(t, res.ServiceNodes, "unknown service must not materialise a service node")
 }
 
@@ -409,7 +403,6 @@ func TestParseServiceGraph_UIDPresentSkipsConnStringResolution(t *testing.T) {
 		Value: 5,
 	})
 	res := parseServiceGraph(vec, sampleTopology())
-	assert.Empty(t, res.OthersNodes)
 	assert.Empty(t, res.ExternalNodes)
 	require.Len(t, res.Edges, 1)
 	assert.Equal(t, "cluster-alpha/abc", res.Edges[0].Source)
@@ -587,7 +580,6 @@ func TestParseServiceGraph_ConnStringWinsOverMissingUIDFallback(t *testing.T) {
 	require.Len(t, res.ExternalNodes, 1)
 	assert.Equal(t, "external/http://api.example.com", res.ExternalNodes[0].IDValue)
 	assert.Empty(t, res.ExternalNodes[0].LabelsValue, "external node carries empty labels")
-	assert.Empty(t, res.OthersNodes, "unresolvable connection strings now fall back to external, not others")
 }
 
 func TestParseServiceGraph_ConnStringAndMissingUIDBothExternal(t *testing.T) {
@@ -615,7 +607,6 @@ func TestParseServiceGraph_ConnStringAndMissingUIDBothExternal(t *testing.T) {
 	)
 	res := parseServiceGraph(vec, topo)
 
-	assert.Empty(t, res.OthersNodes, "no others nodes: unresolvable \"://\" now falls back to external")
 	require.Len(t, res.ExternalNodes, 2, `both "://" fallback and missing-UID fallback produce external nodes`)
 	gotIDs := map[string]bool{}
 	for _, ext := range res.ExternalNodes {

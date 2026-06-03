@@ -24,7 +24,6 @@ func TestGolden_GraphResponses(t *testing.T) {
 	scenarios := map[string]graph.View{
 		"single-cluster":       buildSingleCluster(),
 		"two-cluster-cross":    buildTwoClusterCross(),
-		"with-others":          buildWithOthers(),
 		"with-service":         buildWithService(),
 		"name-filter":          buildNameFilter(),
 		"missing-uid-fallback": buildMissingUIDFallback(),
@@ -82,18 +81,6 @@ func buildTwoClusterCross() graph.View {
 		"cluster": "cluster-alpha",
 	})
 	return graph.View{Nodes: []graph.GraphNode{a, b}, Edges: []*graph.Edge{cross}}
-}
-
-func buildWithOthers() graph.View {
-	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "checkout", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "shop"}}
-	oth := &graph.OthersNode{IDValue: "others/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{}}
-	// Client side is a pod, so edge keeps labels.cluster = client cluster.
-	// Server side is `others` (an unresolved "://" connection string, D29;
-	// labels={}, no cluster).
-	edge := graph.NewEdge(graph.EdgeTypePodCallsPod, pod.IDValue, oth.IDValue, map[string]string{
-		"cluster": "cluster-alpha",
-	})
-	return graph.View{Nodes: []graph.GraphNode{pod, oth}, Edges: []*graph.Edge{edge}}
 }
 
 // buildWithService snapshots the D29 connection-string service resolution:

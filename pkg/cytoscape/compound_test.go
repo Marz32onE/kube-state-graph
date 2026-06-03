@@ -85,12 +85,12 @@ func TestSerialiseCytoscape_Parents(t *testing.T) {
 			wantParent: map[string]string{"c1/shop/payments": "cluster/c1", "c1/shop/data": "cluster/c1"},
 		},
 		{
-			name: "others and external have no parent and no cluster group",
+			name: "external has no parent and no cluster group",
 			nodes: []graph.GraphNode{
-				&graph.OthersNode{IDValue: "others/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{}},
+				&graph.ExternalNode{IDValue: "external/http://api.example.com", NameValue: "http://api.example.com", LabelsValue: map[string]string{}},
 				&graph.ExternalNode{IDValue: "external/admin", NameValue: "admin", LabelsValue: map[string]string{}},
 			},
-			wantParent:        map[string]string{"others/http://api.example.com": "", "external/admin": ""},
+			wantParent:        map[string]string{"external/http://api.example.com": "", "external/admin": ""},
 			wantNoClusterNode: true,
 		},
 		{

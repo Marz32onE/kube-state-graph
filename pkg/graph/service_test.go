@@ -85,10 +85,6 @@ func TestEdgeTypeServiceSelectsPod_Registered(t *testing.T) {
 	if containsNodeType(podCallsPod.TargetType, NodeTypeService) {
 		t.Errorf("pod-calls-pod target_type = %v, must NOT include service (service targets use pod-calls-service)", podCallsPod.TargetType)
 	}
-	if containsNodeType(podCallsPod.TargetType, NodeTypeOthers) {
-		t.Errorf("pod-calls-pod target_type = %v, must NOT include others (others removed)", podCallsPod.TargetType)
-	}
-
 	if podCallsService == nil {
 		t.Fatal("EdgeTypePodCallsService is not registered")
 	}
