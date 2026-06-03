@@ -215,7 +215,9 @@ traces_service_graph_request_total{client="checkout",server="https://payments-sv
 	s.Contains(bodyStr, `"type":"service"`, "ClusterIP connection string must resolve to a service node")
 	s.Contains(bodyStr, `"id":"cluster-alpha/shop/payments-svc"`)
 	s.Contains(bodyStr, `"10.96.0.9"`, "service node carries cluster_ip on ipaddress")
-	// pod-calls-pod edge points the client pod at the service node.
+	// pod-calls-service edge points the client pod at the service node.
+	s.Contains(bodyStr, `"type":"pod-calls-service"`,
+		"call edge to a resolved service node is typed pod-calls-service")
 	s.Contains(bodyStr, `"target":"cluster-alpha/shop/payments-svc"`)
 	// service-selects-pod edge fans out to the backing pod (cart = alpha-2).
 	s.Contains(bodyStr, `"type":"service-selects-pod"`)
@@ -255,7 +257,7 @@ traces_service_graph_request_total{client="checkout",server="redis://redis-0.red
 	// The headless per-pod string resolves to the SERVICE node, not pod redis-0.
 	s.Contains(bodyStr, `"id":"cluster-alpha/shop/redis-svc"`, "headless string must resolve to its service node")
 	s.Contains(bodyStr, `"target":"cluster-alpha/shop/redis-svc"`,
-		"pod-calls-pod target is the service node (pod-hostname dropped), not a specific pod")
+		"pod-calls-service target is the service node (pod-hostname dropped), not a specific pod")
 	// service-selects-pod fan-out reaches the backing pod (cart = alpha-2).
 	s.Contains(bodyStr, `"type":"service-selects-pod"`)
 	s.Contains(bodyStr, `"target":"cluster-alpha/alpha-2"`,
@@ -309,7 +311,7 @@ traces_service_graph_request_total{client="checkout",server="http://user/api",cl
 	s.NotContains(bodyStr, `"name":"unknown"`, "no node named unknown should appear")
 
 	// The anchored matcher does NOT catch a host that merely contains "user":
-	// http://user/api survives and resolves to an others node.
+	// http://user/api survives and resolves to an external node.
 	s.Contains(bodyStr, `"name":"http://user/api"`,
 		"connection string containing (but not equal to) user must survive the anchored matcher")
 }
@@ -331,7 +333,7 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 	resp := s.httpGet(srv.URL + "/v1/edge-types")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	for _, et := range []string{"pod-mounts-pvc", "pod-calls-pod"} {
+	for _, et := range []string{"pod-mounts-pvc", "pod-calls-pod", "pod-calls-service"} {
 		s.Contains(string(body), et)
 	}
 }
