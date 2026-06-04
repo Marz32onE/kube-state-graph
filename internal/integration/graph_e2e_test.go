@@ -264,6 +264,52 @@ traces_service_graph_request_total{client="checkout",server="redis://redis-0.red
 		"service-selects-pod edge resolves the backing pod via endpointslice targetref")
 }
 
+// TestConnStringSelfLoopUIDResolvesToServiceNode exercises design.md D33
+// end-to-end against a real VM: a buggy exporter stamps the SAME pod UID on
+// BOTH client_k8s_pod_uid and server_k8s_pod_uid for a "://" peer (the real
+// remote lives only in the server label). Without the self-loop guard the
+// server would collapse onto the caller's own pod (a self-loop pod-calls-pod)
+// and no service node would materialise. The guard clears the bogus colliding
+// UID on the "://" side so it falls through to D29 Stage 0, resolves to the
+// service node, and fans out to the backing pod. A unique service name
+// (selfloop-svc) proves the resolution came from THIS colliding-UID series.
+func (s *GraphSuite) TestConnStringSelfLoopUIDResolvesToServiceNode() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP kube_service_info dummy
+kube_service_info{cluster="cluster-alpha",namespace="shop",service="selfloop-svc",cluster_ip="10.96.0.77",test=%q} 1 %d
+kube_endpointslice_labels{cluster="cluster-alpha",namespace="shop",endpointslice="selfloop-svc-x1",label_kubernetes_io_service_name="selfloop-svc",test=%q} 1 %d
+kube_endpointslice_endpoints{cluster="cluster-alpha",namespace="shop",endpointslice="selfloop-svc-x1",targetref_kind="Pod",targetref_name="cart",targetref_namespace="shop",test=%q} 1 %d
+traces_service_graph_request_total{client="checkout",server="https://selfloop-svc.shop.svc.cluster.local/api",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="checkout",server="https://selfloop-svc.shop.svc.cluster.local/api",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t1, disc, t1, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	// One poll gates the whole batch: IngestExpFmt POSTs all series (gauge +
+	// both counter samples) in a single request, so once kube_service_info is
+	// queryable the rate() series are too — matching the sibling conn-string
+	// tests, which assert their pod-calls-service edges off this one wait.
+	s.Require().True(s.WaitForSeries(`kube_service_info{service="selfloop-svc",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested selfloop kube_service_info")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// Despite the colliding self-loop UID, the "://" server resolves to its
+	// service node — proves the D33 guard cleared the bogus UID.
+	s.Contains(bodyStr, `"id":"cluster-alpha/shop/selfloop-svc"`,
+		"colliding self-loop UID must not block service resolution of the '://' side")
+	s.Contains(bodyStr, `"target":"cluster-alpha/shop/selfloop-svc"`,
+		"call edge targets the resolved service node, not the caller's own pod")
+	s.Contains(bodyStr, `"type":"pod-calls-service"`)
+	s.Contains(bodyStr, `"type":"service-selects-pod"`,
+		"resolved service fans out to its backing pod")
+}
+
 // TestSentinelPeersExcludedAtQueryLayer exercises design.md D30 end-to-end
 // against a real VM: the servicegraph connector's virtual peers (client="user",
 // server="unknown") are dropped by the anchored selector matchers

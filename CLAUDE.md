@@ -149,6 +149,27 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   `labels.cluster` is omitted whenever the client side resolves to a non-pod node,
   whether via the connection-string rule (`service` / `external`) or this fallback
   (`external`).
+- **Self-loop UID guard** (D33, always on, no knob): a pre-resolution
+  normalisation in `parseServiceGraph`, applied **before** the resolution order
+  above. Some `servicegraph` exporters stamp the **caller's own** pod UID onto
+  **both** sides for a peer they could only identify as a `"://"` connection
+  string, so `client_k8s_pod_uid == server_k8s_pod_uid` (non-empty, equal) while
+  the real target lives only in the `"://"` label. A populated UID normally
+  short-circuits Stage 0 (step 1 above), so the `"://"` side would collapse onto
+  the caller's own pod — a self-loop `pod-calls-pod` edge, **no service node**.
+  The guard: when the two UIDs are non-empty AND equal, clear the UID on **any
+  side whose label contains `"://"`** (that side only), so it falls through to
+  connection-string resolution; the non-`"://"` side keeps the shared UID and
+  resolves to its real pod. Fires ONLY on the conjunction (UID collision AND a
+  `"://"` label on the cleared side): differing UIDs are untouched (`"://"` with
+  a populated UID still takes pod-UID resolution), and a UID collision with no
+  `"://"` label stays a legitimate `pod-calls-pod` self-loop. Do NOT broaden this
+  into a global "`"://"` always beats UID" reorder — that breaks the
+  populated-UID-means-pod contract; the collision is the specific fingerprint of
+  the exporter defect. Determinism unaffected (pure function of the two UID + two
+  string labels); no new node/edge type. Tests:
+  `pkg/build/servicegraph_test.go` (`TestParseServiceGraph_SelfLoopUID_*`) and
+  `internal/integration` (`TestConnStringSelfLoopUIDResolvesToServiceNode`).
 - **Sentinel-endpoint exclusion at the query layer** (D30, hardcoded — no knob):
   the `servicegraph` connector emits virtual peers for endpoints it cannot pair
   to an instrumented span — an uninstrumented caller as `client="user"`, an

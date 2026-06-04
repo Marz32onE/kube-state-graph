@@ -108,6 +108,8 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 		clientNS := string(s.Metric["client_k8s_namespace_name"])
 		serverNS := string(s.Metric["server_k8s_namespace_name"])
 
+		clientUID, serverUID = normalizeSelfLoopUIDs(clientUID, serverUID, clientLabel, serverLabel)
+
 		srcID, srcIsPod := res.resolveClient(clientLabel, traceCluster, clientUID, clientNS)
 		tgtID := res.resolveServer(serverLabel, traceCluster, serverUID, serverNS)
 
@@ -163,6 +165,36 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	return out
 }
 
+// isConnString reports whether a client/server label is a "://" connection
+// string (D29) rather than a workload name or pod UID. It is the single
+// definition of the connection-string discriminator, shared by resolveEmptyUID
+// (Stage 0 routing) and normalizeSelfLoopUIDs (D33) so the two can never drift.
+func isConnString(label string) bool { return strings.Contains(label, "://") }
+
+// normalizeSelfLoopUIDs implements the D33 self-loop UID guard. Some
+// service-graph exporters stamp BOTH client_k8s_pod_uid and server_k8s_pod_uid
+// with the SAME pod UID for a peer they could only identify as a "://"
+// connection string (the real remote lives in the client/server label, not in
+// a pod UID). A non-empty UID normally short-circuits D29 Stage 0
+// (resolveEmptyUID), so the "://" side would collapse onto the caller's own pod
+// — a self-loop pod-calls-pod edge — and no service node would ever
+// materialise. When the two UIDs collide (non-empty and equal), the UID on any
+// "://" side is bogus and is cleared so that side falls through to
+// connection-string resolution; the non-"://" side keeps the shared UID and
+// resolves to its real pod.
+func normalizeSelfLoopUIDs(clientUID, serverUID, clientLabel, serverLabel string) (string, string) {
+	if clientUID == "" || clientUID != serverUID {
+		return clientUID, serverUID
+	}
+	if isConnString(clientLabel) {
+		clientUID = ""
+	}
+	if isConnString(serverLabel) {
+		serverUID = ""
+	}
+	return clientUID, serverUID
+}
+
 // resolveEmptyUID resolves an endpoint that carries no pod UID — the shared
 // prologue for both the client and server sides. Per the D29 resolution order:
 //  1. a "://" label runs connection-string resolution (Stage 0: service / external)
@@ -173,7 +205,7 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 // for non-empty UIDs.) Returns (id, isPod); isPod is always false here — a
 // no-UID endpoint resolves to a service or external node, never a pod.
 func (r *sgResolver) resolveEmptyUID(label, traceCluster string) (string, bool) {
-	if strings.Contains(label, "://") {
+	if isConnString(label) {
 		return r.resolveConnString(label, traceCluster), false // Stage 0 — service or external, never a pod
 	}
 	if label != "" {

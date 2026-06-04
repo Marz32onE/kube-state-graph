@@ -1023,6 +1023,51 @@ Alternatives considered:
 - **Literal copy / vendor of `pkg/` into the gateway** (rejected — the framing was "same logic", and a copy drifts: every bug fix and contract change would have to be applied twice, defeating the single-source-of-truth goal).
 - **Consumer operates on the native `*graph.Graph` end-to-end** instead of the Cytoscape DTO (rejected — the switch graph arrives from an external HTTP backend as Cytoscape JSON, so it must be decoded into *some* DTO regardless; converting it into native `graph` types would require an escape hatch through the `GraphNode` seal (D11) plus an extra conversion — i.e. **more** work than merging at the DTO layer the gateway already uses).
 
+### D33. Self-loop UID guard — a colliding pod UID never blocks `"://"` service resolution
+
+D29 Stage 0 (connection-string resolution) runs **only when the endpoint's pod UID is empty** — a non-empty `client_k8s_pod_uid` / `server_k8s_pod_uid` short-circuits straight to pod-UID resolution (D27 step 2), so the `"://"` label on that side is never read. This is correct when the UID genuinely identifies the peer's pod. It fails for a class of **service-graph exporter defect**: some `servicegraph` producers, when they cannot identify a remote peer (the real remote is only a `"://"` connection string), stamp the **caller's own** pod UID onto *both* sides — `client_k8s_pod_uid == server_k8s_pod_uid` (non-empty, equal) — while the actual target lives solely in the `"://"` label. Under D29's precedence the `"://"` side then collapses onto the caller's own pod: a **self-loop `pod-calls-pod` edge** is emitted and **no service node materialises**. The user-visible symptom is "the `"://"` mapping to a service failed" even though `kube_service_info`, endpointslices, and the connection string are all present and correct.
+
+**Decision.** In `parseServiceGraph`, before resolving either endpoint, apply a narrow guard: when `client_k8s_pod_uid` and `server_k8s_pod_uid` are **both non-empty and equal**, treat the UID on any side whose label contains `"://"` as **bogus** and clear it (set to `""`) for that side only. The cleared side then follows the normal resolution order and reaches D29 Stage 0 (service / external); the **other** side keeps the shared UID and resolves to its real pod. The result for the canonical case (real caller → `"://"` remote, both UIDs = caller's) is the intended `pod-calls-service` edge plus `service-selects-pod` fan-out, instead of a self-loop `pod-calls-pod`.
+
+```go
+// D33 self-loop UID guard (pkg/build/servicegraph.go). The parse loop calls
+// clientUID, serverUID = normalizeSelfLoopUIDs(clientUID, serverUID, clientLabel, serverLabel)
+// before resolving either side; isConnString is the single "://" discriminator
+// shared with resolveEmptyUID's Stage-0 routing so the two cannot drift.
+func normalizeSelfLoopUIDs(clientUID, serverUID, clientLabel, serverLabel string) (string, string) {
+    if clientUID == "" || clientUID != serverUID {
+        return clientUID, serverUID
+    }
+    if isConnString(clientLabel) {
+        clientUID = ""
+    }
+    if isConnString(serverLabel) {
+        serverUID = ""
+    }
+    return clientUID, serverUID
+}
+```
+
+**Scope — deliberately narrow.** The guard keys on the **conjunction** of (a) a non-empty UID collision AND (b) a `"://"` label on the cleared side. It does NOT fire when:
+
+- the two UIDs differ (the normal case — a real caller calling a real distinct pod; `"://"` with a populated UID still correctly takes pod-UID resolution, per `TestParseServiceGraph_UIDPresentSkipsConnStringResolution`);
+- the UIDs collide but neither label is a `"://"` string (a legitimate in-process self-call stays a `pod-calls-pod` self-loop — `TestParseServiceGraph_SelfLoopUID_NoConnString_StaysPodSelfLoop`).
+
+A legitimate self-call *through* a service (`pod → http://my-svc.ns/ → same pod`) also satisfies (a)+(b) and is rerouted to `pod-calls-service` + fan-out — which is the more faithful representation of a call that physically traversed the Service, so the reroute is correct there too, not merely tolerable.
+
+**Why clear the UID rather than reorder precedence globally.** Flipping D29 so a `"://"` label *always* wins over a populated UID would change resolution for every instrumented peer and break the contract that a populated UID identifies a pod (D27 step 2). The collision `clientUID == serverUID` is the specific, observable fingerprint of the exporter defect — gating on it leaves all healthy series untouched and confines the behavioural change to exactly the malformed shape.
+
+**Per-endpoint resolution order (refines D29).** The guard is a **pre-resolution normalisation** of the UID inputs, evaluated once per series before Stage 0 / Stage 2. It changes only which branch each side enters; the four-step order (connection-string → pod-UID → missing-UID fallback → drop) and every node/edge contract are otherwise unchanged. The edge `labels.cluster` rule (D9) still derives from whether the **resolved** client side is a pod: a client `"://"` side cleared by this guard resolves to a service / external node, so the edge omits `cluster` — consistent with every other non-pod client side.
+
+**Determinism (D6).** The guard is a pure function of the series' two UID labels and the two string labels; identical upstream data yields identical clearing, so `SortNodes` / `SortEdges` and the `{apiVersion, clusters, elements}` body shape are unaffected. No new node or edge type is introduced — the output reuses the existing `service` / `external` nodes and `pod-calls-service` / `service-selects-pod` / `pod-calls-pod` edges, so no golden **shape** changes (the wire form is already covered by the `with-service` golden); coverage of the guard itself lives in the `pkg/build` unit tests (`TestParseServiceGraph_SelfLoopUID_*`) and the `internal/integration` end-to-end test (`TestConnStringSelfLoopUIDResolvesToServiceNode`).
+
+Why / Alternatives considered:
+
+- **Do nothing — fix the exporter instead** (the genuinely correct root-cause fix is to stop the producer copying the caller's UID onto the unresolved peer; rejected as the *only* remedy because ksg is deployed against producers operators do not always control, and silent self-loops are a confusing, hard-to-attribute symptom. The guard is a defensive complement to, not a replacement for, fixing the producer — documented in `docs/operations.md`).
+- **Reorder D29 so `"://"` always beats a populated UID** (rejected — over-broad; changes healthy instrumented series and violates the populated-UID-means-pod contract. See "Why clear the UID" above).
+- **Drop the self-loop edge entirely when UIDs collide** (rejected — discards a real dependency the `"://"` label fully describes; resolving it to the service is strictly more informative than dropping).
+- **Gate behind a config knob** (rejected — consistent with D29 / D30's no-knob stance; the collision fingerprint is specific enough that the guard is safe to apply unconditionally, and an always-on defensive normalisation needs no operator tuning).
+
 ## Risks / Trade-offs
 
 - [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost.
@@ -1042,6 +1087,7 @@ Alternatives considered:
 - [Missing-UID fallback floods graph with `external/*` nodes on producer regression] → A Beyla / Alloy regression that strips `k8s.pod.uid` resource attributes will now surface as a wave of inferred `external/<client>` and `external/<server>` nodes instead of silently dropped edges. This is intentional — the alternative was silent data loss — so a sudden growth of `type="external"` node count is a clean signal to investigate the trace pipeline rather than the API. See D27.
 - [Service fan-out cardinality from on-demand `service-selects-pod` materialisation] → A hot ClusterIP service named by a `"://"` connection string materialises one `service-selects-pod` edge to **every** backing pod in `EndpointsByService` on demand (D29). A service fronting hundreds of pods adds hundreds of edges to a single build. Bounded in practice because only *referenced* services materialise (a service nothing calls adds nothing), and per-query upstream cost is still governed by VictoriaMetrics search limits (D19); operators with very-wide services should scope requests with `?cluster=` / `?namespace=` and rely on `--build-timeout`. See D29.
 - [Expanded KSM resource / RBAC surface for service resolution] → Full connection-string resolution (D29) requires `kube_service_info`, `kube_endpointslice_endpoints`, and `kube_endpointslice_labels`, which means KSM must export services + endpointslices (`--resources`, `--metric-allowlist`) and the scrape ServiceAccount must hold `list`/`watch` on services and endpointslices. Absence degrades gracefully: every `"://"` label simply falls back to an `external/<label>` node, so the feature is additive on the topology surface and never fails a build. Document the required KSM resources / RBAC in `docs/operations.md`. See D29.
+- [Self-loop UID guard masks a producer defect instead of fixing it] → The D33 guard reroutes a `"://"` peer to its service node when an exporter stamps the caller's own pod UID on both sides (`client_k8s_pod_uid == server_k8s_pod_uid`). This makes the graph correct but hides the underlying producer bug — operators see a healthy `pod-calls-service` edge and may never learn their `servicegraph` exporter is mis-stamping UIDs. The guard is intentionally a defensive complement, not a substitute, for fixing the producer; document the root-cause fix in `docs/operations.md`. A genuine self-call *through* a Service is also rerouted from a `pod-calls-pod` self-loop to `pod-calls-service` + fan-out — accepted as the more faithful representation. See D33.
 - [Sentinel exclusion hides uninstrumented ingress] → Dropping `client` / `server ∈ {user, unknown}` series at the query layer (D30) removes the connector's virtual `user` node, so uninstrumented end-user / external ingress traffic is no longer visible as a `pod-calls-pod` edge. This is intentional — the node resolves to nothing actionable and clutters every graph — but operators who want ingress visibility lose it with no knob in v1; a follow-up opt-in can reintroduce it. A workload whose OTel `service.name` is literally `user` or `unknown` is also excluded — accepted as pathological, since those strings are de-facto reserved by the servicegraph connector. Distinct from the `cluster="unknown"` bucketing (a different label, unaffected). See D30.
 
 ## Migration Plan

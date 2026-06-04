@@ -408,6 +408,93 @@ func TestParseServiceGraph_UIDPresentSkipsConnStringResolution(t *testing.T) {
 	assert.Equal(t, "cluster-alpha/abc", res.Edges[0].Source)
 }
 
+// ---------------------------------------------------------------------------
+// D33: self-loop UID guard — an exporter that stamps the SAME pod UID on both
+// client and server for a "://" peer must not collapse the URL side onto the
+// caller's own pod. The "://" side's UID is treated as bogus so it falls
+// through to D29 Stage 0 (connection-string resolution).
+// ---------------------------------------------------------------------------
+
+func TestParseServiceGraph_SelfLoopUID_ServerConnString_ResolvesToService(t *testing.T) {
+	// Exporter bug: client_k8s_pod_uid == server_k8s_pod_uid ("abc") while the
+	// real server is the "://" label. Without the guard, the server collapses to
+	// pod "abc" (a self-loop pod-calls-pod) and no service node materialises.
+	vec := sampleVec(model.Sample{
+		Metric: model.Metric{
+			"client":             "checkout",
+			"server":             "https://payments.shop.svc.cluster.local/api",
+			"cluster":            "cluster-alpha",
+			"client_k8s_pod_uid": "abc",
+			"server_k8s_pod_uid": "abc",
+		},
+		Value: 5,
+	})
+	res := parseServiceGraph(vec, sampleTopologyWithServices())
+
+	require.Len(t, res.ServiceNodes, 1, "bogus self-loop UID cleared → server resolves to its service node")
+	assert.Equal(t, "cluster-alpha/shop/payments", res.ServiceNodes[0].IDValue)
+
+	pcs := edgesByType(res, graph.EdgeTypePodCallsService)
+	require.Len(t, pcs, 1, "one pod-calls-service edge from the caller pod to the service")
+	assert.Equal(t, "cluster-alpha/abc", pcs[0].Source, "client keeps its real UID")
+	assert.Equal(t, "cluster-alpha/shop/payments", pcs[0].Target)
+	assert.Equal(t, "cluster-alpha", pcs[0].Labels["cluster"], "client side is still a pod → edge carries cluster")
+
+	ssp := edgesByType(res, graph.EdgeTypeServiceSelectsPod)
+	require.Len(t, ssp, 2, "service fans out to its two backing pods")
+
+	for _, e := range edgesByType(res, graph.EdgeTypePodCallsPod) {
+		assert.NotEqual(t, e.Source, e.Target, "no self-loop pod-calls-pod edge survives")
+	}
+}
+
+func TestParseServiceGraph_SelfLoopUID_ClientConnString_ResolvesToService(t *testing.T) {
+	// Symmetric: the "://" is on the CLIENT side, UIDs collide. The client UID is
+	// the bogus one → client resolves to the service node, server keeps the pod.
+	vec := sampleVec(model.Sample{
+		Metric: model.Metric{
+			"client":             "https://payments.shop.svc.cluster.local/api",
+			"server":             "checkout",
+			"cluster":            "cluster-alpha",
+			"client_k8s_pod_uid": "abc",
+			"server_k8s_pod_uid": "abc",
+		},
+		Value: 5,
+	})
+	res := parseServiceGraph(vec, sampleTopologyWithServices())
+
+	require.Len(t, res.ServiceNodes, 1)
+	assert.Equal(t, "cluster-alpha/shop/payments", res.ServiceNodes[0].IDValue)
+
+	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
+	require.Len(t, pcp, 1, "client → service, server → pod: one pod-calls-pod from service to pod")
+	assert.Equal(t, "cluster-alpha/shop/payments", pcp[0].Source, "client '://' side → service node")
+	assert.Equal(t, "cluster-alpha/abc", pcp[0].Target, "server keeps its real UID")
+	assert.NotContains(t, pcp[0].Labels, "cluster", "client resolved to a non-pod → edge omits cluster")
+}
+
+func TestParseServiceGraph_SelfLoopUID_NoConnString_StaysPodSelfLoop(t *testing.T) {
+	// Guard boundary: UIDs collide but NEITHER label is a "://" string. The guard
+	// must NOT fire — a legitimate in-process self-call stays a pod-calls-pod
+	// self-loop. Documents that the guard keys on "://", not on the collision alone.
+	vec := sampleVec(model.Sample{
+		Metric: model.Metric{
+			"client":             "checkout",
+			"server":             "checkout",
+			"cluster":            "cluster-alpha",
+			"client_k8s_pod_uid": "abc",
+			"server_k8s_pod_uid": "abc",
+		},
+		Value: 5,
+	})
+	res := parseServiceGraph(vec, sampleTopologyWithServices())
+	assert.Empty(t, res.ServiceNodes, "no '://' label → guard does not fire")
+	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
+	require.Len(t, pcp, 1)
+	assert.Equal(t, "cluster-alpha/abc", pcp[0].Source)
+	assert.Equal(t, "cluster-alpha/abc", pcp[0].Target, "stays a pod self-loop")
+}
+
 func TestParseServiceGraph_GhostFallback_ServerUIDUnknown(t *testing.T) {
 	vec := sampleVec(model.Sample{
 		Metric: model.Metric{
