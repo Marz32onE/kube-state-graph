@@ -707,41 +707,41 @@ Implements D34. Enriches every `type="pod"` node with two strict-string `labels`
 
 ### 39.A PromQL layer
 
-- [ ] 39.A.1 `pkg/promql/queries.go`: add bare `Query` constants `QPodOwner = "kube_pod_owner"` and `QReplicaSetOwner = "kube_replicaset_owner"` (constants stay bare so `query` / `query_name` self-metric + span dimensions are prefix-stable, per D26).
-- [ ] 39.A.2 `pkg/promql/queries.go`: add `Render` cases for both — `last_over_time(%skube_pod_owner[%s])` and `last_over_time(%skube_replicaset_owner[%s])` with the `r.Prefix` applied (same shape as the other KSM topology legs).
-- [ ] 39.A.3 `pkg/promql/queries_test.go`: extend the render table with `pod-owner` / `replicaset-owner` rows (bare + `o11y_` prefixed) and assert prefix application; assert the service-graph / `up` probe queries remain unprefixed.
+- [x] 39.A.1 `pkg/promql/queries.go`: add bare `Query` constants `QPodOwner = "kube_pod_owner"` and `QReplicaSetOwner = "kube_replicaset_owner"` (constants stay bare so `query` / `query_name` self-metric + span dimensions are prefix-stable, per D26).
+- [x] 39.A.2 `pkg/promql/queries.go`: add `Render` cases for both — `last_over_time(%skube_pod_owner[%s])` and `last_over_time(%skube_replicaset_owner[%s])` with the `r.Prefix` applied (same shape as the other KSM topology legs).
+- [x] 39.A.3 `pkg/promql/queries_test.go`: extend the render table with `pod-owner` / `replicaset-owner` rows (bare + `o11y_` prefixed) and assert prefix application; assert the service-graph / `up` probe queries remain unprefixed.
 
 ### 39.B Topology reader + owner join
 
-- [ ] 39.B.1 `pkg/build/topology.go`: add two new legs to the `ReadTopology` errgroup (8 → 10 parallel queries) issuing `QPodOwner` and `QReplicaSetOwner`; thread their `model.Vector` results into `parseTopology`'s signature and the `kube_state_graph_*` result-count map.
-- [ ] 39.B.2 `pkg/build/topology.go`: in `parseTopology`, build a `replicaSetOwner` index keyed by `(cluster, namespace, replicaset)` → `(owner_kind, owner_name)` from the `kube_replicaset_owner` vector (keep only `owner_kind="Deployment"` rows; ignore the rest).
-- [ ] 39.B.3 `pkg/build/topology.go`: build a `podController` index keyed by `(cluster, namespace, pod)` → `(owner_kind, owner_name)` from the `kube_pod_owner` vector, selecting the sample with `owner_is_controller="true"`; on multiple controller rows pick the lexically-smallest `(owner_kind, owner_name)` for determinism (D6).
-- [ ] 39.B.4 `pkg/build/topology.go`: in the per-pod assembly (after `mergeSameUIDLabels`), look up the pod's controller owner. If `owner_kind=="ReplicaSet"`, resolve via the `replicaSetOwner` index to its Deployment (fall back to the ReplicaSet when absent). Stamp `labels["owner_kind"]` / `labels["owner_name"]` only when a controller owner exists — never write empty strings. Resolve the pod key from the merged pod observation's `(cluster, namespace, pod-name)`.
-- [ ] 39.B.5 `pkg/build/topology.go`: confirm the owner labels survive pod-restart collapse (latest-UID pod keeps its owner labels) and the same-UID label merge does not clobber `owner_*` (they are set after the merge, on the canonical entity only).
+- [x] 39.B.1 `pkg/build/topology.go`: add two new legs to the `ReadTopology` errgroup (8 → 10 parallel queries) issuing `QPodOwner` and `QReplicaSetOwner`; thread their `model.Vector` results into `parseTopology`'s signature and the `kube_state_graph_*` result-count map.
+- [x] 39.B.2 `pkg/build/topology.go`: in `parseTopology`, build a `replicaSetOwner` index keyed by `(cluster, namespace, replicaset)` → `(owner_kind, owner_name)` from the `kube_replicaset_owner` vector (keep only `owner_kind="Deployment"` rows; ignore the rest).
+- [x] 39.B.3 `pkg/build/topology.go`: build a `podController` index keyed by `(cluster, namespace, pod)` → `(owner_kind, owner_name)` from the `kube_pod_owner` vector, selecting the sample with `owner_is_controller="true"`; on multiple controller rows pick the lexically-smallest `(owner_kind, owner_name)` for determinism (D6).
+- [x] 39.B.4 `pkg/build/topology.go`: in the per-pod assembly (after `mergeSameUIDLabels`), look up the pod's controller owner. If `owner_kind=="ReplicaSet"`, resolve via the `replicaSetOwner` index to its Deployment (fall back to the ReplicaSet when absent). Stamp `labels["owner_kind"]` / `labels["owner_name"]` only when a controller owner exists — never write empty strings. Resolve the pod key from the merged pod observation's `(cluster, namespace, pod-name)`.
+- [x] 39.B.5 `pkg/build/topology.go`: confirm the owner labels survive pod-restart collapse (latest-UID pod keeps its owner labels) and the same-UID label merge does not clobber `owner_*` (they are set after the merge, on the canonical entity only).
 
 ### 39.C Unit tests (no upstream I/O)
 
-- [ ] 39.C.1 `pkg/build/topology_test.go`: add `kube_pod_owner` + `kube_replicaset_owner` fixture vectors and assert: (a) RS→Deployment resolution stamps `owner_kind="Deployment"` / `owner_name=<deployment>`; (b) bare RS keeps `owner_kind="ReplicaSet"`; (c) direct `DaemonSet` / `StatefulSet` owner surfaced verbatim with no RS lookup; (d) no controller owner → both keys absent (not empty); (e) owner metrics absent entirely → valid topology, no owner labels, no error.
-- [ ] 39.C.2 `pkg/build/topology_test.go`: determinism test — two `kube_pod_owner` controller rows for one pod resolve to the lexically-smallest `(owner_kind, owner_name)` regardless of vector order.
+- [x] 39.C.1 `pkg/build/topology_test.go`: add `kube_pod_owner` + `kube_replicaset_owner` fixture vectors and assert: (a) RS→Deployment resolution stamps `owner_kind="Deployment"` / `owner_name=<deployment>`; (b) bare RS keeps `owner_kind="ReplicaSet"`; (c) direct `DaemonSet` / `StatefulSet` owner surfaced verbatim with no RS lookup; (d) no controller owner → both keys absent (not empty); (e) owner metrics absent entirely → valid topology, no owner labels, no error.
+- [x] 39.C.2 `pkg/build/topology_test.go`: determinism test — two `kube_pod_owner` controller rows for one pod resolve to the lexically-smallest `(owner_kind, owner_name)` regardless of vector order.
 
 ### 39.D Integration test (Docker / testcontainers)
 
-- [ ] 39.D.1 `internal/integration/graph_e2e_test.go`: add `TestPodOwnerLabelsSkipReplicaSet` — ingest `kube_pod_info` + `kube_pod_owner{owner_kind="ReplicaSet", owner_name="checkout-7f9c", owner_is_controller="true"}` + `kube_replicaset_owner{replicaset="checkout-7f9c", owner_kind="Deployment", owner_name="checkout"}`, then assert `/v1/graph` emits the pod node with `labels.owner_kind="Deployment"` and `labels.owner_name="checkout"`. Add a second pod with no owner series asserting both keys are absent. Gate with `SkipIfDockerUnavailable`.
+- [x] 39.D.1 `internal/integration/graph_e2e_test.go`: add `TestPodOwnerLabelsSkipReplicaSet` — ingest `kube_pod_info` + `kube_pod_owner{owner_kind="ReplicaSet", owner_name="checkout-7f9c", owner_is_controller="true"}` + `kube_replicaset_owner{replicaset="checkout-7f9c", owner_kind="Deployment", owner_name="checkout"}`, then assert `/v1/graph` emits the pod node with `labels.owner_kind="Deployment"` and `labels.owner_name="checkout"`. Add a second pod with no owner series asserting both keys are absent. Gate with `SkipIfDockerUnavailable`.
 
 ### 39.E Golden + property tests
 
-- [ ] 39.E.1 `internal/api/golden_test.go` / `testdata/golden/*.json`: if any golden fixture's pod nodes now gain `owner_*` labels (or to add a dedicated owner-bearing fixture), regenerate with `go test ./internal/api/ -update -run Golden` and review the diff for determinism (sorted output, no empty-string owner keys).
-- [ ] 39.E.2 `pkg/graph/property_test.go`: if the random-graph generator emits pod labels, ensure `owner_*` (when present) are non-empty strings — invariant holds under the strict `map[string]string` contract (no change expected if the generator does not synthesise owners).
+- [x] 39.E.1 `internal/api/golden_test.go` / `testdata/golden/*.json`: if any golden fixture's pod nodes now gain `owner_*` labels (or to add a dedicated owner-bearing fixture), regenerate with `go test ./internal/api/ -update -run Golden` and review the diff for determinism (sorted output, no empty-string owner keys).
+- [x] 39.E.2 `pkg/graph/property_test.go`: if the random-graph generator emits pod labels, ensure `owner_*` (when present) are non-empty strings — invariant holds under the strict `map[string]string` contract (no change expected if the generator does not synthesise owners).
 
 ### 39.F Docs
 
-- [ ] 39.F.1 `CLAUDE.md`: add `owner_kind` / `owner_name` to the pod-label description and note the ReplicaSet-skip rule + the two new KSM series in the metric-prefix list (the `KSG_METRIC_PREFIX` knob bullet).
-- [ ] 39.F.2 `README.md` + `README.zh-tw.md`: document the pod owner labels and the ReplicaSet→Deployment skip in the node-attributes / KSM-requirements section.
+- [x] 39.F.1 `CLAUDE.md`: add `owner_kind` / `owner_name` to the pod-label description and note the ReplicaSet-skip rule + the two new KSM series in the metric-prefix list (the `KSG_METRIC_PREFIX` knob bullet).
+- [x] 39.F.2 `README.md` + `README.zh-tw.md`: document the pod owner labels and the ReplicaSet→Deployment skip in the node-attributes / KSM-requirements section.
 - [ ] 39.F.3 `docs/operations.md`: note that `kube_pod_owner` / `kube_replicaset_owner` are KSM defaults (no allowlist) and that trimming KSM `--resources` silently disables owner labels (graceful degradation).
-- [ ] 39.F.4 OpenAPI: if the handler `@-annotation` example bodies enumerate pod `labels`, add `owner_kind` / `owner_name`; run `make docs` + `make check-docs`. (Note: handwritten swagger annotation drift is NOT caught by `check-docs` — verify by hand.)
+- [x] 39.F.4 OpenAPI: if the handler `@-annotation` example bodies enumerate pod `labels`, add `owner_kind` / `owner_name`; run `make docs` + `make check-docs`. (Note: handwritten swagger annotation drift is NOT caught by `check-docs` — verify by hand.)
 
 ### 39.G Validation
 
-- [ ] 39.G.1 `go build ./...` + `make test` (unit/component/golden/property + integration where Docker is available).
-- [ ] 39.G.2 `make vet`, `make lint`, `make verify-mocks` (no interface signatures changed — expect up-to-date), `make check-docs`, `make vuln`.
-- [ ] 39.G.3 `openspec validate "add-k8s-pod-graph-api"` (valid) and confirm `graph-api-gateway` sibling still builds/tests against the updated engine (additive label only — expect no break).
+- [x] 39.G.1 `go build ./...` + `make test` (unit/component/golden/property + integration where Docker is available).
+- [x] 39.G.2 `make vet`, `make lint`, `make verify-mocks` (no interface signatures changed — expect up-to-date), `make check-docs`, `make vuln`.
+- [x] 39.G.3 `openspec validate "add-k8s-pod-graph-api"` (valid) and confirm `graph-api-gateway` sibling still builds/tests against the updated engine (additive label only — expect no break).

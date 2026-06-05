@@ -172,6 +172,61 @@ func (s *GraphSuite) TestNameFilter_UnknownReturnsEmpty() {
 	s.Contains(bodyStr, `"edges":[]`)
 }
 
+// TestPodOwnerLabelsSkipReplicaSet — D34. Ingest kube_pod_owner for the
+// `checkout` pod pointing at a ReplicaSet, plus kube_replicaset_owner mapping
+// that ReplicaSet to a Deployment; assert /v1/graph stamps the pod node with
+// owner_kind=Deployment / owner_name=<deployment> (the ReplicaSet is skipped),
+// while the `cart` pod (no owner series) carries no owner labels.
+func (s *GraphSuite) TestPodOwnerLabelsSkipReplicaSet() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	s.IngestExpFmt(fmt.Sprintf(`# HELP kube_pod_owner dummy
+kube_pod_owner{cluster="cluster-alpha",namespace="shop",pod="checkout",owner_kind="ReplicaSet",owner_name="checkout-7f9c",owner_is_controller="true",test=%q} 1 %d
+kube_replicaset_owner{cluster="cluster-alpha",namespace="shop",replicaset="checkout-7f9c",owner_kind="Deployment",owner_name="checkout-deploy",test=%q} 1 %d
+`, disc, t1, disc, t1))
+	s.Require().True(s.WaitForSeries(`kube_pod_owner{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested kube_pod_owner")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Elements struct {
+			Nodes []struct {
+				Data struct {
+					Name   string            `json:"name"`
+					Type   string            `json:"type"`
+					Labels map[string]string `json:"labels"`
+				} `json:"data"`
+			} `json:"nodes"`
+		} `json:"elements"`
+	}
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+
+	labelsFor := func(name string) (map[string]string, bool) {
+		for _, n := range body.Elements.Nodes {
+			if n.Data.Type == "pod" && n.Data.Name == name {
+				return n.Data.Labels, true
+			}
+		}
+		return nil, false
+	}
+
+	checkout, ok := labelsFor("checkout")
+	s.Require().True(ok, "checkout pod node must be present")
+	s.Equal("Deployment", checkout["owner_kind"], "ReplicaSet must be skipped to its Deployment")
+	s.Equal("checkout-deploy", checkout["owner_name"])
+
+	cart, ok := labelsFor("cart")
+	s.Require().True(ok, "cart pod node must be present")
+	_, hasKind := cart["owner_kind"]
+	_, hasName := cart["owner_name"]
+	s.False(hasKind, "pod with no owner series must omit owner_kind")
+	s.False(hasName, "pod with no owner series must omit owner_name")
+}
+
 func (s *GraphSuite) TestConnStringUnresolvableProducesExternalNode() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))

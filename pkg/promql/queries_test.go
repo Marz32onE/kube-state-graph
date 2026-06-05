@@ -60,6 +60,8 @@ func TestRenderer_PrefixApplied(t *testing.T) {
 		{"node-addresses", QNodeAddresses, time.Minute, `last_over_time(o11y_kube_node_status_addresses{type="ExternalIP"}[1m])`},
 		{"pvc-bindings", QPVCBindings, time.Minute, "last_over_time(o11y_kube_pod_spec_volumes_persistentvolumeclaims_info[1m])"},
 		{"node-labels", QNodeLabels, time.Minute, "last_over_time(o11y_kube_node_labels[1m])"},
+		{"pod-owner", QPodOwner, time.Minute, "last_over_time(o11y_kube_pod_owner[1m])"},
+		{"replicaset-owner", QReplicaSetOwner, time.Minute, "last_over_time(o11y_kube_replicaset_owner[1m])"},
 		{"cluster-discovery", QClusterDiscovery, time.Hour, "group by (cluster) (last_over_time(o11y_kube_node_info[1h]))"},
 	}
 	r := Renderer{Prefix: "o11y_"}

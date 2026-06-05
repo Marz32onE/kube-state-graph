@@ -29,6 +29,13 @@ const (
 	QServiceInfo            Query = "kube_service_info"
 	QEndpointSliceEndpoints Query = "kube_endpointslice_endpoints"
 	QEndpointSliceLabels    Query = "kube_endpointslice_labels"
+
+	// Pod controller-owner resolution (D34). KSM-shaped, so prefix-aware via
+	// Renderer. kube_pod_owner gives a pod's owner refs; kube_replicaset_owner
+	// resolves a ReplicaSet owner up to its owning Deployment (the ReplicaSet is
+	// skipped). Both are KSM defaults (no --metric-labels-allowlist required).
+	QPodOwner        Query = "kube_pod_owner"
+	QReplicaSetOwner Query = "kube_replicaset_owner"
 )
 
 // ClusterDiscoveryLookback is the fixed lookback used by /v1/clusters
@@ -96,6 +103,10 @@ func (r Renderer) Render(q Query, window time.Duration) string {
 		return fmt.Sprintf(`last_over_time(%skube_endpointslice_endpoints[%s])`, r.Prefix, w)
 	case QEndpointSliceLabels:
 		return fmt.Sprintf(`last_over_time(%skube_endpointslice_labels[%s])`, r.Prefix, w)
+	case QPodOwner:
+		return fmt.Sprintf(`last_over_time(%skube_pod_owner[%s])`, r.Prefix, w)
+	case QReplicaSetOwner:
+		return fmt.Sprintf(`last_over_time(%skube_replicaset_owner[%s])`, r.Prefix, w)
 	case QServiceGraphTotal:
 		// Service-graph metrics come from Alloy/Tempo, not kube-state-metrics;
 		// the configurable prefix deliberately does NOT apply here. The metric

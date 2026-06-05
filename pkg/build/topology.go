@@ -110,6 +110,7 @@ type Topology struct {
 func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, window time.Duration, end time.Time) (Topology, error) {
 	var podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector
 	var svcVec, epEndpointsVec, epLabelsVec model.Vector
+	var ownerVec, rsOwnerVec model.Vector
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -152,11 +153,21 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 		epLabelsVec = v
 		return err
 	})
+	g.Go(func() error {
+		v, err := q.Instant(ctx, string(promql.QPodOwner), r.Render(promql.QPodOwner, window), end)
+		ownerVec = v
+		return err
+	})
+	g.Go(func() error {
+		v, err := q.Instant(ctx, string(promql.QReplicaSetOwner), r.Render(promql.QReplicaSetOwner, window), end)
+		rsOwnerVec = v
+		return err
+	})
 	if err := g.Wait(); err != nil {
 		return Topology{}, fmt.Errorf("topology fan-out: %w", err)
 	}
 
-	t := parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec)
+	t := parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec, ownerVec, rsOwnerVec)
 	t.RawSeriesCount = map[string]int{
 		string(promql.QPodInfo):                len(podVec),
 		string(promql.QNodeInfo):               len(nodeVec),
@@ -166,12 +177,19 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 		string(promql.QServiceInfo):            len(svcVec),
 		string(promql.QEndpointSliceEndpoints): len(epEndpointsVec),
 		string(promql.QEndpointSliceLabels):    len(epLabelsVec),
+		string(promql.QPodOwner):               len(ownerVec),
+		string(promql.QReplicaSetOwner):        len(rsOwnerVec),
 	}
 	return t, nil
 }
 
-func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec model.Vector) Topology {
+func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec, ownerVec, rsOwnerVec model.Vector) Topology {
 	clusters := map[string]struct{}{}
+
+	// Pod controller-owner resolution (D34), with the ReplicaSet skipped to its
+	// owning Deployment. Built up-front so the per-pod assembly below can stamp
+	// owner_kind / owner_name onto each pod's labels.
+	podOwners := resolvePodOwners(ownerVec, rsOwnerVec)
 
 	// External IP map: (cluster, node-name) -> IP.
 	externalIPs := map[[2]string]string{}
@@ -303,10 +321,17 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 		if podIP != "" {
 			ips = []string{podIP}
 		}
+		labels := merged[canonical.uid]
+		// Stamp the controller owner (ReplicaSet skipped to its Deployment).
+		// Absent when the pod has no controller owner — never empty strings.
+		if o, ok := podOwners[podNameKey(k)]; ok {
+			labels["owner_kind"] = o.kind
+			labels["owner_name"] = o.name
+		}
 		canonicalPod := &graph.PodNode{
 			IDValue:        graph.PodID(k.cluster, canonical.uid),
 			NameValue:      k.pod,
-			LabelsValue:    merged[canonical.uid],
+			LabelsValue:    labels,
 			IPAddressValue: ips,
 		}
 		pods = append(pods, canonicalPod)
@@ -441,6 +466,69 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 		EndpointsByService: endpointsByService,
 		ClustersObserved:   clusterList,
 	}
+}
+
+// ownerRef is a resolved controller owner (kind + name) for a pod.
+type ownerRef struct{ kind, name string }
+
+// resolvePodOwners builds the (cluster, namespace, pod) → controller-owner index
+// from kube_pod_owner, skipping the intermediate ReplicaSet (D34): when a pod's
+// controller owner is a ReplicaSet, it is resolved one level up via
+// kube_replicaset_owner to the owning Deployment. A bare ReplicaSet with no
+// Deployment owner keeps the ReplicaSet as the owner; any other owner kind is
+// surfaced verbatim. Pods with no controller owner are simply absent from the
+// returned map (the caller omits the labels rather than emitting empty strings).
+//
+// Pure function of the two input vectors — no ordering dependence: when a pod
+// reports multiple controller owners, the lexically-smallest (kind, name) wins
+// so the emitted entity is stable across rebuilds (D6 determinism).
+func resolvePodOwners(ownerVec, rsOwnerVec model.Vector) map[podNameKey]ownerRef {
+	// ReplicaSet → owning Deployment, keyed by (cluster, namespace, replicaset).
+	// Only Deployment owners are retained; a ReplicaSet owned by anything else
+	// (or nothing) is left unresolved so the pod keeps the ReplicaSet.
+	rsToDeployment := make(map[podNameKey]string, len(rsOwnerVec))
+	for _, s := range rsOwnerVec {
+		if string(s.Metric["owner_kind"]) != "Deployment" {
+			continue
+		}
+		cluster := bucketCluster(string(s.Metric["cluster"]))
+		ns := string(s.Metric["namespace"])
+		rs := string(s.Metric["replicaset"])
+		dep := string(s.Metric["owner_name"])
+		if rs == "" || dep == "" {
+			continue
+		}
+		rsToDeployment[podNameKey{cluster, ns, rs}] = dep
+	}
+
+	owners := make(map[podNameKey]ownerRef, len(ownerVec))
+	for _, s := range ownerVec {
+		if string(s.Metric["owner_is_controller"]) != "true" {
+			continue
+		}
+		cluster := bucketCluster(string(s.Metric["cluster"]))
+		ns := string(s.Metric["namespace"])
+		pod := string(s.Metric["pod"])
+		kind := string(s.Metric["owner_kind"])
+		name := string(s.Metric["owner_name"])
+		if pod == "" || kind == "" || name == "" {
+			continue
+		}
+		if kind == "ReplicaSet" {
+			if dep, ok := rsToDeployment[podNameKey{cluster, ns, name}]; ok {
+				kind, name = "Deployment", dep
+			}
+		}
+		key := podNameKey{cluster, ns, pod}
+		// Deterministic pick: lexically-smallest (kind, name) wins on collision.
+		if cur, ok := owners[key]; ok {
+			if kind > cur.kind || (kind == cur.kind && name >= cur.name) {
+				continue
+			}
+		}
+		owners[key] = ownerRef{kind, name}
+	}
+	return owners
 }
 
 // bucketCluster returns "unknown" when the upstream cluster label is missing.

@@ -27,7 +27,7 @@ func TestParseTopology_PodRestartCollapsesToLatestUID(t *testing.T) {
 		}
 	}
 	vec := sampleVec(pod("uid-1", 100), pod("uid-2", 200))
-	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1, "older UID must be discarded; only newest survives")
 	assert.Equal(t, "cluster-alpha/uid-2", tp.Pods[0].ID(), "newest UID must be canonical pod")
 }
@@ -41,7 +41,7 @@ func TestParseTopology_MissingClusterBucketed(t *testing.T) {
 			"node":      "worker-0",
 		},
 	})
-	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	assert.Equal(t, "unknown", tp.Pods[0].Labels()["cluster"])
 	assert.Contains(t, tp.ClustersObserved, "unknown")
@@ -60,7 +60,7 @@ func TestParseTopology_PodIPAttribute(t *testing.T) {
 		},
 		Value: 1,
 	})
-	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	pod := tp.Pods[0]
 	assert.Equal(t, []string{"10.244.0.42"}, pod.IPAddress(),
@@ -104,7 +104,7 @@ func TestParseTopology_MergesSameUIDPartialLabels(t *testing.T) {
 			Value: 1, Timestamp: 100,
 		},
 	)
-	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	pod := tp.Pods[0]
 	assert.Equal(t, []string{"10.244.0.42"}, pod.IPAddress(),
@@ -124,7 +124,7 @@ func TestParseTopology_PodIPAbsentWhenMetricMissing(t *testing.T) {
 		},
 		Value: 1,
 	})
-	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil)
+	tp := parseTopology(vec, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Pods, 1)
 	assert.Nil(t, tp.Pods[0].IPAddress(), "IPAddress should be nil when pod_ip is absent")
 }
@@ -140,7 +140,7 @@ func TestParseTopology_K8sNodeLabelsFlattened(t *testing.T) {
 			"label_kubernetes_io_arch":          "amd64",
 		},
 	})
-	tp := parseTopology(nil, nodeVec, addrVec, nil, labelVec, nil, nil, nil)
+	tp := parseTopology(nil, nodeVec, addrVec, nil, labelVec, nil, nil, nil, nil, nil)
 	require.Len(t, tp.Nodes, 1)
 	n := tp.Nodes[0]
 	assert.Equal(t, []string{"203.0.113.10"}, n.IPAddress(),
@@ -205,7 +205,7 @@ func TestParseTopology_ServiceAndEndpointSliceIndexes(t *testing.T) {
 		model.Sample{Metric: model.Metric{"cluster": "c-a", "namespace": "pay", "endpointslice": "payments-x1", "targetref_kind": "Pod", "targetref_name": "payments-1", "targetref_namespace": "pay"}},
 	)
 
-	tp := parseTopology(podVec, nil, nil, nil, nil, svcVec, epEndpointsVec, epLabelsVec)
+	tp := parseTopology(podVec, nil, nil, nil, nil, svcVec, epEndpointsVec, epLabelsVec, nil, nil)
 
 	require.Contains(t, tp.ServicesByNameNS, serviceKey{"c-a", "pay", "payments"})
 	assert.Equal(t, "10.96.0.5", tp.ServicesByNameNS[serviceKey{"c-a", "pay", "payments"}].ClusterIP)
@@ -218,12 +218,99 @@ func TestParseTopology_ServiceAndEndpointSliceIndexes(t *testing.T) {
 	assert.ElementsMatch(t, []string{"c-a/p1", "c-a/p2"}, []string{eps[0].Pod.ID(), eps[1].Pod.ID()})
 }
 
+// TestParseTopology_PodOwnerLabels — D34 controller-owner resolution with the
+// ReplicaSet skipped to its owning Deployment. Covers: RS→Deployment, bare RS,
+// a direct non-RS controller, a pod with no controller owner, and total absence
+// of the owner series.
+func TestParseTopology_PodOwnerLabels(t *testing.T) {
+	pod := func(cluster, ns, name, uid string) model.Sample {
+		return model.Sample{Metric: model.Metric{
+			"cluster": model.LabelValue(cluster), "namespace": model.LabelValue(ns),
+			"pod": model.LabelValue(name), "uid": model.LabelValue(uid), "node": "w0",
+		}}
+	}
+	owner := func(cluster, ns, name, kind, ownerName, ctrl string) model.Sample {
+		return model.Sample{Metric: model.Metric{
+			"cluster": model.LabelValue(cluster), "namespace": model.LabelValue(ns),
+			"pod": model.LabelValue(name), "owner_kind": model.LabelValue(kind),
+			"owner_name": model.LabelValue(ownerName), "owner_is_controller": model.LabelValue(ctrl),
+		}}
+	}
+	rsOwner := func(cluster, ns, rs, ownerName string) model.Sample {
+		return model.Sample{Metric: model.Metric{
+			"cluster": model.LabelValue(cluster), "namespace": model.LabelValue(ns),
+			"replicaset": model.LabelValue(rs), "owner_kind": "Deployment", "owner_name": model.LabelValue(ownerName),
+		}}
+	}
+
+	podVec := sampleVec(
+		pod("c", "shop", "checkout-1", "u1"), // RS → Deployment
+		pod("c", "shop", "adhoc-1", "u2"),    // bare RS (no Deployment owner)
+		pod("c", "logs", "fluentd-x", "u3"),  // DaemonSet (direct)
+		pod("c", "shop", "static-1", "u4"),   // no controller owner
+	)
+	ownerVec := sampleVec(
+		owner("c", "shop", "checkout-1", "ReplicaSet", "checkout-7f9c", "true"),
+		owner("c", "shop", "adhoc-1", "ReplicaSet", "adhoc-rs", "true"),
+		owner("c", "logs", "fluentd-x", "DaemonSet", "fluentd", "true"),
+		// static-1: only a non-controller owner ref → must be ignored.
+		owner("c", "shop", "static-1", "Node", "w0", "false"),
+	)
+	rsOwnerVec := sampleVec(rsOwner("c", "shop", "checkout-7f9c", "checkout"))
+
+	tp := parseTopology(podVec, nil, nil, nil, nil, nil, nil, nil, ownerVec, rsOwnerVec)
+	byName := map[string]map[string]string{}
+	for _, p := range tp.Pods {
+		byName[p.Name()] = p.Labels()
+	}
+
+	assert.Equal(t, "Deployment", byName["checkout-1"]["owner_kind"], "ReplicaSet must be skipped to its Deployment")
+	assert.Equal(t, "checkout", byName["checkout-1"]["owner_name"])
+
+	assert.Equal(t, "ReplicaSet", byName["adhoc-1"]["owner_kind"], "bare ReplicaSet with no Deployment owner stays as-is")
+	assert.Equal(t, "adhoc-rs", byName["adhoc-1"]["owner_name"])
+
+	assert.Equal(t, "DaemonSet", byName["fluentd-x"]["owner_kind"], "non-RS controller surfaced verbatim")
+	assert.Equal(t, "fluentd", byName["fluentd-x"]["owner_name"])
+
+	_, hasKind := byName["static-1"]["owner_kind"]
+	_, hasName := byName["static-1"]["owner_name"]
+	assert.False(t, hasKind, "pod with no controller owner must omit owner_kind (not empty string)")
+	assert.False(t, hasName, "pod with no controller owner must omit owner_name (not empty string)")
+
+	// Owner series absent entirely → valid topology, no owner labels.
+	tp2 := parseTopology(podVec, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	for _, p := range tp2.Pods {
+		_, k := p.Labels()["owner_kind"]
+		_, n := p.Labels()["owner_name"]
+		assert.Falsef(t, k || n, "no owner series → pod %q must carry no owner labels", p.Name())
+	}
+}
+
+// TestParseTopology_PodOwnerDeterministic — when a pod reports multiple
+// controller owners, the lexically-smallest (kind, name) wins regardless of
+// the upstream vector order, so the emitted entity is stable across rebuilds.
+func TestParseTopology_PodOwnerDeterministic(t *testing.T) {
+	pod := model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "pod": "p", "uid": "u", "node": "w0"}}
+	ctrlA := model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "pod": "p", "owner_kind": "DaemonSet", "owner_name": "a", "owner_is_controller": "true"}}
+	ctrlB := model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "pod": "p", "owner_kind": "StatefulSet", "owner_name": "b", "owner_is_controller": "true"}}
+
+	forward := parseTopology(sampleVec(pod), nil, nil, nil, nil, nil, nil, nil, sampleVec(ctrlA, ctrlB), nil)
+	reverse := parseTopology(sampleVec(pod), nil, nil, nil, nil, nil, nil, nil, sampleVec(ctrlB, ctrlA), nil)
+
+	require.Len(t, forward.Pods, 1)
+	require.Len(t, reverse.Pods, 1)
+	assert.Equal(t, "DaemonSet", forward.Pods[0].Labels()["owner_kind"], "lexically-smallest kind wins")
+	assert.Equal(t, forward.Pods[0].Labels()["owner_kind"], reverse.Pods[0].Labels()["owner_kind"], "order-independent")
+	assert.Equal(t, forward.Pods[0].Labels()["owner_name"], reverse.Pods[0].Labels()["owner_name"], "order-independent")
+}
+
 // TestParseTopology_NoServiceSeriesYieldsEmptyIndexes — absence of
 // service/endpointslice series (KSM without those resources) yields empty
 // indexes and never errors.
 func TestParseTopology_NoServiceSeriesYieldsEmptyIndexes(t *testing.T) {
 	podVec := sampleVec(model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "pod": "p", "uid": "u", "node": "w"}})
-	tp := parseTopology(podVec, nil, nil, nil, nil, nil, nil, nil)
+	tp := parseTopology(podVec, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	assert.Empty(t, tp.ServicesByNameNS)
 	assert.Empty(t, tp.EndpointsByService)
 }
