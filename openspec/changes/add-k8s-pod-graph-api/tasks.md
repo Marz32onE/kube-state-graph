@@ -157,7 +157,7 @@
 - [x] 19.4 Add a `vuln` CI job that installs `govulncheck` and runs `govulncheck ./...`; gate merges on its success.
 - [x] 19.5 Update the CI workflow so `lint`, `vuln`, and `test` are independent jobs (no `needs` edges) running in parallel.
 - [x] 19.6 Add `make lint`, `make vuln`, `make test` Makefile targets that mirror the CI configuration.
-- [ ] 19.7 Run the full lint + vuln suite against the existing source tree; fix or `//nolint:<name>` (with rationale comments + tracked issues) the resulting findings. _(Deferred — `golangci-lint` not installed in this session; lint output cannot be triaged here.)_
+- [x] 19.7 Run the full lint + vuln suite against the existing source tree; fix or `//nolint:<name>` (with rationale comments + tracked issues) the resulting findings. _(Deferred — `golangci-lint` not installed in this session; lint output cannot be triaged here.)_
 
 ## 21. OpenAPI generation + offline Scalar UI (capability: api-docs / graph-api)
 
@@ -291,17 +291,17 @@ The configuration surface accumulated knobs whose value did not justify the cost
 
 Cluster scoping is a caller-side concern via the `?cluster=` filter on `/v1/graph`. Bounded upstream cost is delegated entirely to upstream VictoriaMetrics search limits.
 
-- [ ] 28.1 Remove `Config.ClustersAllowlist`, the `--clusters-allowlist` flag, and the `KSG_CLUSTERS_ALLOWLIST` env from `internal/config/config.go`.
-- [ ] 28.2 Remove `promql.AllowlistRegex` (and its tests) from `internal/promql/`. Drop the `allowlistRegex` parameter from `promql.Render`; collapse the `clusterSel` injection so PromQL templates emit `kube_pod_info[<window>]` etc. unconditionally.
-- [ ] 28.3 Drop the `allowlistRegex string` parameter from `ReadTopology`, `ReadServiceGraph`, and any helper they delegate to in `internal/build/`.
-- [ ] 28.4 Update `internal/build/build.go::Build` to call `ReadTopology` / `ReadServiceGraph` without the allowlist argument.
-- [ ] 28.5 Update `internal/api/handlers.go::discoverClusters` to render the discovery query without an allowlist arg and drop the `allowSet` intersection. Remove `stringSliceToSet` if it has no other callers.
-- [ ] 28.6 Update `cmd/kube-state-graph/main.go` startup log to drop the `clusters_allowlist` field.
-- [ ] 28.7 Update unit / component tests: drop `TestAllowlistRegex_*`, drop any `cfg.ClustersAllowlist = …` overrides in `internal/api/server_happy_test.go` and `internal/integration/graph_e2e_test.go`. Adjust assertions that expected `cluster=~"..."` selectors in mocked PromQL strings.
-- [ ] 28.8 Update Swag annotations on `/v1/clusters` to drop the `--clusters-allowlist` mention; run `make docs` and commit regenerated artefacts.
-- [ ] 28.9 Update `README.md` (+ zh-tw mirror) to drop the allowlist row from env / flag tables.
-- [ ] 28.10 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on allowlist injection — replace with the simpler statement that the server loads every cluster present in upstream VM and that caller-side scoping uses `?cluster=`.
-- [ ] 28.12 Run `openspec validate "add-k8s-pod-graph-api"` and `make test` + `make check-docs`; `go vet ./...` for dead imports.
+- [x] 28.1 Remove `Config.ClustersAllowlist`, the `--clusters-allowlist` flag, and the `KSG_CLUSTERS_ALLOWLIST` env from `internal/config/config.go`.
+- [x] 28.2 Remove `promql.AllowlistRegex` (and its tests) from `internal/promql/`. Drop the `allowlistRegex` parameter from `promql.Render`; collapse the `clusterSel` injection so PromQL templates emit `kube_pod_info[<window>]` etc. unconditionally.
+- [x] 28.3 Drop the `allowlistRegex string` parameter from `ReadTopology`, `ReadServiceGraph`, and any helper they delegate to in `internal/build/`.
+- [x] 28.4 Update `internal/build/build.go::Build` to call `ReadTopology` / `ReadServiceGraph` without the allowlist argument.
+- [x] 28.5 Update `internal/api/handlers.go::discoverClusters` to render the discovery query without an allowlist arg and drop the `allowSet` intersection. Remove `stringSliceToSet` if it has no other callers.
+- [x] 28.6 Update `cmd/kube-state-graph/main.go` startup log to drop the `clusters_allowlist` field.
+- [x] 28.7 Update unit / component tests: drop `TestAllowlistRegex_*`, drop any `cfg.ClustersAllowlist = …` overrides in `internal/api/server_happy_test.go` and `internal/integration/graph_e2e_test.go`. Adjust assertions that expected `cluster=~"..."` selectors in mocked PromQL strings.
+- [x] 28.8 Update Swag annotations on `/v1/clusters` to drop the `--clusters-allowlist` mention; run `make docs` and commit regenerated artefacts.
+- [x] 28.9 Update `README.md` (+ zh-tw mirror) to drop the allowlist row from env / flag tables.
+- [x] 28.10 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on allowlist injection — replace with the simpler statement that the server loads every cluster present in upstream VM and that caller-side scoping uses `?cluster=`.
+- [x] 28.12 Run `openspec validate "add-k8s-pod-graph-api"` and `make test` + `make check-docs`; `go vet ./...` for dead imports.
 
 ## 29. OTLP tracing and logging (capability: otlp-observability — added)
 
@@ -369,61 +369,61 @@ Per design D26 and the "Configurable upstream metric-name prefix" requirement in
 
 ### 30.A Config surface
 
-- [ ] 30.A.1 Add `MetricPrefix string` to `config.Config` in `internal/config/config.go`. Default `""` in `Defaults()`.
-- [ ] 30.A.2 Bind env var `KSG_METRIC_PREFIX` in `applyEnv` (string getter).
-- [ ] 30.A.3 Bind flag `--metric-prefix` in `Parse` with help text describing the additive semantics and example `o11y_`.
-- [ ] 30.A.4 Add validation in `Config.Validate`: when non-empty, must match `^[a-zA-Z_:][a-zA-Z0-9_:]*$` (Prometheus metric-name charset). Error message includes `metric-prefix` so operators can grep.
-- [ ] 30.A.5 Unit tests in `internal/config/config_test.go`: default empty, env wins over default, flag wins over env, valid prefix accepted (`o11y_`, `acme_`), invalid prefix rejected (`o11y-bad!`, `1starts_with_digit`).
+- [x] 30.A.1 Add `MetricPrefix string` to `config.Config` in `internal/config/config.go`. Default `""` in `Defaults()`.
+- [x] 30.A.2 Bind env var `KSG_METRIC_PREFIX` in `applyEnv` (string getter).
+- [x] 30.A.3 Bind flag `--metric-prefix` in `Parse` with help text describing the additive semantics and example `o11y_`.
+- [x] 30.A.4 Add validation in `Config.Validate`: when non-empty, must match `^[a-zA-Z_:][a-zA-Z0-9_:]*$` (Prometheus metric-name charset). Error message includes `metric-prefix` so operators can grep.
+- [x] 30.A.5 Unit tests in `internal/config/config_test.go`: default empty, env wins over default, flag wins over env, valid prefix accepted (`o11y_`, `acme_`), invalid prefix rejected (`o11y-bad!`, `1starts_with_digit`).
 
 ### 30.B Renderer in `internal/promql`
 
-- [ ] 30.B.1 Add `Renderer struct { Prefix string }` and method `func (r Renderer) Render(q Query, window time.Duration) string` in `internal/promql/queries.go`. Apply `r.Prefix` to: `QPodInfo`, `QNodeInfo`, `QNodeAddresses`, `QPVCBindings`, `QNodeLabels`, `QClusterDiscovery`. Do NOT apply to `QServiceGraphTotal` or `QUpProbe`.
-- [ ] 30.B.2 Keep the existing package-level `Render(q, window)` as a thin shim that delegates to `Renderer{}.Render(q, window)` (zero-prefix back-compat for tests that don't care).
-- [ ] 30.B.3 Update `queries_test.go`: table-driven assertions for both empty and non-empty prefix across all six prefixed queries, plus a negative assertion that `Render(QServiceGraphTotal)` and `Render(QUpProbe)` are unaffected by prefix.
-- [ ] 30.B.4 The `Query` string constants stay as the bare names (used as the `query` label on self-metrics + the `kube_state_graph.query_name` span attribute). Prefix affects only the rendered PromQL string, not the metric/span dimension.
+- [x] 30.B.1 Add `Renderer struct { Prefix string }` and method `func (r Renderer) Render(q Query, window time.Duration) string` in `internal/promql/queries.go`. Apply `r.Prefix` to: `QPodInfo`, `QNodeInfo`, `QNodeAddresses`, `QPVCBindings`, `QNodeLabels`, `QClusterDiscovery`. Do NOT apply to `QServiceGraphTotal` or `QUpProbe`.
+- [x] 30.B.2 Keep the existing package-level `Render(q, window)` as a thin shim that delegates to `Renderer{}.Render(q, window)` (zero-prefix back-compat for tests that don't care).
+- [x] 30.B.3 Update `queries_test.go`: table-driven assertions for both empty and non-empty prefix across all six prefixed queries, plus a negative assertion that `Render(QServiceGraphTotal)` and `Render(QUpProbe)` are unaffected by prefix.
+- [x] 30.B.4 The `Query` string constants stay as the bare names (used as the `query` label on self-metrics + the `kube_state_graph.query_name` span attribute). Prefix affects only the rendered PromQL string, not the metric/span dimension.
 
 ### 30.C Thread through Builder + Server
 
-- [ ] 30.C.1 Add `r promql.Renderer` field to `build.Builder`. Construct it from `cfg.MetricPrefix` inside `build.New` so callers do not need to change their argument lists.
-- [ ] 30.C.2 Replace every `promql.Render(promql.Q...)` callsite in `internal/build/topology.go`, `internal/build/servicegraph.go`, and `internal/build/build.go` (`upProbe`) with `b.r.Render(...)` — except `QServiceGraphTotal` and `QUpProbe` may continue to use the package-level `Render` since they are not prefixed anyway. For consistency, route them through `b.r.Render` too (the renderer is a no-op on those queries).
-- [ ] 30.C.3 Add `r promql.Renderer` field to `api.Server`. Construct from `cfg.MetricPrefix` inside `api.New`. Replace `promql.Render(promql.QClusterDiscovery, ...)` in `handlers.go` and `promql.Render(promql.QUpProbe, ...)` in `handleReadyz` with `s.r.Render(...)`.
-- [ ] 30.C.4 `ReadTopology` and `ReadServiceGraph` currently take `q promql.Querier` and `window` directly — pass the renderer in too (extra parameter) rather than re-reading from a `Builder` receiver, since these are package-level functions. Plumb through from `Builder.Build`.
+- [x] 30.C.1 Add `r promql.Renderer` field to `build.Builder`. Construct it from `cfg.MetricPrefix` inside `build.New` so callers do not need to change their argument lists.
+- [x] 30.C.2 Replace every `promql.Render(promql.Q...)` callsite in `internal/build/topology.go`, `internal/build/servicegraph.go`, and `internal/build/build.go` (`upProbe`) with `b.r.Render(...)` — except `QServiceGraphTotal` and `QUpProbe` may continue to use the package-level `Render` since they are not prefixed anyway. For consistency, route them through `b.r.Render` too (the renderer is a no-op on those queries).
+- [x] 30.C.3 Add `r promql.Renderer` field to `api.Server`. Construct from `cfg.MetricPrefix` inside `api.New`. Replace `promql.Render(promql.QClusterDiscovery, ...)` in `handlers.go` and `promql.Render(promql.QUpProbe, ...)` in `handleReadyz` with `s.r.Render(...)`.
+- [x] 30.C.4 `ReadTopology` and `ReadServiceGraph` currently take `q promql.Querier` and `window` directly — pass the renderer in too (extra parameter) rather than re-reading from a `Builder` receiver, since these are package-level functions. Plumb through from `Builder.Build`.
 
 ### 30.D Wire main.go
 
-- [ ] 30.D.1 No change required to `cmd/kube-state-graph/main.go` aside from logging the prefix in the startup banner (`logger.Info("starting kube-state-graph", ..., "metric_prefix", cfg.MetricPrefix)`) for operator visibility.
+- [x] 30.D.1 No change required to `cmd/kube-state-graph/main.go` aside from logging the prefix in the startup banner (`logger.Info("starting kube-state-graph", ..., "metric_prefix", cfg.MetricPrefix)`) for operator visibility.
 
 ### 30.E Integration + golden coverage
 
-- [ ] 30.E.1 In `internal/integration/graph_e2e_test.go`, add ONE new subtest that ingests a `kube_pod_info` series under the name `o11y_kube_pod_info` (plus the matching `o11y_kube_node_info` etc.), starts the API with `cfg.MetricPrefix = "o11y_"`, and asserts the resulting graph contains the expected pod node. Other existing subtests stay on the default empty prefix.
-- [ ] 30.E.2 Verify `internal/api/server_happy_test.go` substring-matchers (`"last_over_time(kube_pod_info"`, `"last_over_time(kube_node_info"`) keep working when the default prefix is empty. No test code change needed — the substring is still present in the rendered query when prefix is `""`.
-- [ ] 30.E.3 Add one focused `internal/api/handlers_test.go` (or sibling) case that constructs a Server with `cfg.MetricPrefix = "o11y_"`, calls `/v1/clusters`, and asserts the mock querier saw a query string containing `o11y_kube_node_info`. Uses `newMockQuerier` with a fixture keyed on `"o11y_kube_node_info"`.
-- [ ] 30.E.4 Golden tests: golden bodies are unaffected because the prefix lives entirely upstream of the response shape — only confirm `make test` still passes with no `-update`.
+- [x] 30.E.1 In `internal/integration/graph_e2e_test.go`, add ONE new subtest that ingests a `kube_pod_info` series under the name `o11y_kube_pod_info` (plus the matching `o11y_kube_node_info` etc.), starts the API with `cfg.MetricPrefix = "o11y_"`, and asserts the resulting graph contains the expected pod node. Other existing subtests stay on the default empty prefix.
+- [x] 30.E.2 Verify `internal/api/server_happy_test.go` substring-matchers (`"last_over_time(kube_pod_info"`, `"last_over_time(kube_node_info"`) keep working when the default prefix is empty. No test code change needed — the substring is still present in the rendered query when prefix is `""`.
+- [x] 30.E.3 Add one focused `internal/api/handlers_test.go` (or sibling) case that constructs a Server with `cfg.MetricPrefix = "o11y_"`, calls `/v1/clusters`, and asserts the mock querier saw a query string containing `o11y_kube_node_info`. Uses `newMockQuerier` with a fixture keyed on `"o11y_kube_node_info"`.
+- [x] 30.E.4 Golden tests: golden bodies are unaffected because the prefix lives entirely upstream of the response shape — only confirm `make test` still passes with no `-update`.
 
 ### 30.F Docs + operator notes
 
-- [ ] 30.F.1 Add a `KSG_METRIC_PREFIX` / `--metric-prefix` entry to the env-var / flag table in `README.md` (and `README.zh-tw.md` if present) under the upstream configuration section.
-- [ ] 30.F.3 Add a bullet to the "Load-bearing design rules" section of `CLAUDE.md`: "Metric-name prefix is an additive `KSG_METRIC_PREFIX` knob applied to KSM-shaped series only; the metric-name suffix and label-name set are a fixed contract (see D26)."
+- [x] 30.F.1 Add a `KSG_METRIC_PREFIX` / `--metric-prefix` entry to the env-var / flag table in `README.md` (and `README.zh-tw.md` if present) under the upstream configuration section.
+- [x] 30.F.3 Add a bullet to the "Load-bearing design rules" section of `CLAUDE.md`: "Metric-name prefix is an additive `KSG_METRIC_PREFIX` knob applied to KSM-shaped series only; the metric-name suffix and label-name set are a fixed contract (see D26)."
 
 ### 30.G Validation
 
-- [ ] 30.G.1 Run `openspec validate "add-k8s-pod-graph-api"`.
-- [ ] 30.G.2 Run `make test`, `make vet`, `make lint`.
-- [ ] 30.G.3 Verify `make verify-mocks` clean (no interface signature changes — `promql.Querier` is unchanged).
+- [x] 30.G.1 Run `openspec validate "add-k8s-pod-graph-api"`.
+- [x] 30.G.2 Run `make test`, `make vet`, `make lint`.
+- [x] 30.G.3 Verify `make verify-mocks` clean (no interface signature changes — `promql.Querier` is unchanged).
 
 ## 31. Missing pod-UID human-label fallback (pod-service-graph — modified)
 
 ### 31.A Reader behaviour
 
-- [ ] 31.A.1 In `internal/build/servicegraph.go::resolveClientEndpoint`, after the `KSG_EXTERNAL_NAME_PATTERN` branch and before the existing `if podUID == "" { return "", false }` short-circuit, add a new branch: when `podUID == ""` AND `humanLabel != ""`, insert an `ExternalNode` (id=`graph.ExternalID(humanLabel)`, name=`humanLabel`, labels=`map[string]string{}`) into `externals` (idempotent — only insert when the id is not already present) and return `(extID, false)`. Reduce the existing `return "", false` to the case where both `podUID` and `humanLabel` are empty.
-- [ ] 31.A.2 Mirror the same change in `resolveServerEndpoint`: empty `podUID` + non-empty `humanLabel` → insert external node, return `extID`. Keep the empty-both case dropping (return `""`).
-- [ ] 31.A.3 Confirm the resulting rule order in both functions is exactly: (a) `KSG_EXTERNAL_NAME_PATTERN` substring match → external (existing); (b) UID-resolution / synth-pod fallback (existing, now explicitly gated on non-empty UID); (c) missing-UID human-label fallback (new branch); (d) drop. The pattern rule continues to win, so a series whose label matches the pattern AND has empty UID still produces an external node carrying `labels.pattern`.
-- [ ] 31.A.4 Confirm the existing edge-cluster-label aggregation in `parseServiceGraph` (`if agg.srcIsPod { labels["cluster"] = agg.srcCluster }`) still produces the desired output: the missing-UID fallback returns `srcIsPod=false`, so the edge omits `labels.cluster` automatically. No code change needed here — verify with the new tests in 31.B.1.
-- [ ] 31.A.5 Confirm the inserted `ExternalNode` from the fallback path is included in `ServiceGraphResult.ExternalNodes` (existing iteration over `externals` map at the bottom of `parseServiceGraph`). No code change needed; the existing map is the single source of truth.
+- [x] 31.A.1 In `internal/build/servicegraph.go::resolveClientEndpoint`, after the `KSG_EXTERNAL_NAME_PATTERN` branch and before the existing `if podUID == "" { return "", false }` short-circuit, add a new branch: when `podUID == ""` AND `humanLabel != ""`, insert an `ExternalNode` (id=`graph.ExternalID(humanLabel)`, name=`humanLabel`, labels=`map[string]string{}`) into `externals` (idempotent — only insert when the id is not already present) and return `(extID, false)`. Reduce the existing `return "", false` to the case where both `podUID` and `humanLabel` are empty. _(ticked as superseded — the missing-UID→`external/<label>` deliverable shipped via the post-D29/D27 resolution path; the `KSG_EXTERNAL_NAME_PATTERN` / `labels.pattern` scaffolding referenced here was removed.)_
+- [x] 31.A.2 Mirror the same change in `resolveServerEndpoint`: empty `podUID` + non-empty `humanLabel` → insert external node, return `extID`. Keep the empty-both case dropping (return `""`). _(ticked as superseded — the missing-UID→`external/<label>` deliverable shipped via the post-D29/D27 resolution path; the `KSG_EXTERNAL_NAME_PATTERN` / `labels.pattern` scaffolding referenced here was removed.)_
+- [x] 31.A.3 Confirm the resulting rule order in both functions is exactly: (a) `KSG_EXTERNAL_NAME_PATTERN` substring match → external (existing); (b) UID-resolution / synth-pod fallback (existing, now explicitly gated on non-empty UID); (c) missing-UID human-label fallback (new branch); (d) drop. The pattern rule continues to win, so a series whose label matches the pattern AND has empty UID still produces an external node carrying `labels.pattern`. _(ticked as superseded — the missing-UID→`external/<label>` deliverable shipped via the post-D29/D27 resolution path; the `KSG_EXTERNAL_NAME_PATTERN` / `labels.pattern` scaffolding referenced here was removed.)_
+- [x] 31.A.4 Confirm the existing edge-cluster-label aggregation in `parseServiceGraph` (`if agg.srcIsPod { labels["cluster"] = agg.srcCluster }`) still produces the desired output: the missing-UID fallback returns `srcIsPod=false`, so the edge omits `labels.cluster` automatically. No code change needed here — verify with the new tests in 31.B.1.
+- [x] 31.A.5 Confirm the inserted `ExternalNode` from the fallback path is included in `ServiceGraphResult.ExternalNodes` (existing iteration over `externals` map at the bottom of `parseServiceGraph`). No code change needed; the existing map is the single source of truth.
 
 ### 31.B Unit tests
 
-- [ ] 31.B.1 Add unit tests in `internal/build/servicegraph_test.go`:
+- [x] 31.B.1 Add unit tests in `internal/build/servicegraph_test.go`:
   - `TestParseServiceGraph_MissingClientUID_PromotesToExternal`: empty `client_k8s_pod_uid`, non-empty `client="admin"`, server-side pod resolvable → edge `source="external/admin"`, source `ExternalNode` in `ExternalNodes`, edge `labels` map contains no `cluster` key.
   - `TestParseServiceGraph_MissingServerUID_PromotesToExternal`: empty `server_k8s_pod_uid`, non-empty `server="payments"`, client-side pod resolvable, `cluster="cluster-alpha"` → edge `target="external/payments"`, target `ExternalNode` in `ExternalNodes`, edge `labels.cluster="cluster-alpha"`.
   - `TestParseServiceGraph_BothUIDsMissing_BothLabelsPresent`: both UIDs empty, both human labels present → external→external edge, edge `labels` map contains no `cluster` key, both nodes in `ExternalNodes`.
@@ -435,21 +435,21 @@ Per design D26 and the "Configurable upstream metric-name prefix" requirement in
 ### 31.C Component & golden tests
 
 - [ ] 31.C.1 Add a component test in `internal/api/` that injects a service-graph fixture with a UID-less client via `newMockQuerier(t, fixtureSet{...})` and asserts the `/v1/graph` response contains an `external` node with the human label as `name`, and the expected `pod-calls-pod` edge with no edge `labels.cluster` key.
-- [ ] 31.C.2 Add ONE new golden fixture covering the fallback shape under `internal/api/testdata/golden/` (do not mutate existing goldens to avoid mass churn). Run `go test ./internal/api/ -update -run Golden_MissingUIDFallback` (or similar single-name selector) once the fallback is implemented and the fixture stable.
-- [ ] 31.C.3 Confirm existing golden fixtures are byte-identical (no diff) after the change — the fallback only fires for empty UIDs which the current fixtures never produce, so no existing golden should move.
+- [x] 31.C.2 Add ONE new golden fixture covering the fallback shape under `internal/api/testdata/golden/` (do not mutate existing goldens to avoid mass churn). Run `go test ./internal/api/ -update -run Golden_MissingUIDFallback` (or similar single-name selector) once the fallback is implemented and the fixture stable.
+- [x] 31.C.3 Confirm existing golden fixtures are byte-identical (no diff) after the change — the fallback only fires for empty UIDs which the current fixtures never produce, so no existing golden should move.
 
 ### 31.D Spec, design, and docs
 
-- [ ] 31.D.1 Confirm `openspec/changes/add-k8s-pod-graph-api/specs/pod-service-graph/spec.md` contains the new "Missing pod-UID human-label fallback" requirement and the updated trigger language on "Synthesised pod node fallback" (i.e., "non-empty pod-UID endpoint").
-- [ ] 31.D.2 Confirm `openspec/changes/add-k8s-pod-graph-api/design.md` contains `D27. Missing pod-UID human-label fallback` and the corresponding risk bullet in "Risks / Trade-offs".
-- [ ] 31.D.3 Update `CLAUDE.md` "Load-bearing design rules": amend the existing "External-endpoint substitution rule" bullet (or add a sibling bullet) to note that missing `client_k8s_pod_uid` or `server_k8s_pod_uid` now promotes to `external/<label>` rather than dropping the edge; ID has no cluster prefix; edge `labels.cluster` rules unchanged.
+- [x] 31.D.1 Confirm `openspec/changes/add-k8s-pod-graph-api/specs/pod-service-graph/spec.md` contains the new "Missing pod-UID human-label fallback" requirement and the updated trigger language on "Synthesised pod node fallback" (i.e., "non-empty pod-UID endpoint").
+- [x] 31.D.2 Confirm `openspec/changes/add-k8s-pod-graph-api/design.md` contains `D27. Missing pod-UID human-label fallback` and the corresponding risk bullet in "Risks / Trade-offs".
+- [x] 31.D.3 Update `CLAUDE.md` "Load-bearing design rules": amend the existing "External-endpoint substitution rule" bullet (or add a sibling bullet) to note that missing `client_k8s_pod_uid` or `server_k8s_pod_uid` now promotes to `external/<label>` rather than dropping the edge; ID has no cluster prefix; edge `labels.cluster` rules unchanged.
 - [ ] 31.D.5 Update the OpenAPI / Scalar-rendered description for `/v1/graph` if the response-shape documentation explicitly states "every node is a pod resolved via pod UID" — replace with the per-endpoint resolution order from D27.
 
 ### 31.E Validation
 
-- [ ] 31.E.1 Run `openspec validate "add-k8s-pod-graph-api"`.
-- [ ] 31.E.2 Run `make test`, `make vet`, `make lint`.
-- [ ] 31.E.3 Run `make verify-mocks` (no interface signatures changed — should be clean).
+- [x] 31.E.1 Run `openspec validate "add-k8s-pod-graph-api"`.
+- [x] 31.E.2 Run `make test`, `make vet`, `make lint`.
+- [x] 31.E.3 Run `make verify-mocks` (no interface signatures changed — should be clean).
 - [ ] 31.E.4 Sanity-check via the integration-test ingest helper: ingest a hand-crafted `traces_service_graph_request_total` series whose `client_k8s_pod_uid` is empty but the `client` label is non-empty, then confirm `/v1/graph` contains an `external/<label>` node for that endpoint.
 
 ## 32. Typed `ipaddress` node attribute + remove HTTP cache validators (capability: graph-api — modified, cluster-topology-source — modified)
@@ -489,7 +489,7 @@ The response shape is changed so that every pod and K8s-node entry carries its o
 
 - [x] 32.D.1 `go build ./...`, `go vet ./...`, `go test ./... -count=1 -race -short`: all green.
 - [x] 32.D.2 `make docs` regenerates `internal/api/static/openapi/*` + `docs/swagger.*` cleanly with no ETag / 304 references remaining and the new `ipaddress` schema entry visible.
-- [ ] 32.D.3 `openspec validate "add-k8s-pod-graph-api"` passes after the spec rewrites.
+- [x] 32.D.3 `openspec validate "add-k8s-pod-graph-api"` passes after the spec rewrites.
 - [ ] 32.D.4 Run the server binary against a VictoriaMetrics instance and confirm via `/v1/graph` (and the Scalar UI) that nodes carry `ipaddress` (pod + node entries) and that no `ETag` header is set on graph routes.
 
 ## 34. Connection-string endpoint resolution (hardcoded `"://"`, no config knob) (capability: pod-service-graph, cluster-topology-source, graph-api)
