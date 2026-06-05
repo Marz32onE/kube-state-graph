@@ -176,8 +176,8 @@ func parseTopology(v topologyVectors) Topology {
 	clusters := map[string]struct{}{}
 
 	// Pod controller-owner resolution (D34), with the ReplicaSet skipped to its
-	// owning Deployment. Built up-front so the per-pod assembly below can stamp
-	// owner_kind / owner_name onto each pod's labels.
+	// owning Deployment. Built up-front so the per-pod assembly below can set
+	// each pod's typed Owner attribute (never a label).
 	podOwners := resolvePodOwners(v.PodOwner, v.ReplicaSetOwner)
 
 	// External IP map: (cluster, node-name) -> IP.
@@ -310,18 +310,19 @@ func parseTopology(v topologyVectors) Topology {
 		if podIP != "" {
 			ips = []string{podIP}
 		}
-		labels := merged[canonical.uid]
-		// Stamp the controller owner (ReplicaSet skipped to its Deployment).
-		// Absent when the pod has no controller owner — never empty strings.
+		// Resolve the controller owner (ReplicaSet skipped to its Deployment)
+		// onto the typed Owner attribute — never into labels. nil when the pod
+		// has no controller owner.
+		var owner *graph.Owner
 		if o, ok := podOwners[podNameKey(k)]; ok {
-			labels["owner_kind"] = o.kind
-			labels["owner_name"] = o.name
+			owner = &graph.Owner{Kind: o.kind, Name: o.name}
 		}
 		canonicalPod := &graph.PodNode{
 			IDValue:        graph.PodID(k.cluster, canonical.uid),
 			NameValue:      k.pod,
-			LabelsValue:    labels,
+			LabelsValue:    merged[canonical.uid],
 			IPAddressValue: ips,
+			OwnerValue:     owner,
 		}
 		pods = append(pods, canonicalPod)
 		addPodToIndex(canonical.uid, canonicalPod)

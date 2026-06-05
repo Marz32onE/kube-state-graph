@@ -86,7 +86,7 @@ per source cluster).
 | `kube_node_status_addresses{type="ExternalIP"}` | Node external IP (→ `data.ipaddress`) | `cluster`, `node`, `address` | Optional |
 | `kube_node_labels` | Node label propagation (`kubernetes.io/*` etc.) | `cluster`, `node`, `label_*` | Optional |
 | `kube_pod_spec_volumes_persistentvolumeclaims_info` | PVC nodes; pod-mounts-pvc edges | `cluster`, `namespace`, `pod`, `persistentvolumeclaim`, `volume` | Optional (no PVCs ⇒ no PVC nodes/edges) |
-| `kube_pod_owner` | Pod controller-owner labels `data.labels.owner_kind` / `owner_name` (ReplicaSet skipped to its Deployment) | `cluster`, `namespace`, `pod`, `owner_kind`, `owner_name`, `owner_is_controller` | Optional (absent ⇒ no owner labels) |
+| `kube_pod_owner` | Pod controller-owner attribute `data.owner` = `{kind, name}` (ReplicaSet skipped to its Deployment; omitted when no controller owner) | `cluster`, `namespace`, `pod`, `owner_kind`, `owner_name`, `owner_is_controller` | Optional (absent ⇒ no `data.owner`) |
 | `kube_replicaset_owner` | Resolves a ReplicaSet pod-owner up to its owning Deployment | `cluster`, `namespace`, `replicaset`, `owner_kind`, `owner_name` | Optional (absent ⇒ ReplicaSet kept as owner) |
 
 Each is wrapped in `last_over_time(<metric>[<window>]) @ <end>` so the result

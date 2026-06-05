@@ -6,6 +6,8 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/marz32one/kube-state-graph/pkg/graph"
 )
 
 // TestParseTopology_PodRestartCollapsesToLatestUID — when the same
@@ -218,11 +220,11 @@ func TestParseTopology_ServiceAndEndpointSliceIndexes(t *testing.T) {
 	assert.ElementsMatch(t, []string{"c-a/p1", "c-a/p2"}, []string{eps[0].Pod.ID(), eps[1].Pod.ID()})
 }
 
-// TestParseTopology_PodOwnerLabels — D34 controller-owner resolution with the
+// TestParseTopology_PodOwnerAttribute — D34 controller-owner resolution with the
 // ReplicaSet skipped to its owning Deployment. Covers: RS→Deployment, bare RS,
 // a direct non-RS controller, a pod with no controller owner, and total absence
 // of the owner series.
-func TestParseTopology_PodOwnerLabels(t *testing.T) {
+func TestParseTopology_PodOwnerAttribute(t *testing.T) {
 	pod := func(cluster, ns, name, uid string) model.Sample {
 		return model.Sample{Metric: model.Metric{
 			"cluster": model.LabelValue(cluster), "namespace": model.LabelValue(ns),
@@ -259,31 +261,36 @@ func TestParseTopology_PodOwnerLabels(t *testing.T) {
 	rsOwnerVec := sampleVec(rsOwner("c", "shop", "checkout-7f9c", "checkout"))
 
 	tp := parseTopology(topologyVectors{Pod: podVec, PodOwner: ownerVec, ReplicaSetOwner: rsOwnerVec})
-	byName := map[string]map[string]string{}
+	byName := map[string]*graph.Owner{}
 	for _, p := range tp.Pods {
-		byName[p.Name()] = p.Labels()
+		byName[p.Name()] = p.Owner()
 	}
 
-	assert.Equal(t, "Deployment", byName["checkout-1"]["owner_kind"], "ReplicaSet must be skipped to its Deployment")
-	assert.Equal(t, "checkout", byName["checkout-1"]["owner_name"])
+	require.NotNil(t, byName["checkout-1"], "checkout-1 must carry an owner")
+	assert.Equal(t, "Deployment", byName["checkout-1"].Kind, "ReplicaSet must be skipped to its Deployment")
+	assert.Equal(t, "checkout", byName["checkout-1"].Name)
 
-	assert.Equal(t, "ReplicaSet", byName["adhoc-1"]["owner_kind"], "bare ReplicaSet with no Deployment owner stays as-is")
-	assert.Equal(t, "adhoc-rs", byName["adhoc-1"]["owner_name"])
+	require.NotNil(t, byName["adhoc-1"])
+	assert.Equal(t, "ReplicaSet", byName["adhoc-1"].Kind, "bare ReplicaSet with no Deployment owner stays as-is")
+	assert.Equal(t, "adhoc-rs", byName["adhoc-1"].Name)
 
-	assert.Equal(t, "DaemonSet", byName["fluentd-x"]["owner_kind"], "non-RS controller surfaced verbatim")
-	assert.Equal(t, "fluentd", byName["fluentd-x"]["owner_name"])
+	require.NotNil(t, byName["fluentd-x"])
+	assert.Equal(t, "DaemonSet", byName["fluentd-x"].Kind, "non-RS controller surfaced verbatim")
+	assert.Equal(t, "fluentd", byName["fluentd-x"].Name)
 
-	_, hasKind := byName["static-1"]["owner_kind"]
-	_, hasName := byName["static-1"]["owner_name"]
-	assert.False(t, hasKind, "pod with no controller owner must omit owner_kind (not empty string)")
-	assert.False(t, hasName, "pod with no controller owner must omit owner_name (not empty string)")
+	assert.Nil(t, byName["static-1"], "pod with no controller owner must carry no owner (nil, not empty)")
 
-	// Owner series absent entirely → valid topology, no owner labels.
-	tp2 := parseTopology(topologyVectors{Pod: podVec})
-	for _, p := range tp2.Pods {
+	// owner_* must NEVER leak into labels — it lives on the typed Owner attribute.
+	for _, p := range tp.Pods {
 		_, k := p.Labels()["owner_kind"]
 		_, n := p.Labels()["owner_name"]
-		assert.Falsef(t, k || n, "no owner series → pod %q must carry no owner labels", p.Name())
+		assert.Falsef(t, k || n, "owner must not appear in labels for pod %q", p.Name())
+	}
+
+	// Owner series absent entirely → valid topology, no owner.
+	tp2 := parseTopology(topologyVectors{Pod: podVec})
+	for _, p := range tp2.Pods {
+		assert.Nilf(t, p.Owner(), "no owner series → pod %q must carry no owner", p.Name())
 	}
 }
 
@@ -300,9 +307,11 @@ func TestParseTopology_PodOwnerDeterministic(t *testing.T) {
 
 	require.Len(t, forward.Pods, 1)
 	require.Len(t, reverse.Pods, 1)
-	assert.Equal(t, "DaemonSet", forward.Pods[0].Labels()["owner_kind"], "lexically-smallest kind wins")
-	assert.Equal(t, forward.Pods[0].Labels()["owner_kind"], reverse.Pods[0].Labels()["owner_kind"], "order-independent")
-	assert.Equal(t, forward.Pods[0].Labels()["owner_name"], reverse.Pods[0].Labels()["owner_name"], "order-independent")
+	require.NotNil(t, forward.Pods[0].Owner())
+	require.NotNil(t, reverse.Pods[0].Owner())
+	assert.Equal(t, "DaemonSet", forward.Pods[0].Owner().Kind, "lexically-smallest kind wins")
+	assert.Equal(t, forward.Pods[0].Owner().Kind, reverse.Pods[0].Owner().Kind, "order-independent")
+	assert.Equal(t, forward.Pods[0].Owner().Name, reverse.Pods[0].Owner().Name, "order-independent")
 }
 
 // TestParseTopology_NoServiceSeriesYieldsEmptyIndexes — absence of

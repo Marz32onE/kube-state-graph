@@ -65,6 +65,8 @@ components:
           type: object
         name:
           type: string
+        owner:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.Owner'
         parent:
           type: string
         type:
@@ -137,6 +139,13 @@ components:
       - NodeTypeService
       - NodeTypeExternal
       - NodeTypeSwitch
+    github_com_marz32one_kube-state-graph_pkg_graph.Owner:
+      properties:
+        kind:
+          type: string
+        name:
+          type: string
+      type: object
     internal_api.ClusterInfo:
       properties:
         name:
@@ -388,7 +397,7 @@ paths:
         "clusters": ["prod-eu", "prod-us"],
         "elements": {
         "nodes": [
-        { "data": { "id": "prod-eu/8f8d4f1a-...-89ab", "type": "pod",  "name": "checkout-7d9f6c8b8-abcde", "labels": { "cluster": "prod-eu", "namespace": "payments", "owner_kind": "Deployment", "owner_name": "checkout" } } },
+        { "data": { "id": "prod-eu/8f8d4f1a-...-89ab", "type": "pod",  "name": "checkout-7d9f6c8b8-abcde", "owner": { "kind": "Deployment", "name": "checkout" }, "labels": { "cluster": "prod-eu", "namespace": "payments" } } },
         { "data": { "id": "prod-eu/ip-10-0-1-23",     "type": "node", "name": "ip-10-0-1-23.ec2.internal", "labels": { "cluster": "prod-eu" } } }
         ],
         "edges": [

@@ -47,7 +47,7 @@ import (
 //	@Description	  "clusters": ["prod-eu", "prod-us"],
 //	@Description	  "elements": {
 //	@Description	    "nodes": [
-//	@Description	      { "data": { "id": "prod-eu/8f8d4f1a-...-89ab", "type": "pod",  "name": "checkout-7d9f6c8b8-abcde", "labels": { "cluster": "prod-eu", "namespace": "payments", "owner_kind": "Deployment", "owner_name": "checkout" } } },
+//	@Description	      { "data": { "id": "prod-eu/8f8d4f1a-...-89ab", "type": "pod",  "name": "checkout-7d9f6c8b8-abcde", "owner": { "kind": "Deployment", "name": "checkout" }, "labels": { "cluster": "prod-eu", "namespace": "payments" } } },
 //	@Description	      { "data": { "id": "prod-eu/ip-10-0-1-23",     "type": "node", "name": "ip-10-0-1-23.ec2.internal", "labels": { "cluster": "prod-eu" } } }
 //	@Description	    ],
 //	@Description	    "edges": [

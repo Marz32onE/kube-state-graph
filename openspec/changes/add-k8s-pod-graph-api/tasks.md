@@ -683,9 +683,9 @@ Revises D29. Previously a `"://"` connection string split two ways by DNS label 
 - [x] 38.E.1 `go build ./...` + `go test ./...` (203 unit/component/golden/property pass; the headless integration test passes against the Docker VictoriaMetrics container).
 - [x] 38.E.2 `make vet`, `make lint` (0 issues), `make verify-mocks` (up-to-date — no interface signatures changed), `make check-docs` (no swagger drift), `openspec validate "add-k8s-pod-graph-api"` (valid).
 
-## 39. Pod controller-owner labels (`owner_kind` / `owner_name`) with ReplicaSet skip (capability: cluster-topology-source)
+## 39. Pod controller-owner attribute (`data.owner` = `{kind, name}`) with ReplicaSet skip (capability: cluster-topology-source, graph-api)
 
-Implements D34. Enriches every `type="pod"` node with two strict-string `labels`, `owner_kind` and `owner_name`, resolved from `kube_pod_owner`. When the controller owner is a `ReplicaSet`, skip it: resolve one level up via `kube_replicaset_owner` to the owning `Deployment` and stamp the Deployment as the owner; a bare ReplicaSet with no Deployment owner stays as-is; pods with no controller owner omit both keys. No new node or edge type. Both series are KSM defaults (no `--metric-labels-allowlist`), OPTIONAL (absence degrades gracefully), and subject to `KSG_METRIC_PREFIX`. See design.md / design.zh-tw.md D34 and `specs/cluster-topology-source/spec.md` ("Pod controller-owner labels with ReplicaSet skip").
+Implements D34. Enriches every `type="pod"` node with its controller owner, resolved from `kube_pod_owner`. When the controller owner is a `ReplicaSet`, skip it: resolve one level up via `kube_replicaset_owner` to the owning `Deployment` and record the Deployment as the owner; a bare ReplicaSet with no Deployment owner stays as-is; pods with no controller owner carry no owner. Both series are KSM defaults (no `--metric-labels-allowlist`), OPTIONAL (absence degrades gracefully), and subject to `KSG_METRIC_PREFIX`. The owner is delivered as a **typed, nullable `owner` attribute** (`data.owner = {kind, name}`, `omitempty`), surfaced via `graph.GraphNode.Owner()` — **never inside `labels`** (same precedent as `ipaddress`). 39.A–39.G were the initial label-based build; **39.H migrated it to the typed attribute** (the now-current shape). No new node or edge type. See design.md D34 and `specs/cluster-topology-source/spec.md` ("Pod controller-owner attribute with ReplicaSet skip").
 
 ### 39.A PromQL layer
 
@@ -726,3 +726,15 @@ Implements D34. Enriches every `type="pod"` node with two strict-string `labels`
 - [x] 39.G.1 `go build ./...` + `make test` (unit/component/golden/property + integration where Docker is available).
 - [x] 39.G.2 `make vet`, `make lint`, `make verify-mocks` (no interface signatures changed — expect up-to-date), `make check-docs`, `make vuln`.
 - [x] 39.G.3 `openspec validate "add-k8s-pod-graph-api"` (valid) and confirm `graph-api-gateway` sibling still builds/tests against the updated engine (additive label only — expect no break).
+
+### 39.H Migrate owner from labels to typed `data.owner` attribute
+
+Moves the owner off the strict `map[string]string` `labels` (39.A–39.G) onto a typed, nullable top-level attribute, matching the `ipaddress` precedent and the design rule that structured derived data does not live in `labels`. Wire shape: a single nested `owner` object (`{kind, name}`), `omitempty` (omitted entirely for ownerless pods) — chosen over two flat `owner_kind`/`owner_name` fields so it reads as one nullable attribute and expresses the kind+name-as-a-pair invariant. See design.md D34 (revised).
+
+- [x] 39.H.1 `pkg/graph/node.go`: add the `Owner` type (`{Kind, Name string}` with `json:"kind"`/`json:"name"`) and an `Owner() *Owner` method to the sealed `GraphNode` interface; `PodNode` gains an `OwnerValue *Owner` field returning it; `K8sNode` / `PVCNode` / `ServiceNode` / `ExternalNode` return nil (mirrors `IPAddress()`).
+- [x] 39.H.2 `pkg/build/topology.go`: set `PodNode.OwnerValue` (`&graph.Owner{...}` when a controller owner resolves, else nil) instead of writing `labels["owner_kind"]`/`["owner_name"]`; owner no longer touches `labels`.
+- [x] 39.H.3 `pkg/cytoscape/cytoscape.go`: add `Owner *graph.Owner json:"owner,omitempty"` to `NodeData` and set it from `n.Owner()` in `Serialise` (no type switch — through the interface method).
+- [x] 39.H.4 `pkg/cytoscape/owner_test.go`: assert an owned pod serialises `data.owner={kind,name}`, an ownerless pod omits `data.owner` (omitempty), and owner never appears in `labels`.
+- [x] 39.H.5 Migrate tests off labels: `pkg/build/topology_test.go` asserts `pod.Owner()` (kind/name + nil), and `internal/integration/graph_e2e_test.go` (`TestPodOwnerAttributeSkipReplicaSet`) asserts `data.owner.kind`/`.name` + absence; both also assert owner is NOT in `labels`.
+- [x] 39.H.6 Docs to `data.owner`: `CLAUDE.md` (D34 bullet + sealed-types `Owner()`), `README.md` (metric table → `data.owner`), handler swagger example (top-level `owner` object), regenerate `docs/swagger.{json,yaml}` (`make docs`); design.md D34 + `specs/cluster-topology-source/spec.md` requirement retitled "attribute".
+- [x] 39.H.7 Re-verify: `go build ./...`, `make test` (incl. cytoscape owner test + Docker integration), `make vet` / `make lint` / `make verify-mocks` / `make check-docs` / `make vuln`, `openspec validate`, and `graph-api-gateway` build/tests against the updated engine.

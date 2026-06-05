@@ -172,12 +172,13 @@ func (s *GraphSuite) TestNameFilter_UnknownReturnsEmpty() {
 	s.Contains(bodyStr, `"edges":[]`)
 }
 
-// TestPodOwnerLabelsSkipReplicaSet — D34. Ingest kube_pod_owner for the
+// TestPodOwnerAttributeSkipReplicaSet — D34. Ingest kube_pod_owner for the
 // `checkout` pod pointing at a ReplicaSet, plus kube_replicaset_owner mapping
-// that ReplicaSet to a Deployment; assert /v1/graph stamps the pod node with
-// owner_kind=Deployment / owner_name=<deployment> (the ReplicaSet is skipped),
-// while the `cart` pod (no owner series) carries no owner labels.
-func (s *GraphSuite) TestPodOwnerLabelsSkipReplicaSet() {
+// that ReplicaSet to a Deployment; assert /v1/graph sets the pod node's typed
+// data.owner = {kind:"Deployment", name:<deployment>} (the ReplicaSet is
+// skipped), while the `cart` pod (no owner series) carries no data.owner. The
+// owner must never appear inside labels.
+func (s *GraphSuite) TestPodOwnerAttributeSkipReplicaSet() {
 	disc := s.T().Name()
 	t1 := fixedNow.Unix() * 1000
 	s.IngestExpFmt(fmt.Sprintf(`# HELP kube_pod_owner dummy
@@ -192,39 +193,44 @@ kube_replicaset_owner{cluster="cluster-alpha",namespace="shop",replicaset="check
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
 
+	type podData struct {
+		Name  string `json:"name"`
+		Type  string `json:"type"`
+		Owner *struct {
+			Kind string `json:"kind"`
+			Name string `json:"name"`
+		} `json:"owner"`
+		Labels map[string]string `json:"labels"`
+	}
 	var body struct {
 		Elements struct {
 			Nodes []struct {
-				Data struct {
-					Name   string            `json:"name"`
-					Type   string            `json:"type"`
-					Labels map[string]string `json:"labels"`
-				} `json:"data"`
+				Data podData `json:"data"`
 			} `json:"nodes"`
 		} `json:"elements"`
 	}
 	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
 
-	labelsFor := func(name string) (map[string]string, bool) {
+	podByName := func(name string) (podData, bool) {
 		for _, n := range body.Elements.Nodes {
 			if n.Data.Type == "pod" && n.Data.Name == name {
-				return n.Data.Labels, true
+				return n.Data, true
 			}
 		}
-		return nil, false
+		return podData{}, false
 	}
 
-	checkout, ok := labelsFor("checkout")
+	checkout, ok := podByName("checkout")
 	s.Require().True(ok, "checkout pod node must be present")
-	s.Equal("Deployment", checkout["owner_kind"], "ReplicaSet must be skipped to its Deployment")
-	s.Equal("checkout-deploy", checkout["owner_name"])
+	s.Require().NotNil(checkout.Owner, "checkout pod must carry data.owner")
+	s.Equal("Deployment", checkout.Owner.Kind, "ReplicaSet must be skipped to its Deployment")
+	s.Equal("checkout-deploy", checkout.Owner.Name)
+	_, ownerInLabels := checkout.Labels["owner_kind"]
+	s.False(ownerInLabels, "owner must NOT appear inside labels")
 
-	cart, ok := labelsFor("cart")
+	cart, ok := podByName("cart")
 	s.Require().True(ok, "cart pod node must be present")
-	_, hasKind := cart["owner_kind"]
-	_, hasName := cart["owner_name"]
-	s.False(hasKind, "pod with no owner series must omit owner_kind")
-	s.False(hasName, "pod with no owner series must omit owner_name")
+	s.Nil(cart.Owner, "pod with no owner series must omit data.owner")
 }
 
 func (s *GraphSuite) TestConnStringUnresolvableProducesExternalNode() {

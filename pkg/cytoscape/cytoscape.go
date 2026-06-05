@@ -45,6 +45,7 @@ type NodeData struct {
 	Type      string            `json:"type"`
 	Parent    string            `json:"parent,omitempty"`
 	IPAddress []string          `json:"ipaddress,omitempty"`
+	Owner     *graph.Owner      `json:"owner,omitempty"`
 	Labels    map[string]string `json:"labels"`
 }
 
@@ -114,6 +115,7 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 				Type:      string(n.Type()),
 				Parent:    compoundParent(n, present),
 				IPAddress: n.IPAddress(),
+				Owner:     n.Owner(),
 				Labels:    n.Labels(),
 			},
 		})
