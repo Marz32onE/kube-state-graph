@@ -98,6 +98,23 @@ type Topology struct {
 	RawSeriesCount map[string]int
 }
 
+// topologyVectors groups the raw result vectors of the topology fan-out. It
+// lets parseTopology take one named argument instead of ten positional,
+// same-typed model.Vectors that were easy to transpose at the call sites.
+type topologyVectors struct {
+	Pod         model.Vector
+	Node        model.Vector
+	Addr        model.Vector
+	PVC         model.Vector
+	NodeLabels  model.Vector
+	Service     model.Vector
+	EpEndpoints model.Vector
+	EpLabels    model.Vector
+	// Pod controller-owner resolution (D34).
+	PodOwner        model.Vector
+	ReplicaSetOwner model.Vector
+}
+
 // ReadTopology runs the topology queries in parallel and assembles the
 // result. The Renderer carries the configurable upstream metric-name prefix
 // (see design.md D26) so deployments using a fork of kube-state-metrics or a
@@ -108,92 +125,64 @@ type Topology struct {
 // --resources=services,endpointslices) yields empty indexes, and "://"
 // connection-string endpoints simply fall back to `external/<label>`.
 func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, window time.Duration, end time.Time) (Topology, error) {
-	var podVec, nodeVec, addrVec, pvcVec, labelVec model.Vector
-	var svcVec, epEndpointsVec, epLabelsVec model.Vector
-	var ownerVec, rsOwnerVec model.Vector
+	// Each goroutine writes a distinct field, so concurrent writes to v are
+	// race-free (no overlapping memory); g.Wait() establishes the happens-before
+	// edge to the read below.
+	var v topologyVectors
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QPodInfo), r.Render(promql.QPodInfo, window), end)
-		podVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeInfo), r.Render(promql.QNodeInfo, window), end)
-		nodeVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeAddresses), r.Render(promql.QNodeAddresses, window), end)
-		addrVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QPVCBindings), r.Render(promql.QPVCBindings, window), end)
-		pvcVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QNodeLabels), r.Render(promql.QNodeLabels, window), end)
-		labelVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QServiceInfo), r.Render(promql.QServiceInfo, window), end)
-		svcVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QEndpointSliceEndpoints), r.Render(promql.QEndpointSliceEndpoints, window), end)
-		epEndpointsVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QEndpointSliceLabels), r.Render(promql.QEndpointSliceLabels, window), end)
-		epLabelsVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QPodOwner), r.Render(promql.QPodOwner, window), end)
-		ownerVec = v
-		return err
-	})
-	g.Go(func() error {
-		v, err := q.Instant(ctx, string(promql.QReplicaSetOwner), r.Render(promql.QReplicaSetOwner, window), end)
-		rsOwnerVec = v
-		return err
-	})
+
+	// fetch issues one query and stores its result into dst. It captures the
+	// errgroup-derived ctx so a failing leg cancels the rest.
+	fetch := func(name promql.Query, dst *model.Vector) func() error {
+		return func() error {
+			out, err := q.Instant(ctx, string(name), r.Render(name, window), end)
+			*dst = out
+			return err
+		}
+	}
+
+	g.Go(fetch(promql.QPodInfo, &v.Pod))
+	g.Go(fetch(promql.QNodeInfo, &v.Node))
+	g.Go(fetch(promql.QNodeAddresses, &v.Addr))
+	g.Go(fetch(promql.QPVCBindings, &v.PVC))
+	g.Go(fetch(promql.QNodeLabels, &v.NodeLabels))
+	g.Go(fetch(promql.QServiceInfo, &v.Service))
+	g.Go(fetch(promql.QEndpointSliceEndpoints, &v.EpEndpoints))
+	g.Go(fetch(promql.QEndpointSliceLabels, &v.EpLabels))
+	g.Go(fetch(promql.QPodOwner, &v.PodOwner))
+	g.Go(fetch(promql.QReplicaSetOwner, &v.ReplicaSetOwner))
 	if err := g.Wait(); err != nil {
 		return Topology{}, fmt.Errorf("topology fan-out: %w", err)
 	}
 
-	t := parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec, ownerVec, rsOwnerVec)
+	t := parseTopology(v)
 	t.RawSeriesCount = map[string]int{
-		string(promql.QPodInfo):                len(podVec),
-		string(promql.QNodeInfo):               len(nodeVec),
-		string(promql.QNodeAddresses):          len(addrVec),
-		string(promql.QPVCBindings):            len(pvcVec),
-		string(promql.QNodeLabels):             len(labelVec),
-		string(promql.QServiceInfo):            len(svcVec),
-		string(promql.QEndpointSliceEndpoints): len(epEndpointsVec),
-		string(promql.QEndpointSliceLabels):    len(epLabelsVec),
-		string(promql.QPodOwner):               len(ownerVec),
-		string(promql.QReplicaSetOwner):        len(rsOwnerVec),
+		string(promql.QPodInfo):                len(v.Pod),
+		string(promql.QNodeInfo):               len(v.Node),
+		string(promql.QNodeAddresses):          len(v.Addr),
+		string(promql.QPVCBindings):            len(v.PVC),
+		string(promql.QNodeLabels):             len(v.NodeLabels),
+		string(promql.QServiceInfo):            len(v.Service),
+		string(promql.QEndpointSliceEndpoints): len(v.EpEndpoints),
+		string(promql.QEndpointSliceLabels):    len(v.EpLabels),
+		string(promql.QPodOwner):               len(v.PodOwner),
+		string(promql.QReplicaSetOwner):        len(v.ReplicaSetOwner),
 	}
 	return t, nil
 }
 
-func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpointsVec, epLabelsVec, ownerVec, rsOwnerVec model.Vector) Topology {
+func parseTopology(v topologyVectors) Topology {
 	clusters := map[string]struct{}{}
 
 	// Pod controller-owner resolution (D34), with the ReplicaSet skipped to its
 	// owning Deployment. Built up-front so the per-pod assembly below can stamp
 	// owner_kind / owner_name onto each pod's labels.
-	podOwners := resolvePodOwners(ownerVec, rsOwnerVec)
+	podOwners := resolvePodOwners(v.PodOwner, v.ReplicaSetOwner)
 
 	// External IP map: (cluster, node-name) -> IP.
 	externalIPs := map[[2]string]string{}
-	for _, s := range addrVec {
+	for _, s := range v.Addr {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		nodeName := string(s.Metric["node"])
 		typ := string(s.Metric["type"])
@@ -206,7 +195,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 
 	// K8s node label map: (cluster, node-name) -> labels (with `label_` prefix removed).
 	nodeLabels := map[[2]string]map[string]string{}
-	for _, s := range labelVec {
+	for _, s := range v.NodeLabels {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		nodeName := string(s.Metric["node"])
 		key := [2]string{cluster, nodeName}
@@ -223,8 +212,8 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 	}
 
 	// K8s nodes.
-	nodes := make([]*graph.K8sNode, 0, len(nodeVec))
-	for _, s := range nodeVec {
+	nodes := make([]*graph.K8sNode, 0, len(v.Node))
+	for _, s := range v.Node {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		nodeName := string(s.Metric["node"])
 		if nodeName == "" {
@@ -249,7 +238,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 
 	// Pods (group by (cluster, namespace, pod) for restart handling).
 	podGroups := map[podKey][]podObs{}
-	for _, s := range podVec {
+	for _, s := range v.Pod {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		name := string(s.Metric["pod"])
@@ -278,7 +267,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 		clusters[cluster] = struct{}{}
 	}
 
-	pods := make([]*graph.PodNode, 0, len(podVec))
+	pods := make([]*graph.PodNode, 0, len(v.Pod))
 	podsByUID := map[string]*graph.PodNode{}
 	podsByNameNS := map[podNameKey]*graph.PodNode{}
 	addPodToIndex := func(uid string, pod *graph.PodNode) {
@@ -343,13 +332,13 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 	// Each kube_pod_spec_volumes_persistentvolumeclaims_info series wires one
 	// pod to one PVC via (cluster, namespace, pod, persistentvolumeclaim).
 	pvcSeen := map[string]bool{}
-	pvcs := make([]*graph.PVCNode, 0, len(pvcVec))
-	bindings := make([]PodPVCBinding, 0, len(pvcVec))
+	pvcs := make([]*graph.PVCNode, 0, len(v.PVC))
+	bindings := make([]PodPVCBinding, 0, len(v.PVC))
 	canonicalPodUID := map[[3]string]string{}
 	for k, group := range podGroups {
 		canonicalPodUID[[3]string{k.cluster, k.namespace, k.pod}] = group[0].uid
 	}
-	for _, s := range pvcVec {
+	for _, s := range v.PVC {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		podName := string(s.Metric["pod"])
@@ -386,7 +375,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 
 	// Services (D29). kube_service_info carries cluster_ip; "None" means headless.
 	servicesByNameNS := map[serviceKey]ServiceObs{}
-	for _, s := range svcVec {
+	for _, s := range v.Service {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		svc := string(s.Metric["service"])
@@ -405,7 +394,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 	// stay unmapped and the service falls back to external/<label> downstream).
 	type sliceKey struct{ cluster, namespace, slice string }
 	sliceToService := map[sliceKey]string{}
-	for _, s := range epLabelsVec {
+	for _, s := range v.EpLabels {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		slice := string(s.Metric["endpointslice"])
@@ -422,7 +411,7 @@ func parseTopology(podVec, nodeVec, addrVec, pvcVec, labelVec, svcVec, epEndpoin
 	// keyed by the owning service recovered from the slice->service map. This is
 	// the source of the Service → backing-pod fan-out (service-selects-pod edges).
 	endpointsByService := map[serviceKey][]EndpointObs{}
-	for _, s := range epEndpointsVec {
+	for _, s := range v.EpEndpoints {
 		cluster := bucketCluster(string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		slice := string(s.Metric["endpointslice"])
