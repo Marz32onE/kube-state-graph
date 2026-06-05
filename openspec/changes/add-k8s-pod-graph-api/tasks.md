@@ -128,10 +128,8 @@
 ## 16. Documentation
 
 - [x] 16.1 Write `README.md`: what the server is, the data flow diagram, single-binary usage, env / flag reference.
-- [x] 16.2 Write `docs/api.md`: response shapes, query parameters, 60 s alignment policy, status codes and `reason` values.
 - [x] 16.3 Write `docs/multi-cluster.md`: producer-side scrape `external_labels: { cluster: ... }` requirement (single source-cluster label on every series — Tempo / `servicegraph` connector configured with pod-UID dimensions only; remote/server-side cluster is recovered at build time from the topology pod-UID index).
 - [x] 16.4 Write `docs/external-substitution.md`: `KSG_EXTERNAL_NAME_PATTERN` semantics, recommended values (`://`, `@`), examples of resulting graphs.
-- [x] 16.5 Write `docs/operations.md`: self-metrics, alert recipes, `/livez` / `/readyz` semantics, capacity planning notes.
 
 ## 17. Pre-archive verification
 
@@ -160,7 +158,6 @@
 - [x] 19.5 Update the CI workflow so `lint`, `vuln`, and `test` are independent jobs (no `needs` edges) running in parallel.
 - [x] 19.6 Add `make lint`, `make vuln`, `make test` Makefile targets that mirror the CI configuration.
 - [ ] 19.7 Run the full lint + vuln suite against the existing source tree; fix or `//nolint:<name>` (with rationale comments + tracked issues) the resulting findings. _(Deferred — `golangci-lint` not installed in this session; lint output cannot be triaged here.)_
-- [ ] 19.8 Document the suite in `docs/operations.md` (link to `static-analysis-suite/spec.md` for the authoritative requirements).
 
 ## 21. OpenAPI generation + offline Scalar UI (capability: api-docs / graph-api)
 
@@ -177,7 +174,6 @@
 - [x] 21.11 Implement the `/docs` Gin handler: returns embedded HTML referencing `/docs/assets/scalar.js` (relative path) and `/openapi.yaml`. Test `TestDocs_OfflineInvariant` asserts no `https://` references in the served HTML.
 - [x] 21.12 Implement the `/docs/assets/*path` Gin handler serving embedded files with `Cache-Control: public, max-age=86400, immutable`. Includes a path-traversal guard.
 - [ ] 21.13 Implement the route ↔ spec drift contract test in `internal/api/`: parse `docs/swagger.json` via `kin-openapi`, walk `engine.Routes()`, assert bidirectional set-equality modulo allowlist. _(Deferred — adds `kin-openapi` dependency; placeholder spec covers all routes manually for now.)_
-- [ ] 21.14 Add `docs/api.md` cross-link to the live `/docs` viewer; add a screenshot of the rendered Scalar UI. _(Screenshot needs running server + real Scalar bundle; deferred with 17.3.)_
 - [x] 21.15 Add an offline-rendering integration test: `TestDocs_OfflineInvariant` (no `https://` script / link references) plus `TestDocs_AssetsServed` (200, non-empty body) plus `TestDocs_AssetsRejectsTraversal`.
 
 ## 22. testify migration (capability: static-analysis-suite + container-integration)
@@ -200,7 +196,7 @@
 - [x] 24.7 Register `kube_state_graph_auth_rejected_total{reason}` counter in `internal/observability`. Increment from middleware on `missing` and `invalid` outcomes.
 - [x] 24.8 Update swag annotations: document-level `@securityDefinitions.apikey ApiKeyAuth` (`@in header`, `@name X-API-Key`); per-handler `@Param X-API-Key`, `@Failure 401`, `@Security ApiKeyAuth` on `/v1/graph`, `/v1/clusters`, `/v1/edge-types`, `/debug/last-queries`. Run `make docs` and commit `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
 - [x] 24.9 Integration test: `internal/integration/graph_e2e_test.go::TestAPIKey_FileBacked_Enforced` exercises 401 (no header), 401 (wrong key), 200 (valid key), and confirms `/livez` stays open with auth on.
-- [x] 24.12 Document Authentication in `docs/api.md` (header, exempt routes, 401 contract), `docs/operations.md` (rotation procedure, metric, K8s Secret mount), and `README.md` (env / flag table).
+- [x] 24.12 Document Authentication in `README.md` (env / flag table).
 
 ## 23. Pod-name filter (capability: graph-api — modified)
 
@@ -215,7 +211,6 @@
 - [x] 23.7 Component tests in `internal/api/server_test.go`: HTTP `?pod=` maps through to scope correctly; combines with existing filters; unknown values return 200 + empty. _(Coverage placed in `internal/integration/graph_e2e_test.go` next to the existing edge-type filter integration tests, which exercise the full HTTP→Project→serialise pipeline against a real VM container — a closer fit than the mock-PromQL `server_test.go` which only validates request parsing.)_
 - [x] 23.8 Property test in `internal/graph/property_test.go`: when `Pods` is set, every returned pod node satisfies the filter, and no cross-cluster partner pod outside the filter is returned.
 - [x] 23.9 Add or reuse a golden scenario in `internal/api/testdata/golden/` exercising `?pod=...` for one well-known pod name; refresh with `go test ./internal/api/ -update -run Golden`.
-- [x] 23.10 Update `docs/api.md` filter-parameter table with the new param and its semantics (exact match, repeatable, AND/OR rules, no cross-cluster partner preservation).
 
 ## 25. Type-agnostic `name` filter (capability: graph-api — modified)
 
@@ -241,7 +236,6 @@ Operators want to anchor a graph view on **any** node — pod, K8s node, PVC, or
 - [x] 25.7 Update property test in `internal/graph/property_test.go`: when `Names` is set, every node in the result either has `n.Name() ∈ Names` or is a missing edge endpoint re-added by the unified partner-rehydration rule (and that endpoint is incident on at least one retained edge whose other end matches the name set).
 - [x] 25.8 Update integration coverage in `internal/integration/graph_e2e_test.go`: replace the `?pod=` test cases with `?name=` cases that exercise pod, K8s-node, and PVC anchors. Drop fixtures that only exist to test pod-only narrowing.
 - [x] 25.9 Refresh golden scenarios under `internal/api/testdata/golden/`: rename `pod=...` cases to `name=...`; add at least one new case where the anchor is a K8s node. Refresh via `go test ./internal/api/ -update -run Golden`.
-- [x] 25.10 Update `docs/api.md` filter-parameter table: remove the `pod` row, add a `name` row describing the cross-type match (exact equality on `n.Name()`, repeatable, OR within param / AND across params, no cross-cluster partner preservation when set, edge endpoints of in-scope nodes re-added subject to namespace).
 - [x] 25.11 Update `docs/api.zh-tw.md` (if present) and the OpenSpec zh-tw mirrors (`design.zh-tw.md`, `proposal.zh-tw.md`) to reflect the rename.
 - [x] 25.12 Run `openspec validate "add-k8s-pod-graph-api"` and confirm the modified spec parses; run `make test` + `make check-docs` after the code change.
 
@@ -259,7 +253,6 @@ The configuration surface accumulated knobs whose value did not justify the cost
 - [x] 27.8 Update component tests in `internal/api/server_test.go`: drop `TestParseRequest_WindowTooLarge`, `TestParseRequest_EndInFuture`, `TestClusterTooLarge`, and any `/debug/last-queries` test. Adjust any test that wires `Config{ MaxWindow, MaxSkew, MaxPods, ClusterDiscoveryLookback, EnableDebug }` to drop those fields.
 - [x] 27.9 Update integration tests in `internal/integration/graph_e2e_test.go`: drop the `cfg.ClusterDiscoveryLookback = 365 * 24 * time.Hour` override on the test rig (the constant now applies). Drop any `MaxWindow` / `MaxSkew` / `MaxPods` tweaks. Keep tests that exercise `?cluster=`, `?name=`, etc.
 - [x] 27.10 Update Swag annotations on `/v1/graph`: remove `--max-window` / `--max-skew` references from `@Description` and `@Param end "..."`. Remove the `/debug/last-queries` route annotations entirely. Remove `400 window_too_large`, `400 end_in_future`, `503 cluster_too_large` from `@Failure` blocks. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` plus `internal/api/static/openapi/*`.
-- [x] 27.11 Update `docs/api.md`: drop `--max-window` / `--max-skew` from the `end` parameter description, drop the `window_too_large` / `end_in_future` / `cluster_too_large` rows from the status-code table, drop the `--cluster-discovery-lookback` mention from `/v1/clusters` (replace with "fixed `1h` lookback"), drop the entire `/debug/last-queries` section.
 - [x] 27.12 Update `CLAUDE.md` "Request lifecycle" diagram and "Load-bearing design rules" bullets to drop `--max-window` / `--max-skew` validation lines and any `/debug/*` references. Mention upstream VictoriaMetrics search limits as the bounded-cost mechanism.
 - [x] 27.14 Run `openspec validate "add-k8s-pod-graph-api"` (must stay green); run `make test` + `make check-docs`; run `go vet ./...` + `golangci-lint run` (when available locally) to catch dead code (`probeClusterSize`, `QClusterSizeProbe`, `ReasonClusterTooLarge`, `validateWindow`, `validateSkew`, debug handler).
 
@@ -271,7 +264,7 @@ The configuration surface accumulated knobs whose value did not justify the cost
 - [x] 27.A.4 Update Swag annotations on `/v1/clusters` to include `@Failure 504 {object} errorBody "Upstream timeout"`. Run `make docs` and commit regenerated artefacts.
 - [x] 27.A.5 Unit test `internal/config/config_test.go`: parses `--api-timeout` flag and `KSG_API_TIMEOUT` env; rejects zero / negative.
 - [x] 27.A.6 Component test `internal/api/server_test.go`: stalled discovery upstream → 504 with `reason: "timeout"`.
-- [x] 27.A.7 Update `docs/api.md` to describe `--api-timeout` semantics (which endpoints honour it; default `5s`); update README env table.
+- [x] 27.A.7 Update README env table to describe `--api-timeout` semantics (which endpoints honour it; default `5s`).
 
 ### 27.B Remove `--build-concurrency` and the `503 capacity` reason (graph-api — modified)
 
@@ -285,14 +278,12 @@ The configuration surface accumulated knobs whose value did not justify the cost
 - [x] 27.B.8 Update integration tests in `internal/integration/graph_e2e_test.go`: drop any `cfg.BuildConcurrency = N` overrides; drop `TestBuild_Capacity` and `TestRetryAfterHeader_Capacity` if present.
 - [x] 27.B.9 Update component tests `internal/api/server_test.go`: rename `TestBuild_Timeout` assertions from `503 timeout` to `504 timeout`; drop `TestBuild_Capacity`. Add a regression test that two concurrent build requests both succeed when the upstream is responsive (no semaphore = no serialisation).
 - [x] 27.B.10 Update Swag annotations on `/v1/graph`: replace `@Failure 503 {object} errorBody "Build concurrency exhausted"` with `@Failure 504 {object} errorBody "Build timeout"`. Drop the `Retry-After` mention from the timeout description. Run `make docs` and commit regenerated artefacts.
-- [x] 27.B.11 Update `docs/operations.md` capacity-planning section to recommend HPA tuning (CPU + p95 latency targets) instead of `--build-concurrency`.
 
 ### 27.C RFC-9110 status realignment for upstream errors (graph-api — modified)
 
 - [x] 27.C.1 In `internal/api/errors.go::mapBuildError`, map `ReasonTimeout → 504 Gateway Timeout` and `ReasonUpstream → 502 Bad Gateway`. Document the choice in a comment referencing RFC 9110 §15.6.3 (502) and §15.6.5 (504).
 - [x] 27.C.2 Audit every `writeError(c, http.StatusServiceUnavailable, ...)` site in `internal/api/`. Keep `503` only for `/readyz` (probe failed) and any genuine "service is going away / not yet ready" cases. Build / upstream paths SHALL NOT use 503.
 - [x] 27.C.3 Audit every `errors.Is(err, context.DeadlineExceeded)` (and the equivalent for the prom client's wrapped errors) and ensure the matching error reason maps to `504 timeout` not `503`.
-- [x] 27.C.4 Update `docs/api.md` status-code table to reflect the new mappings (already edited in this section's docs pass).
 - [x] 27.C.5 Update component tests asserting `503 timeout` / `503 capacity` → adjust to `504 timeout` / removal respectively. Update integration tests `internal/integration/graph_e2e_test.go::TestBuild_*` similarly.
 - [x] 27.C.6 `openspec validate "add-k8s-pod-graph-api"` and `make check-docs` after 27.A / 27.B / 27.C.
 
@@ -308,7 +299,7 @@ Cluster scoping is a caller-side concern via the `?cluster=` filter on `/v1/grap
 - [ ] 28.6 Update `cmd/kube-state-graph/main.go` startup log to drop the `clusters_allowlist` field.
 - [ ] 28.7 Update unit / component tests: drop `TestAllowlistRegex_*`, drop any `cfg.ClustersAllowlist = …` overrides in `internal/api/server_happy_test.go` and `internal/integration/graph_e2e_test.go`. Adjust assertions that expected `cluster=~"..."` selectors in mocked PromQL strings.
 - [ ] 28.8 Update Swag annotations on `/v1/clusters` to drop the `--clusters-allowlist` mention; run `make docs` and commit regenerated artefacts.
-- [ ] 28.9 Update `docs/api.md` and `README.md` (+ zh-tw mirror) to drop the allowlist row from env / flag tables.
+- [ ] 28.9 Update `README.md` (+ zh-tw mirror) to drop the allowlist row from env / flag tables.
 - [ ] 28.10 Update `CLAUDE.md`'s "Load-bearing design rules" bullet on allowlist injection — replace with the simpler statement that the server loads every cluster present in upstream VM and that caller-side scoping uses `?cluster=`.
 - [ ] 28.12 Run `openspec validate "add-k8s-pod-graph-api"` and `make test` + `make check-docs`; `go vet ./...` for dead imports.
 
@@ -363,8 +354,6 @@ Per design D25 and `specs/otlp-observability/spec.md`. Wires OpenTelemetry traci
 - [ ] 29.F.1 Add a testcontainers-based integration test `internal/integration/otlp_e2e_test.go` that starts an OTel Collector container alongside VictoriaMetrics, configures the API server with `OTEL_EXPORTER_OTLP_ENDPOINT=<container endpoint>`, makes a `/v1/graph` request, and asserts the collector received: (a) one `GET /v1/graph` server span; (b) one `kube-state-graph.build` child; (c) ≥ 1 `prometheus.query` grandchild with `db.system=prometheus` and a non-empty `db.statement`; (d) the corresponding log records carry matching `trace_id` / `span_id`. **Deferred** — the existing `internal/integration/` testcontainers suite is gated by Docker bridge-network availability which is not present in the current dev sandbox; same blocker as `TestGraphSuite`. Will land in a follow-up change once CI exposes Docker.
 - [x] 29.F.2 Negative integration test: with no endpoint env var set, run a `/v1/graph` request and assert no socket connection is opened to any port (or simpler: assert `telemetry.Init` returns `enabled=false` and the in-memory exporter remains empty). (Covered by `TestInit_DisabledByDefault` in `internal/telemetry/telemetry_test.go`: clears all OTel env vars, calls Init, asserts `enabled=false` and that the global TracerProvider/LoggerProvider are no-op.)
 - [x] 29.F.3 Property/contract test: assert the response body for `/v1/edge-types` (and by extension `/v1/graph`) is byte-identical when tracing is enabled vs disabled — resource attributes must not leak into the response body. (Implemented as `TestTracing_BodyStableAcrossTracingState`.)
-- [x] 29.F.5 Update `docs/operations.md` with an "OpenTelemetry" section listing the env vars, the span topology, the expected log fields, and the secret-redaction guarantee. Mirror in `docs/operations.zh-tw.md`. (No zh-tw mirror exists in this repo; English doc updated.)
-- [x] 29.F.6 Update `docs/api.md` to mention that responses are unaffected by tracing and that `traceparent` is honoured / propagated.
 - [x] 29.F.7 Update `CLAUDE.md` "Load-bearing design rules" with a bullet: "Tracing/logging exports are config'd by OTel env vars only (no `--otlp-*` flags), default no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, and SHALL NOT alter response bodies."
 - [x] 29.F.8 Run `openspec validate "add-k8s-pod-graph-api"`, `make test`, `make vet`, `make lint`, `make check-docs`. Confirm `govulncheck` clean against the new OTel deps. (`openspec validate` passes; `go vet ./...` clean; `go test ./... -race` excluding the Docker-dependent integration package: 122 passed; `golangci-lint run` reports only pre-existing trailing-whitespace nits unrelated to this change. `govulncheck` and `make check-docs` deferred to a follow-up shell that has those tools wired.)
 
@@ -414,9 +403,7 @@ Per design D26 and the "Configurable upstream metric-name prefix" requirement in
 ### 30.F Docs + operator notes
 
 - [ ] 30.F.1 Add a `KSG_METRIC_PREFIX` / `--metric-prefix` entry to the env-var / flag table in `README.md` (and `README.zh-tw.md` if present) under the upstream configuration section.
-- [ ] 30.F.2 Add an "Exporter compatibility contract" subsection to `docs/operations.md` that lists: (a) supported metric-name suffix list (the six `kube_*` series + `cluster_discovery`); (b) the required label set per metric (mirror the spec); (c) the additive nature of the prefix; (d) the explicit non-coverage of `traces_service_graph_request_total` and `up{}`.
 - [ ] 30.F.3 Add a bullet to the "Load-bearing design rules" section of `CLAUDE.md`: "Metric-name prefix is an additive `KSG_METRIC_PREFIX` knob applied to KSM-shaped series only; the metric-name suffix and label-name set are a fixed contract (see D26)."
-- [ ] 30.F.4 Document in `docs/operations.md` that the prefix is NOT applied to `traces_service_graph_request_total` (Alloy/Tempo family) or `up{}` (Prometheus-native), and that a separate knob can ship in a follow-up if a deployment needs it.
 
 ### 30.G Validation
 
@@ -456,7 +443,6 @@ Per design D26 and the "Configurable upstream metric-name prefix" requirement in
 - [ ] 31.D.1 Confirm `openspec/changes/add-k8s-pod-graph-api/specs/pod-service-graph/spec.md` contains the new "Missing pod-UID human-label fallback" requirement and the updated trigger language on "Synthesised pod node fallback" (i.e., "non-empty pod-UID endpoint").
 - [ ] 31.D.2 Confirm `openspec/changes/add-k8s-pod-graph-api/design.md` contains `D27. Missing pod-UID human-label fallback` and the corresponding risk bullet in "Risks / Trade-offs".
 - [ ] 31.D.3 Update `CLAUDE.md` "Load-bearing design rules": amend the existing "External-endpoint substitution rule" bullet (or add a sibling bullet) to note that missing `client_k8s_pod_uid` or `server_k8s_pod_uid` now promotes to `external/<label>` rather than dropping the edge; ID has no cluster prefix; edge `labels.cluster` rules unchanged.
-- [ ] 31.D.4 Update `docs/operations.md` "Exporter compatibility contract" to clarify that `client_k8s_pod_uid` and `server_k8s_pod_uid` are RECOMMENDED but no longer hard-required for an edge to appear — missing UID surfaces the dependency as an `external/<label>` node. Mirror in `docs/operations.zh-tw.md` if it exists.
 - [ ] 31.D.5 Update the OpenAPI / Scalar-rendered description for `/v1/graph` if the response-shape documentation explicitly states "every node is a pod resolved via pod UID" — replace with the per-endpoint resolution order from D27.
 
 ### 31.E Validation
@@ -497,7 +483,6 @@ The response shape is changed so that every pod and K8s-node entry carries its o
 - [x] 32.C.4 `openspec/changes/add-k8s-pod-graph-api/specs/cluster-topology-source/spec.md`: rewrite the canonical-fields requirement so `pod_ip` / `host_ip` / `external_ip` no longer appear in labels; pod IP lives on `ipaddress`, node IP lives on the K8s-node entry's `ipaddress`, `host_ip` is dropped from the pod entry entirely.
 - [x] 32.C.5 `openspec/changes/add-k8s-pod-graph-api/specs/otlp-observability/spec.md`: drop the `kube_state_graph.etag` span-attribute requirement and the matching scenario assertion.
 - [x] 32.C.6 `internal/api/static/openapi/openapi.yaml` + `openapi.json` + `docs/swagger.yaml` + `docs/swagger.json` + `docs/docs.go`: regenerated via `make docs`. ETag/304 mentions cleared; `ipaddress` field added to `internal_api.cytoscapeNodeData`.
-- [x] 32.C.7 `docs/operations.md`: remove ETag-based amortisation framing in the capacity-planning section and drop `host_ip` from the exporter-compatibility table. Drop the `kube_state_graph.etag` span-attribute row.
 - [x] 32.C.8 `CLAUDE.md`: remove the "ETag determinism is load-bearing" bullet and the ETag mention in the request-lifecycle diagram. Add a new bullet describing the `ipaddress` attribute contract. Add `IPAddress()` to the sealed-interface method list.
 
 ### 32.D Validation
@@ -565,7 +550,6 @@ Per design D29. There is no configurable substring-match knob — detection is n
 
 - [x] 34.G.1 Rewrite the connection-string-resolution doc for D29: connection-string resolution (hardcoded `"://"`, no knob), the `.svc` grammar (service-level vs headless), `service` nodes + `service-selects-pod` edges, and `external` nodes for unresolvable `"://"` strings. Remove all substring-pattern knob references.
 - [x] 34.G.2 `README.md`: remove the substring-pattern knob rows from the env / flag tables; update prose mentioning the configurable pattern to describe the hardcoded connection-string resolution.
-- [x] 34.G.3 `docs/operations.md` "Exporter compatibility contract": add `kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels` to the supported metric list with their required label sets (`service`, `cluster_ip`, `endpointslice`, `address`, `hostname`, `targetref_kind`, `targetref_name`, `targetref_namespace`, `label_kubernetes_io_service_name`); note `KSG_METRIC_PREFIX` applies to these three and NOT to `traces_service_graph_*` or `up{}`.
 - [x] 34.G.4 `CLAUDE.md`: rewrite the connection-string-endpoint rule bullet for D29 (hardcoded `"://"`, connection-string resolution, no knob); rewrite the per-endpoint resolution-order list (Stage 0 connection-string → pod-UID/synth → missing-UID external → drop); add the `service` node type + `service-selects-pod` edge to the sealed-types / registry mentions; note that there is no substring-pattern knob; extend the D26 metric-prefix bullet's metric list with the three new series.
 
 ### 34.H Swag / OpenAPI
@@ -598,8 +582,7 @@ Per design D30. The `servicegraph` connector emits **virtual peers** for endpoin
 ### 35.C Docs
 
 - [x] 35.C.1 `CLAUDE.md`: add a load-bearing-design-rule bullet for the sentinel exclusion (query-layer, fixed `{user, unknown}` set, anchored exact / case-sensitive match on `client` / `server` only, distinct from `cluster="unknown"` bucketing). Update the "No filters pushed to PromQL" bullet to carve out this fixed, request-invariant selector refinement. Mention it in the `ReadServiceGraph` line of the request-lifecycle diagram / prose.
-- [x] 35.C.2 `docs/operations.md` "Exporter compatibility contract": note that `client` / `server ∈ {user, unknown}` series are excluded at the query layer (the connector's virtual nodes for uninstrumented / unresolved peers), so they never appear in the graph; document `user` / `unknown` as reserved sentinel values on the `client` / `server` dimension and that ingress visibility for uninstrumented callers is intentionally not surfaced in v1.
-- [x] 35.C.3 `README.md` + `README.zh-tw.md` + `docs/api.md`: where the service-graph behaviour / node types are described, note that uninstrumented `user` ingress and `unknown` peers are dropped (no node / edge), and that this is fixed (no knob) in v1.
+- [x] 35.C.3 `README.md` + `README.zh-tw.md`: where the service-graph behaviour / node types are described, note that uninstrumented `user` ingress and `unknown` peers are dropped (no node / edge), and that this is fixed (no knob) in v1.
 
 ### 35.D Swag / OpenAPI
 
@@ -630,7 +613,6 @@ Per design D31. The Cytoscape `/v1/graph` serialiser groups nodes into compound 
 ### 36.C Docs
 
 - [x] 36.C.1 `CLAUDE.md`: note the Cytoscape compound grouping (presentation-only, `data.parent`, synthetic `cluster` node, pod→node relationship expressed via `labels.node` compound nesting with no pod-runs-on-node edge) in the serialiser / response-shape sections.
-- [x] 36.C.2 `docs/api.md`: document the `data.parent` field, the synthetic `type="cluster"` node, and that the pod→node relationship is shown via compound nesting (`labels.node`) in Cytoscape, with no pod-runs-on-node edge.
 - [x] 36.C.3 Swag / OpenAPI: add the optional `parent` field and the `cluster` node `type` enum to the documented Cytoscape node schema; run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
 
 ### 36.D Validation
@@ -737,7 +719,6 @@ Implements D34. Enriches every `type="pod"` node with two strict-string `labels`
 
 - [x] 39.F.1 `CLAUDE.md`: add `owner_kind` / `owner_name` to the pod-label description and note the ReplicaSet-skip rule + the two new KSM series in the metric-prefix list (the `KSG_METRIC_PREFIX` knob bullet).
 - [x] 39.F.2 `README.md` + `README.zh-tw.md`: document the pod owner labels and the ReplicaSet→Deployment skip in the node-attributes / KSM-requirements section.
-- [ ] 39.F.3 `docs/operations.md`: note that `kube_pod_owner` / `kube_replicaset_owner` are KSM defaults (no allowlist) and that trimming KSM `--resources` silently disables owner labels (graceful degradation).
 - [x] 39.F.4 OpenAPI: if the handler `@-annotation` example bodies enumerate pod `labels`, add `owner_kind` / `owner_name`; run `make docs` + `make check-docs`. (Note: handwritten swagger annotation drift is NOT caught by `check-docs` — verify by hand.)
 
 ### 39.G Validation
