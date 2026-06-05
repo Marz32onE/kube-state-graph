@@ -105,7 +105,7 @@ The reader SHALL treat an empty or sparse service-graph dataset as a valid input
 
 ### Requirement: Connection-string endpoint resolution
 
-When a service-graph series carries a connection string for an endpoint (an external dependency addressed by URL), that endpoint's pod UID is empty and the `client` / `server` label holds the connection string verbatim (e.g. `"mongodb://mongo-0.mongo.db.svc.cluster.local:27017"` or `"https://payments.partner.example/api"`). The reader SHALL detect connection strings by a hardcoded `"://"` substring check evaluated independently against the `client` and `server` label values. There is NO configurable knob: the previous `KSG_OTHERS_NAME_PATTERN` env var / `--others-name-pattern` flag is removed and the reader SHALL NOT read any pattern from configuration.
+When a service-graph series carries a connection string for an endpoint (an external dependency addressed by URL), that endpoint's pod UID is empty and the `client` / `server` label holds the connection string verbatim (e.g. `"mongodb://mongo-0.mongo.db.svc.cluster.local:27017"` or `"https://payments.partner.example/api"`). The reader SHALL detect connection strings by a hardcoded `"://"` substring check evaluated independently against the `client` and `server` label values. There is NO configurable knob for this detection: the reader SHALL NOT read any substring or pattern from configuration.
 
 For each endpoint, the reader SHALL run **connection-string resolution** (Stage 0) when BOTH of the following hold:
 

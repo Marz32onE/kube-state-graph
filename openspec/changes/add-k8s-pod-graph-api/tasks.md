@@ -507,71 +507,16 @@ The response shape is changed so that every pod and K8s-node entry carries its o
 - [ ] 32.D.3 `openspec validate "add-k8s-pod-graph-api"` passes after the spec rewrites.
 - [ ] 32.D.4 Run the server binary against a VictoriaMetrics instance and confirm via `/v1/graph` (and the Scalar UI) that nodes carry `ipaddress` (pod + node entries) and that no `ETag` header is set on graph routes.
 
-## 33. Split `others` (pattern) from `external` (missing-UID fallback) (capability: graph-api — modified, pod-service-graph — modified)
+## 34. Connection-string endpoint resolution (hardcoded `"://"`, no config knob) (capability: pod-service-graph, cluster-topology-source, graph-api)
 
-Pattern-matched non-pod endpoints (operator-declared via `KSG_OTHERS_NAME_PATTERN`) and missing-UID inferred non-pod endpoints (producer regression fallback per D27) now live in disjoint namespaces with disjoint dedupe maps. The pattern rule emits `type="others"` with `id="others/<label>"`; the missing-UID fallback continues to emit `type="external"` with `id="external/<label>"`. The env var / flag / config field are renamed from `KSG_EXTERNAL_NAME_PATTERN` / `--external-name-pattern` / `ExternalNamePattern` to `KSG_OTHERS_NAME_PATTERN` / `--others-name-pattern` / `OthersNamePattern`. Rationale: the producer-regression signal (sudden growth of `type=external`) was diluted by steady-state declared endpoints; splitting keeps the alarm clean. See design.md D18 + D27.
-
-> **Superseded in part by §34 (D29).** The `OthersNode` type, the `others/<label>` namespace, and the disjoint others-vs-external split established here are RETAINED. Only the configurable knob (33.D — `KSG_OTHERS_NAME_PATTERN` / `--others-name-pattern` / `Config.OthersNamePattern`) is later removed by 34.D: `"://"` detection becomes hardcoded and unresolved others nodes drop `labels.pattern` (→ `labels={}`). Do not invest in 33.D's knob work beyond what is already in the tree; execute §34 for the final state.
-
-### 33.A Graph types
-
-- [ ] 33.A.1 `internal/graph/node.go`: add `NodeTypeOthers NodeType = "others"`. Add `OthersNode` struct mirroring `ExternalNode` (fields `IDValue`, `NameValue`, `LabelsValue`). Implement `ID()`, `Name()`, `Type()` (returns `NodeTypeOthers`), `Labels()`, `IPAddress()` (returns `nil`), `isGraphNode()`. Add `OthersID(value string) string { return "others/" + value }`.
-- [ ] 33.A.2 Update the `ExternalNode` doc-comment to clarify it represents only the missing-UID human-label fallback path (D27); the pattern-matched path now produces `OthersNode`.
-
-### 33.B Builder rewiring
-
-- [ ] 33.B.1 `internal/build/servicegraph.go`: add `OthersNodes []*graph.OthersNode` to `ServiceGraphResult`.
-- [ ] 33.B.2 Rename the `externalPattern` parameter on `ReadServiceGraph`, `parseServiceGraph`, `resolveClientEndpoint`, `resolveServerEndpoint` to `othersPattern`.
-- [ ] 33.B.3 In `parseServiceGraph`, allocate a second dedupe map: `others := map[string]*graph.OthersNode{}`. Pass it alongside `externals` into both resolver functions.
-- [ ] 33.B.4 In both `resolveClientEndpoint` and `resolveServerEndpoint`, change the pattern branch to insert into `others` with `id=graph.OthersID(humanLabel)`, `type="others"`, `labels={"pattern": othersPattern}`. The missing-UID fallback branch keeps inserting into `externals` unchanged.
-- [ ] 33.B.5 At the bottom of `parseServiceGraph`, populate `out.OthersNodes` from the `others` map in addition to `out.ExternalNodes` from `externals`.
-
-### 33.C Builder.assemble + main pipeline
-
-- [ ] 33.C.1 `internal/build/build.go::assemble`: include `sg.OthersNodes` in the total / iteration so others nodes flow into the assembled `[]graph.GraphNode`. Update the `total` size hint to account for them.
-- [ ] 33.C.2 `internal/build/build.go::Build`: pass `b.cfg.OthersNamePattern` to `ReadServiceGraph` (renamed from `b.cfg.ExternalNamePattern`).
-
-### 33.D Config + flag rename
-
-- [ ] 33.D.1 `internal/config/config.go`: rename `Config.ExternalNamePattern` → `Config.OthersNamePattern`. Update `Defaults()` field name. Update `Parse` to bind `--others-name-pattern` (replacing `--external-name-pattern`); update help text to reference others nodes. Update `applyEnv` to read `KSG_OTHERS_NAME_PATTERN` (replacing `KSG_EXTERNAL_NAME_PATTERN`).
-- [ ] 33.D.2 `cmd/kube-state-graph/main.go`: rename the `external_name_pattern_set` slog field to `others_name_pattern_set` and read `cfg.OthersNamePattern`.
-
-### 33.E Tests
-
-- [ ] 33.E.1 `internal/config/config_test.go`: replace `KSG_EXTERNAL_NAME_PATTERN` with `KSG_OTHERS_NAME_PATTERN`; rename `cfg.ExternalNamePattern` → `cfg.OthersNamePattern`; update assertion message.
-- [ ] 33.E.2 `internal/build/servicegraph_test.go`: rewrite pattern-rule tests to assert `id="others/<value>"`, `type="others"`, and that nodes land in `ServiceGraphResult.OthersNodes`. Rewrite the "pattern + fallback dedupe" test (was `TestParseServiceGraph_DedupeBetweenPatternAndFallback`) to assert that the two paths now produce two distinct nodes (`others/<label>` and `external/<label>`).
-- [ ] 33.E.3 `internal/integration/graph_e2e_test.go`: rename `cfg.ExternalNamePattern = "://"` → `cfg.OthersNamePattern = "://"`. Update any test that asserts on `type="external"` for a pattern-matched endpoint to expect `type="others"` and `id="others/<label>"`. Keep missing-UID-fallback tests on `type="external"`.
-- [ ] 33.E.4 `internal/graph/registry.go`: update `EdgeTypePodCallsPod`'s description to reference `KSG_OTHERS_NAME_PATTERN` (and mention both `others` + `external` endpoint kinds).
-- [ ] 33.E.5 Golden tests: regenerate any fixtures under `internal/api/testdata/golden/` whose payload includes pattern-matched endpoints (`type="external"` with `labels.pattern`) — those now serialise as `type="others"` with `id="others/<value>"`. Run `go test ./internal/api/ -update -run Golden` after the code change.
-
-### 33.F Docs + manifests
-
-- [ ] 33.F.1 Rename `docs/external-substitution.md` → `docs/others-substitution.md`; rewrite the body for the new node type and env var. Add a short section pointing to D27 for the missing-UID fallback (now a separate `type=external` node).
-- [ ] 33.F.2 `README.md` + `README.zh-tw.md`: update the env / flag table entries (`KSG_EXTERNAL_NAME_PATTERN` → `KSG_OTHERS_NAME_PATTERN`, `--external-name-pattern` → `--others-name-pattern`); update prose mentioning `external` nodes produced by the pattern to mention `others` instead.
-- [ ] 33.F.3 `docs/operations.md`: update the "Exporter compatibility contract" + any other section that mentions `KSG_EXTERNAL_NAME_PATTERN` or the `external`-via-pattern shape.
-- [ ] 33.F.4 `docs/api.md`: add `others` to the node `type` enum description; clarify the disjoint dedupe.
-- [ ] 33.F.7 `CLAUDE.md`: rewrite the "External-endpoint substitution rule" bullet to describe the split (pattern → others, fallback → external); update the resolution-order numbered list.
-
-### 33.G Swag / OpenAPI
-
-- [ ] 33.G.1 Update any swag `@Description` or `@Param` on `/v1/graph` mentioning `KSG_EXTERNAL_NAME_PATTERN` or the `external` enum value for pattern-matched nodes. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
-
-### 33.H Validation
-
-- [ ] 33.H.1 `openspec validate "add-k8s-pod-graph-api"`.
-- [ ] 33.H.2 `make build`, `make vet`, `make test`, `make lint`.
-- [ ] 33.H.3 `make verify-mocks` — no interface signatures changed; should stay clean.
-
-## 34. Connection-string endpoint resolution + remove KSG_OTHERS_NAME_PATTERN (capability: pod-service-graph, cluster-topology-source, graph-api)
-
-Per design D29. The configurable substring-match knob (`KSG_OTHERS_NAME_PATTERN` / `--others-name-pattern` / `Config.OthersNamePattern`) is removed entirely (pre-GA, no backward-compat burden). In its place the service-graph reader hardcodes `"://"` detection against the `client` / `server` label values and runs a new **connection-string resolution** stage (Stage 0) when an endpoint's pod UID is empty and its label contains `"://"`. The label is parsed as a URL; the host is matched against k8s `.svc` DNS grammar and resolved against new topology indexes (`ServicesByNameNS`, `EndpointsByService`, `PodsByNameNS`) built from `kube_service_info`, `kube_endpointslice_endpoints`, and `kube_endpointslice_labels`. A 2-label service-relative host resolves to a new `type="service"` node (materialising deduped `service-selects-pod` edges to backing pods on demand); a 3-label headless host resolves to the specific backing pod (a real pod, `srcIsPod=true`); a miss falls back to an `others/<label>` node with `labels={}` (the `pattern` key is dropped along with the knob). The per-endpoint resolution order becomes: (1) connection-string resolution; (2) pod-UID resolution / synth-pod fallback (non-empty UID only); (3) missing-UID human-label fallback → `external/<label>` (non-URL labels only); (4) drop. `"://"` labels never reach the external fallback; `external` is now reserved for non-URL missing-UID producer-regression signals. See design.md D29 + D27 + D18.
+Per design D29. There is no configurable substring-match knob — detection is not read from configuration at all (pre-GA, no backward-compat burden). The service-graph reader hardcodes `"://"` detection against the `client` / `server` label values and runs a **connection-string resolution** stage (Stage 0) when an endpoint's pod UID is empty and its label contains `"://"`. The label is parsed as a URL; the host is matched against k8s `.svc` DNS grammar and resolved against new topology indexes (`ServicesByNameNS`, `EndpointsByService`) built from `kube_service_info`, `kube_endpointslice_endpoints`, and `kube_endpointslice_labels`. Both the 2-label service-relative host and the 3-label headless host resolve to a `type="service"` node (materialising deduped `service-selects-pod` edges to backing pods on demand — see §38); a miss falls back to an `external/<label>` node with `labels={}`. The per-endpoint resolution order becomes: (1) connection-string resolution; (2) pod-UID resolution / synth-pod fallback (non-empty UID only); (3) missing-UID human-label fallback → `external/<label>` (non-URL labels only); (4) drop. A single `external` node type covers both unresolvable `"://"` strings and non-URL missing-UID producer-regression signals. See design.md D29 + D27.
 
 ### 34.A Graph types
 
 - [x] 34.A.1 `internal/graph/node.go`: add `NodeTypeService NodeType = "service"`. Add `ServiceNode` struct (fields `IDValue`, `NameValue`, `LabelsValue map[string]string`, `IPAddressValue []string`). Implement `ID()`, `Name()`, `Type()` (returns `NodeTypeService`), `Labels()`, `IPAddress()` (returns `IPAddressValue` — `[cluster_ip]` when known, `nil` when the service is headless `cluster_ip="None"` or absent), `isGraphNode()`.
 - [x] 34.A.2 `internal/graph/node.go`: add `ServiceID(cluster, namespace, service string) string { return cluster + "/" + namespace + "/" + service }` (cluster-scoped, mirrors `PVCNode` keying).
 - [x] 34.A.3 `internal/graph/registry.go`: add `EdgeTypeServiceSelectsPod` (`type="service-selects-pod"`, directed `service → pod`, `may_cross_cluster=false` / intra-cluster, `source_type=["service"]`, `target_type=["pod"]`, no required labels — optional `namespace`). Register it in `graph.EdgeTypes` so `/v1/edge-types` lists it.
-- [x] 34.A.4 `internal/graph/registry.go`: extend `EdgeTypePodCallsPod`'s `source_type` and `target_type` to ALSO include `"service"` (a pod can call a service node). The lists already include `"pod"`, `"others"`, `"external"` — append `"service"` to both.
+- [x] 34.A.4 `internal/graph/registry.go`: extend `EdgeTypePodCallsPod`'s `source_type` and `target_type` to ALSO include `"service"` (a pod can call a service node). The lists already include `"pod"`, `"external"` — append `"service"` to both.
 
 ### 34.B Topology reader (capability: cluster-topology-source)
 
@@ -588,44 +533,44 @@ Per design D29. The configurable substring-match knob (`KSG_OTHERS_NAME_PATTERN`
 
 - [x] 34.C.1 `internal/build/servicegraph.go`: thread the new topology indexes (`ServicesByNameNS`, `EndpointsByService`, `PodsByNameNS`) into `parseServiceGraph` / `resolveClientEndpoint` / `resolveServerEndpoint` (alongside the existing `PodsByUID`). Add an on-demand, deduped service-node + `service-selects-pod`-edge collector (a map keyed by service id) shared across the parse so a service referenced by multiple edges materialises once.
 - [x] 34.C.2 `internal/build/servicegraph.go`: in both `resolveClientEndpoint` and `resolveServerEndpoint`, add **Stage 0 connection-string resolution** that fires ONLY when the endpoint pod UID is EMPTY AND the label contains the substring `"://"`. Stage 0 runs BEFORE the missing-UID human-label fallback. When the UID is non-empty, skip Stage 0 entirely (normal pod-UID resolution applies — connection strings only appear with empty UIDs).
-- [x] 34.C.3 Stage 0 — host parse: parse the label as a URL (`net/url`); take the host (strip scheme, userinfo, port, path/query). No parseable host → unresolvable (→ 34.C.7 others fallback).
+- [x] 34.C.3 Stage 0 — host parse: parse the label as a URL (`net/url`); take the host (strip scheme, userinfo, port, path/query). No parseable host → unresolvable (→ 34.C.7 external fallback).
 - [x] 34.C.4 Stage 0 — `.svc` grammar: strip an optional trailing `.svc.<cluster-domain>` (e.g. `.svc.cluster.local`); also accept the shorter `<...>.svc` and bare `<a>.<b>` forms. Count the dotted labels of the service-relative part: 2 labels `<service>.<namespace>` → SERVICE-LEVEL record; 3 labels `<pod-hostname>.<service>.<namespace>` → HEADLESS POD record. Anything else → unresolvable.
 - [x] 34.C.5 Stage 0 — cluster determination: use the trace-source `cluster` label (client side) for the lookup, since `.svc.cluster.local` is in-cluster DNS (target shares the caller's k8s cluster). When the trace cluster is empty (e.g. external client), attempt a UNIQUE `(namespace, service)` (or `(namespace, pod-hostname)`) match across all clusters; if not unique or absent → unresolvable.
 - [x] 34.C.6 Stage 0 — SERVICE-LEVEL resolution: look up `(cluster, namespace, service)` in `ServicesByNameNS`. HIT → endpoint resolves to a `ServiceNode` (`id=graph.ServiceID(cluster,namespace,service)`, `type="service"`, `labels={cluster, namespace}`, `ipaddress=[cluster_ip]` when `cluster_ip != "None"`, omitted for headless). Materialise (on demand, deduped) one `service-selects-pod` edge from this service node to EACH backing pod in `EndpointsByService[(cluster,namespace,service)]`. MISS (service not in topology) → unresolvable (→ 34.C.7). A service endpoint is NOT a pod (`srcIsPod=false`).
 - [x] 34.C.7 Stage 0 — HEADLESS POD resolution: resolve the specific backing pod. PRIMARY: scan `EndpointsByService[(cluster,namespace,service)]` for the endpoint whose `hostname` label == `<pod-hostname>` → its resolved `*PodNode` (handles arbitrary `spec.hostname`). FALLBACK when no endpointslice hostname matches: `PodsByNameNS[(cluster,namespace,pod-hostname)]` (StatefulSet convention pod-name==hostname). HIT → endpoint resolves to the REAL pod node (`id="<cluster>/<uid>"`, `srcIsPod=true` on the client side). MISS → unresolvable (→ 34.C.8). **SUPERSEDED by §38**: the 3-label headless form now drops the pod-hostname and resolves to its `service` node (`resolveServiceLevel`) — there is no per-pod resolution and `resolveHeadlessPod` is deleted.
-- [x] 34.C.8 Stage 0 — UNRESOLVABLE fallback: when Stage 0 cannot resolve (no parseable host, host not a parseable k8s `.svc` name, service/pod not in topology, or ambiguous cross-cluster), fall back to an OTHERS node: `id=graph.OthersID(label)`, `name=<label>` (verbatim), `type="others"`, `labels={}` (EMPTY — no `pattern` key). This keeps truly-external URLs (`https://payments.partner.example/api`) and unknown k8s names visible. A service endpoint resolving to others is NOT a pod (`srcIsPod=false`).
+- [x] 34.C.8 Stage 0 — UNRESOLVABLE fallback: when Stage 0 cannot resolve (no parseable host, host not a parseable k8s `.svc` name, service not in topology, or ambiguous cross-cluster), fall back to an EXTERNAL node: `id=graph.ExternalID(label)`, `name=<label>` (verbatim), `type="external"`, `labels={}` (EMPTY). This keeps truly-external URLs (`https://payments.partner.example/api`) and unknown k8s names visible. An endpoint resolving to external is NOT a pod (`srcIsPod=false`).
 - [x] 34.C.9 `internal/build/servicegraph.go`: ensure `"://"`-containing labels with empty UID ALWAYS go through Stage 0 and NEVER reach the missing-UID human-label fallback (now reserved for NON-URL labels). The fallback branch SHALL gate on `!strings.Contains(label, "://")` in addition to its existing empty-UID + non-empty-label conditions.
-- [x] 34.C.10 `internal/build/servicegraph.go`: confirm the edge `labels.cluster` rule (D9) is preserved — present only when the CLIENT side resolves to a POD. A client `"://"` label that resolves (via Stage 0 headless) to a real pod now makes the edge carry `cluster` (improvement, `srcIsPod=true`); a client resolving to a service / others / external omits `cluster` (`srcIsPod=false`). Service nodes are NOT pods.
+- [x] 34.C.10 `internal/build/servicegraph.go`: confirm the edge `labels.cluster` rule (D9) is preserved — present only when the CLIENT side resolves to a POD. A client `"://"` label resolves to a service or external node (never a pod), so it omits `cluster` (`srcIsPod=false`). Service nodes are NOT pods.
 - [x] 34.C.11 `internal/build/servicegraph.go`: add `ServiceNodes []*graph.ServiceNode` and `ServiceSelectsPodEdges []graph.Edge` (or fold the edges into the existing `Edges` slice) to `ServiceGraphResult`; populate from the on-demand collector at the bottom of `parseServiceGraph`. Dedupe service nodes by id and service-selects-pod edges by the canonical edge id.
 - [x] 34.C.12 `internal/build/build.go::assemble`: include `sg.ServiceNodes` in the assembled `[]graph.GraphNode` and `sg.ServiceSelectsPodEdges` in the edge set; update any `total` size hint. Service nodes + edges go through the existing `graph.SortNodes` / `SortEdges` determinism path (34.F validates byte-stability).
 
 ### 34.D Remove the knob (capability: graph-api / pod-service-graph)
 
-- [x] 34.D.1 `internal/config/config.go`: delete `Config.OthersNamePattern` field, its `Defaults()` entry, the `--others-name-pattern` flag binding in `Parse`, and the `KSG_OTHERS_NAME_PATTERN` env binding in `applyEnv`.
-- [x] 34.D.2 `internal/build/servicegraph.go`: remove the `othersPattern` parameter from `ReadServiceGraph`, `parseServiceGraph`, `resolveClientEndpoint`, `resolveServerEndpoint` and the substring-match pattern branch entirely (Stage 0 + the missing-UID fallback now cover all non-pod endpoints).
-- [x] 34.D.3 `internal/build/build.go::Build`: drop the `b.cfg.OthersNamePattern` argument to `ReadServiceGraph`.
-- [x] 34.D.4 `cmd/kube-state-graph/main.go`: remove the `others_name_pattern_set` startup slog field.
-- [x] 34.D.5 `internal/build/servicegraph.go`: confirm `OthersNode` instances now always carry `labels={}` (the `pattern` key is gone everywhere). The disjointness between `others/<label>` (recognised `"://"` connection strings that did not resolve in-cluster) and `external/<label>` (non-URL missing-UID producer-regression signal) is preserved via the separate dedupe maps + node types.
+- [x] 34.D.1 `internal/config/config.go`: delete the connection-string substring config field, its `Defaults()` entry, the corresponding flag binding in `Parse`, and the corresponding env binding in `applyEnv`.
+- [x] 34.D.2 `internal/build/servicegraph.go`: remove the substring-pattern parameter from `ReadServiceGraph`, `parseServiceGraph`, `resolveClientEndpoint`, `resolveServerEndpoint` and the substring-match branch entirely (Stage 0 + the missing-UID fallback now cover all non-pod endpoints).
+- [x] 34.D.3 `internal/build/build.go::Build`: drop the substring-pattern argument to `ReadServiceGraph`.
+- [x] 34.D.4 `cmd/kube-state-graph/main.go`: remove the substring-pattern startup slog field.
+- [x] 34.D.5 `internal/build/servicegraph.go`: confirm unresolvable `"://"` connection strings and non-URL missing-UID labels both produce `external/<label>` nodes with `labels={}`, sharing one `external/...` dedupe map (a single non-pod, non-service node type).
 
 ### 34.F Tests + golden
 
-- [x] 34.F.1 `internal/build/servicegraph_test.go`: remove the `othersPattern` parameter from all call sites. Add Stage 0 cases — service-level hit (resolves to `ServiceNode` + materialises `service-selects-pod` edges to backing pods), headless-pod hit via endpointslice `hostname` match, headless-pod hit via `PodsByNameNS` StatefulSet fallback, unresolvable `"://"` label → `others/<label>` with `labels={}`, and a truly-external URL (`https://...partner...`) → `others/<label>`. Assert client `"://"` headless-pod resolution makes the edge carry `labels.cluster`; service / others resolution omits it.
+- [x] 34.F.1 `internal/build/servicegraph_test.go`: remove the substring-pattern parameter from all call sites. Add Stage 0 cases — service-level hit (resolves to `ServiceNode` + materialises `service-selects-pod` edges to backing pods), headless host resolving to its parent service (see §38), unresolvable `"://"` label → `external/<label>` with `labels={}`, and a truly-external URL (`https://...partner...`) → `external/<label>`. Assert a client `"://"` label (service or external) omits `labels.cluster`.
 - [x] 34.F.2 `internal/build/topology_test.go`: add cases parsing `kube_service_info` / `kube_endpointslice_endpoints` / `kube_endpointslice_labels` into the three indexes; assert headless (`cluster_ip="None"`) services are retained and distinguishable; assert absence of these series yields empty indexes with no error.
-- [x] 34.F.3 `internal/config/config_test.go`: remove the `KSG_OTHERS_NAME_PATTERN` env case and the `cfg.OthersNamePattern` assertions / round-trip flag entry.
-- [x] 34.F.4 `internal/integration/graph_e2e_test.go`: remove the `cfg.OthersNamePattern = "://"` override; add a connection-string e2e — ingest `kube_service_info` + `kube_endpointslice_*` plus a `traces_service_graph_request_total` series whose `server` is a `mongodb://...svc.cluster.local:27017` connection string with empty `server_k8s_pod_uid`, and assert `/v1/graph` contains the resolved `service` node + `service-selects-pod` edges (or the resolved headless pod for the 3-label case), and that a `https://...partner...` URL surfaces as `type="others"` with `labels={}`.
-- [x] 34.F.5 Golden: regenerate `with-others-*` fixtures under `internal/api/testdata/golden/` — pattern-matched-with-`labels.pattern` payloads now serialise as `others/<label>` with `labels={}`. Regenerate `edge-types.json` to include `service-selects-pod` and the extended `pod-calls-pod` source/target type lists. Add ONE new service-node golden (a connection-string client resolving to a `service` node + its `service-selects-pod` edges). Run `go test ./internal/api/ -update -run Golden` after the code change.
+- [x] 34.F.3 `internal/config/config_test.go`: remove the substring-pattern env case and the corresponding config assertions / round-trip flag entry.
+- [x] 34.F.4 `internal/integration/graph_e2e_test.go`: remove the substring-pattern config override; add a connection-string e2e — ingest `kube_service_info` + `kube_endpointslice_*` plus a `traces_service_graph_request_total` series whose `server` is a `mongodb://...svc.cluster.local:27017` connection string with empty `server_k8s_pod_uid`, and assert `/v1/graph` contains the resolved `service` node + `service-selects-pod` edges, and that a `https://...partner...` URL surfaces as `type="external"` with `labels={}`.
+- [x] 34.F.5 Golden: regenerate the affected fixtures under `internal/api/testdata/golden/` — unresolvable connection-string payloads now serialise as `external/<label>` with `labels={}`. Regenerate `edge-types.json` to include `service-selects-pod` and the extended `pod-calls-pod` source/target type lists. Add ONE new service-node golden (a connection-string client resolving to a `service` node + its `service-selects-pod` edges). Run `go test ./internal/api/ -update -run Golden` after the code change.
 - [x] 34.F.6 `internal/graph/property_test.go`: extend the generator / invariants so `service` nodes and `service-selects-pod` edges participate — every `service-selects-pod` edge source resolves to a `service` node and target to a `pod` node; service nodes + edges are sorted deterministically (byte-stable across re-runs).
 
 ### 34.G Docs
 
-- [x] 34.G.1 Rewrite `docs/others-substitution.md` for D29: connection-string resolution (hardcoded `"://"`, no knob), the `.svc` grammar (service-level vs headless), `service` nodes + `service-selects-pod` edges, and the `others` (unresolvable `"://"`) vs `external` (non-URL missing-UID) split. Remove all `KSG_OTHERS_NAME_PATTERN` / `--others-name-pattern` references.
-- [x] 34.G.2 `README.md` + `README.zh-tw.md`: remove the `KSG_OTHERS_NAME_PATTERN` / `--others-name-pattern` rows from the env / flag tables; update prose mentioning the configurable pattern to describe the hardcoded connection-string resolution.
+- [x] 34.G.1 Rewrite the connection-string-resolution doc for D29: connection-string resolution (hardcoded `"://"`, no knob), the `.svc` grammar (service-level vs headless), `service` nodes + `service-selects-pod` edges, and `external` nodes for unresolvable `"://"` strings. Remove all substring-pattern knob references.
+- [x] 34.G.2 `README.md`: remove the substring-pattern knob rows from the env / flag tables; update prose mentioning the configurable pattern to describe the hardcoded connection-string resolution.
 - [x] 34.G.3 `docs/operations.md` "Exporter compatibility contract": add `kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels` to the supported metric list with their required label sets (`service`, `cluster_ip`, `endpointslice`, `address`, `hostname`, `targetref_kind`, `targetref_name`, `targetref_namespace`, `label_kubernetes_io_service_name`); note `KSG_METRIC_PREFIX` applies to these three and NOT to `traces_service_graph_*` or `up{}`.
-- [x] 34.G.4 `CLAUDE.md`: rewrite the others-endpoint rule bullet for D29 (hardcoded `"://"`, connection-string resolution, no knob); rewrite the per-endpoint resolution-order list (Stage 0 connection-string → pod-UID/synth → missing-UID external → drop); add the `service` node type + `service-selects-pod` edge to the sealed-types / registry mentions; note the `KSG_OTHERS_NAME_PATTERN` knob removal; extend the D26 metric-prefix bullet's metric list with the three new series.
+- [x] 34.G.4 `CLAUDE.md`: rewrite the connection-string-endpoint rule bullet for D29 (hardcoded `"://"`, connection-string resolution, no knob); rewrite the per-endpoint resolution-order list (Stage 0 connection-string → pod-UID/synth → missing-UID external → drop); add the `service` node type + `service-selects-pod` edge to the sealed-types / registry mentions; note that there is no substring-pattern knob; extend the D26 metric-prefix bullet's metric list with the three new series.
 
 ### 34.H Swag / OpenAPI
 
-- [x] 34.H.1 Update any swag `@Description` / `@Param` on `/v1/graph` mentioning `KSG_OTHERS_NAME_PATTERN` to describe the hardcoded connection-string resolution instead.
+- [x] 34.H.1 Update any swag `@Description` / `@Param` on `/v1/graph` mentioning the substring-pattern knob to describe the hardcoded connection-string resolution instead.
 - [x] 34.H.2 Add the `service` node `type` enum value and the `service-selects-pod` edge type to the documented schemas; ensure `/v1/edge-types` annotations / examples include it. Run `make docs` and commit regenerated `docs/swagger.{json,yaml,go}` + `internal/api/static/openapi/*`.
 
 ### 34.I Validation
@@ -647,7 +592,7 @@ Per design D30. The `servicegraph` connector emits **virtual peers** for endpoin
 
 - [x] 35.B.1 `internal/promql/queries_test.go`: assert `Renderer{}.Render(QServiceGraphTotal, window)` emits the two anchored matchers verbatim; assert a non-empty-prefix `Renderer{Prefix: "o11y_"}` leaves the service-graph metric name bare (`traces_service_graph_request_total`, no prefix) while still carrying the matchers; assert the `QServiceGraphTotal` constant value itself is unchanged (bare metric name).
 - [x] 35.B.2 `internal/build/servicegraph_test.go`: add a comment / guard documenting that `parseServiceGraph` itself does NOT filter sentinel labels — exclusion is upstream at the query layer, so a `client="user"` series handed directly to `parseServiceGraph` is (correctly) still parsed. The behavioural contract for exclusion lives at the promql layer (35.B.1) and is proven end-to-end at the integration layer (35.B.3). Do NOT add a parse-level sentinel filter.
-- [x] 35.B.3 `internal/integration/graph_e2e_test.go`: ingest into the testcontainers VictoriaMetrics a normal `traces_service_graph_request_total` series (both UIDs resolvable) plus (a) a series with `client="user"`, (b) a series with `server="unknown"`, and (c) a series with `server="http://user/api"` (empty `server_k8s_pod_uid`). Query `/v1/graph` and assert: the normal series produces its edge; (a) and (b) produce NO edge and NO `user` / `unknown` node (real VictoriaMetrics evaluates the anchored matcher); (c) is NOT excluded and surfaces as an `others` (or resolved) endpoint — proving the anchored match does not catch substrings.
+- [x] 35.B.3 `internal/integration/graph_e2e_test.go`: ingest into the testcontainers VictoriaMetrics a normal `traces_service_graph_request_total` series (both UIDs resolvable) plus (a) a series with `client="user"`, (b) a series with `server="unknown"`, and (c) a series with `server="http://user/api"` (empty `server_k8s_pod_uid`). Query `/v1/graph` and assert: the normal series produces its edge; (a) and (b) produce NO edge and NO `user` / `unknown` node (real VictoriaMetrics evaluates the anchored matcher); (c) is NOT excluded and surfaces as an `external` (or resolved) endpoint — proving the anchored match does not catch substrings.
 - [x] 35.B.4 Golden: scan existing fixtures under `internal/api/testdata/golden/` for any scenario whose mock upstream injects a `client` / `server` value of exactly `user` or `unknown` — none are expected (component / golden tests drive a `MockQuerier`, which returns vectors directly and is unaffected by the query-string matcher), so golden output should be unchanged. If any fixture does inject such a value, decide per-fixture whether to keep it (component tests bypass the query layer) or update it; re-run `go test ./internal/api/ -update -run Golden` only if a deliberate shape change results. Record the outcome in the PR.
 
 ### 35.C Docs
@@ -674,12 +619,12 @@ Per design D31. The Cytoscape `/v1/graph` serialiser groups nodes into compound 
 
 - [x] 36.A.1 `internal/api/serialise.go`: add `Parent string` with tag `json:"parent,omitempty"` to `cytoscapeNodeData` (placed after `Type`, before `IPAddress`).
 - [x] 36.A.2 `internal/api/serialise.go`: in `serialiseCytoscape`, synthesise one `type="cluster"` group node (`id="cluster/<cluster>"`, `name="<cluster>"`, `labels={}`, no parent, no ipaddress) per distinct non-empty `labels.cluster` on an emitted node; emit them FIRST, sorted by cluster name (determinism, D6). Add `import "sort"`.
-- [x] 36.A.3 `internal/api/serialise.go`: assign `data.parent` — pod → `labels.node` when that node id is present in the view, else `cluster/<cluster>` (non-empty cluster), else `""`; node / service / pvc → `cluster/<cluster>`; others / external / cluster → `""`. Build a `present` set of view node ids so a pod never references a node absent from `elements.nodes`.
+- [x] 36.A.3 `internal/api/serialise.go`: assign `data.parent` — pod → `labels.node` when that node id is present in the view, else `cluster/<cluster>` (non-empty cluster), else `""`; node / service / pvc → `cluster/<cluster>`; external / cluster → `""`. Build a `present` set of view node ids so a pod never references a node absent from `elements.nodes`.
 - [x] 36.A.4 `internal/api/serialise.go`: in the Cytoscape edge loop, emit every edge type (`pod-mounts-pvc`, `pod-calls-pod`, `service-selects-pod`). The pod→node relationship is expressed only by compound nesting via `labels.node`; there is no pod-runs-on-node edge to emit.
 
 ### 36.B Tests + golden
 
-- [x] 36.B.1 `internal/api/serialise_compound_test.go`: unit tests — cluster-node synthesis, `cluster > node > pod` parent chain, svc / pvc → cluster, pod fallback to cluster when its node is absent, others / external no parent, unknown-cluster pod (`labels.cluster=""`) no parent, cluster nodes sorted first, and that the pod→node relationship is expressed by the `data.parent` compound chain (no pod-runs-on-node edge exists).
+- [x] 36.B.1 `internal/api/serialise_compound_test.go`: unit tests — cluster-node synthesis, `cluster > node > pod` parent chain, svc / pvc → cluster, pod fallback to cluster when its node is absent, external no parent, unknown-cluster pod (`labels.cluster=""`) no parent, cluster nodes sorted first, and that the pod→node relationship is expressed by the `data.parent` compound chain (no pod-runs-on-node edge exists).
 - [x] 36.B.2 Golden: regenerate `*-cytoscape.json` fixtures (`go test ./internal/api/ -update -run Golden`) — they gain the synthetic cluster group node + `data.parent` fields.
 
 ### 36.C Docs
@@ -730,8 +675,8 @@ Revises D29. Previously a `"://"` connection string split two ways by DNS label 
 ### 38.A Resolver
 
 - [x] 38.A.1 `pkg/build/servicegraph.go`: collapse `classifyK8sDNS` to `(service, namespace string, ok bool)` — both the 2-label and 3-label forms map to `(service, namespace)` (3-label drops the leading pod-hostname); any other label count → `ok=false`. Remove the `dnsKind` type and the `dnsNone`/`dnsService`/`dnsHeadlessPod` constants.
-- [x] 38.A.2 `pkg/build/servicegraph.go`: change `resolveConnString` to return a single `string`, routing every classified host through `resolveServiceLevel` (service node + fan-out), `others` on miss — it can no longer yield a pod. Update `resolveEmptyUID` to wrap it as `(id, false)`.
-- [x] 38.A.3 `pkg/build/servicegraph.go`: delete `resolveHeadlessPod` (the endpointslice-`hostname` + `PodsByNameNS` per-pod path). Update the `ReadServiceGraph` / `resolveClient` / `resolveEmptyUID` / edge-`cluster` doc comments — a `"://"` label resolves to service/others, never a pod.
+- [x] 38.A.2 `pkg/build/servicegraph.go`: change `resolveConnString` to return a single `string`, routing every classified host through `resolveServiceLevel` (service node + fan-out), `external` on miss — it can no longer yield a pod. Update `resolveEmptyUID` to wrap it as `(id, false)`.
+- [x] 38.A.3 `pkg/build/servicegraph.go`: delete `resolveHeadlessPod` (the endpointslice-`hostname` + `PodsByNameNS` per-pod path). Update the `ReadServiceGraph` / `resolveClient` / `resolveEmptyUID` / edge-`cluster` doc comments — a `"://"` label resolves to service/external, never a pod.
 
 ### 38.B Topology (remove dead index)
 
@@ -755,3 +700,48 @@ Revises D29. Previously a `"://"` connection string split two ways by DNS label 
 
 - [x] 38.E.1 `go build ./...` + `go test ./...` (203 unit/component/golden/property pass; the headless integration test passes against the Docker VictoriaMetrics container).
 - [x] 38.E.2 `make vet`, `make lint` (0 issues), `make verify-mocks` (up-to-date — no interface signatures changed), `make check-docs` (no swagger drift), `openspec validate "add-k8s-pod-graph-api"` (valid).
+
+## 39. Pod controller-owner labels (`owner_kind` / `owner_name`) with ReplicaSet skip (capability: cluster-topology-source)
+
+Implements D34. Enriches every `type="pod"` node with two strict-string `labels`, `owner_kind` and `owner_name`, resolved from `kube_pod_owner`. When the controller owner is a `ReplicaSet`, skip it: resolve one level up via `kube_replicaset_owner` to the owning `Deployment` and stamp the Deployment as the owner; a bare ReplicaSet with no Deployment owner stays as-is; pods with no controller owner omit both keys. No new node or edge type. Both series are KSM defaults (no `--metric-labels-allowlist`), OPTIONAL (absence degrades gracefully), and subject to `KSG_METRIC_PREFIX`. See design.md / design.zh-tw.md D34 and `specs/cluster-topology-source/spec.md` ("Pod controller-owner labels with ReplicaSet skip").
+
+### 39.A PromQL layer
+
+- [ ] 39.A.1 `pkg/promql/queries.go`: add bare `Query` constants `QPodOwner = "kube_pod_owner"` and `QReplicaSetOwner = "kube_replicaset_owner"` (constants stay bare so `query` / `query_name` self-metric + span dimensions are prefix-stable, per D26).
+- [ ] 39.A.2 `pkg/promql/queries.go`: add `Render` cases for both — `last_over_time(%skube_pod_owner[%s])` and `last_over_time(%skube_replicaset_owner[%s])` with the `r.Prefix` applied (same shape as the other KSM topology legs).
+- [ ] 39.A.3 `pkg/promql/queries_test.go`: extend the render table with `pod-owner` / `replicaset-owner` rows (bare + `o11y_` prefixed) and assert prefix application; assert the service-graph / `up` probe queries remain unprefixed.
+
+### 39.B Topology reader + owner join
+
+- [ ] 39.B.1 `pkg/build/topology.go`: add two new legs to the `ReadTopology` errgroup (8 → 10 parallel queries) issuing `QPodOwner` and `QReplicaSetOwner`; thread their `model.Vector` results into `parseTopology`'s signature and the `kube_state_graph_*` result-count map.
+- [ ] 39.B.2 `pkg/build/topology.go`: in `parseTopology`, build a `replicaSetOwner` index keyed by `(cluster, namespace, replicaset)` → `(owner_kind, owner_name)` from the `kube_replicaset_owner` vector (keep only `owner_kind="Deployment"` rows; ignore the rest).
+- [ ] 39.B.3 `pkg/build/topology.go`: build a `podController` index keyed by `(cluster, namespace, pod)` → `(owner_kind, owner_name)` from the `kube_pod_owner` vector, selecting the sample with `owner_is_controller="true"`; on multiple controller rows pick the lexically-smallest `(owner_kind, owner_name)` for determinism (D6).
+- [ ] 39.B.4 `pkg/build/topology.go`: in the per-pod assembly (after `mergeSameUIDLabels`), look up the pod's controller owner. If `owner_kind=="ReplicaSet"`, resolve via the `replicaSetOwner` index to its Deployment (fall back to the ReplicaSet when absent). Stamp `labels["owner_kind"]` / `labels["owner_name"]` only when a controller owner exists — never write empty strings. Resolve the pod key from the merged pod observation's `(cluster, namespace, pod-name)`.
+- [ ] 39.B.5 `pkg/build/topology.go`: confirm the owner labels survive pod-restart collapse (latest-UID pod keeps its owner labels) and the same-UID label merge does not clobber `owner_*` (they are set after the merge, on the canonical entity only).
+
+### 39.C Unit tests (no upstream I/O)
+
+- [ ] 39.C.1 `pkg/build/topology_test.go`: add `kube_pod_owner` + `kube_replicaset_owner` fixture vectors and assert: (a) RS→Deployment resolution stamps `owner_kind="Deployment"` / `owner_name=<deployment>`; (b) bare RS keeps `owner_kind="ReplicaSet"`; (c) direct `DaemonSet` / `StatefulSet` owner surfaced verbatim with no RS lookup; (d) no controller owner → both keys absent (not empty); (e) owner metrics absent entirely → valid topology, no owner labels, no error.
+- [ ] 39.C.2 `pkg/build/topology_test.go`: determinism test — two `kube_pod_owner` controller rows for one pod resolve to the lexically-smallest `(owner_kind, owner_name)` regardless of vector order.
+
+### 39.D Integration test (Docker / testcontainers)
+
+- [ ] 39.D.1 `internal/integration/graph_e2e_test.go`: add `TestPodOwnerLabelsSkipReplicaSet` — ingest `kube_pod_info` + `kube_pod_owner{owner_kind="ReplicaSet", owner_name="checkout-7f9c", owner_is_controller="true"}` + `kube_replicaset_owner{replicaset="checkout-7f9c", owner_kind="Deployment", owner_name="checkout"}`, then assert `/v1/graph` emits the pod node with `labels.owner_kind="Deployment"` and `labels.owner_name="checkout"`. Add a second pod with no owner series asserting both keys are absent. Gate with `SkipIfDockerUnavailable`.
+
+### 39.E Golden + property tests
+
+- [ ] 39.E.1 `internal/api/golden_test.go` / `testdata/golden/*.json`: if any golden fixture's pod nodes now gain `owner_*` labels (or to add a dedicated owner-bearing fixture), regenerate with `go test ./internal/api/ -update -run Golden` and review the diff for determinism (sorted output, no empty-string owner keys).
+- [ ] 39.E.2 `pkg/graph/property_test.go`: if the random-graph generator emits pod labels, ensure `owner_*` (when present) are non-empty strings — invariant holds under the strict `map[string]string` contract (no change expected if the generator does not synthesise owners).
+
+### 39.F Docs
+
+- [ ] 39.F.1 `CLAUDE.md`: add `owner_kind` / `owner_name` to the pod-label description and note the ReplicaSet-skip rule + the two new KSM series in the metric-prefix list (the `KSG_METRIC_PREFIX` knob bullet).
+- [ ] 39.F.2 `README.md` + `README.zh-tw.md`: document the pod owner labels and the ReplicaSet→Deployment skip in the node-attributes / KSM-requirements section.
+- [ ] 39.F.3 `docs/operations.md`: note that `kube_pod_owner` / `kube_replicaset_owner` are KSM defaults (no allowlist) and that trimming KSM `--resources` silently disables owner labels (graceful degradation).
+- [ ] 39.F.4 OpenAPI: if the handler `@-annotation` example bodies enumerate pod `labels`, add `owner_kind` / `owner_name`; run `make docs` + `make check-docs`. (Note: handwritten swagger annotation drift is NOT caught by `check-docs` — verify by hand.)
+
+### 39.G Validation
+
+- [ ] 39.G.1 `go build ./...` + `make test` (unit/component/golden/property + integration where Docker is available).
+- [ ] 39.G.2 `make vet`, `make lint`, `make verify-mocks` (no interface signatures changed — expect up-to-date), `make check-docs`, `make vuln`.
+- [ ] 39.G.3 `openspec validate "add-k8s-pod-graph-api"` (valid) and confirm `graph-api-gateway` sibling still builds/tests against the updated engine (additive label only — expect no break).

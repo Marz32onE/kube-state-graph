@@ -441,55 +441,6 @@ Both options were considered and rejected for v1:
 
 **Cluster name handling.** Cluster names pass through as opaque strings. The server does no canonicalisation, no case-folding, and no length validation beyond the total URL length the HTTP stack already enforces. An unknown cluster name in `?cluster=` simply yields no nodes for that name — not an error.
 
-### D18. Others-endpoint pattern substitution
-
-> **Superseded / replaced by D29.** The configurable `KSG_OTHERS_NAME_PATTERN` knob described below is **removed**. Detection of non-pod endpoints is now hardcoded to the `"://"` substring, checked only against the service-graph `client` / `server` label values, and runs as connection-string resolution (D29 Stage 0) *before* the missing-UID fallback. The `others` node type is **removed entirely** — an unresolvable `"://"` connection string now produces an `external` node, unified with the missing-UID human-label fallback. D18 is retained below for historical context only; where it conflicts with D29, D29 wins.
-
-Service-graph metrics carry a Tempo-style pair of human-readable labels alongside the pod-UID labels:
-
-- `client` — the calling service's name (free-form, set by the producer).
-- `server` — the callee's name (free-form, set by the producer).
-
-By default the pod-service-graph reader resolves the client side via `(cluster, client_k8s_pod_uid)` and the server side via the global topology pod-UID index lookup of `server_k8s_pod_uid`, then uses the resulting pod's `name` for display. This loses dependencies whose remote end is not a pod (external HTTP APIs, managed databases, message queues, third-party SaaS, etc.) — pod UID is empty or arbitrary for those.
-
-To preserve such endpoints in the graph, the server takes a **pattern substring** from the env var `KSG_OTHERS_NAME_PATTERN` (also flag `--others-name-pattern`). When set, the reader performs per-endpoint substitution:
-
-```
-for each service-graph series in the window, for endpoint side ∈ {client, server}:
-  let label_value = the series' `client` or `server` label value
-  if KSG_OTHERS_NAME_PATTERN != "" and contains(label_value, KSG_OTHERS_NAME_PATTERN):
-    treat this endpoint as an others node
-      id    = "others/<label_value>"
-      name  = label_value
-      type  = "others"
-      labels = { "pattern": "<KSG_OTHERS_NAME_PATTERN>" }
-  else:
-    treat this endpoint as a pod node, resolved via (cluster, pod-uid) → kube_pod_info → pod name
-```
-
-Substitution is independent for client and server sides — a single `pod-calls-pod` edge can have any combination (`pod→pod`, `pod→others`, `others→pod`, `others→others`). The edge's `type` remains `pod-calls-pod`; only the source / target node `type` changes. The edge carries `labels.cluster` (the trace-source / client-side cluster) only when the **client** side is a pod; when the client side is a non-pod node (`others` via this rule, or `external` via the D27 fallback), the edge `labels` map omits the `cluster` key entirely (non-pod endpoints are not cluster-scoped).
-
-Why a substring contains-check rather than a regex:
-
-- Operators typically configure a single discriminator like `://` (matches `http://...`, `https://...`, `redis://...`) or `@` (matches `user@host`) without authoring a regex.
-- Substring matching is unambiguous, has no escaping pitfalls, and benchmarks at hundreds of millions of operations per second so cost is negligible.
-- A future v1.x revision MAY add `KSG_OTHERS_NAME_REGEX` if real deployments need it; for v1, contains is enough.
-
-Others node ID stability:
-
-- The literal `client` / `server` value is appended verbatim after `others/`. Two different label values produce two different others nodes; two series with identical label values resolve to the same others node and edges to it merge correctly.
-- The reader does not normalise (no lowercase, no whitespace trim, no scheme parsing). Producers control the label values; the API server is a faithful relay. This keeps semantics simple and matches Tempo's behaviour.
-
-Empty pattern (`KSG_OTHERS_NAME_PATTERN` unset or `""`) disables the rule entirely; behaviour reverts to pure pod-UID resolution.
-
-- Why expose this as a config knob: non-pod-endpoint conventions vary by deployment. URL-shaped clients/servers are common but not universal; the operator decides what counts as "others" by choosing the discriminator.
-- Why a separate `others` node type instead of folding into `external`: the pattern rule (operator-declared) and the missing-UID fallback (D27, producer-regression signal) carry different semantics for the consumer. Operators alerting on a sudden growth of `type=external` nodes (producer regression) want a clean signal that is not polluted by the steady-state `type=others` set of declared third-party endpoints. Disjoint ID spaces (`others/<label>` vs `external/<label>`) and dedupe maps preserve this separation; the trade-off is that a label string matched by both code paths surfaces as two visually-distinct nodes with the same `name` (intentional — they have different provenance).
-- Alternatives considered:
-  - Always treat both `client` and `server` as authoritative (rejected — defeats the pod-name resolution that is the point of this server).
-  - Always introspect the value (URL parser, hostname extraction) (rejected — heuristic, brittle, language-specific).
-  - Multiple patterns OR'd (rejected — over-engineered for v1; one pattern covers the typical case).
-  - Keep a single `external` type and a shared ID space across both rules (rejected — pattern-matched declared endpoints and missing-UID inferred endpoints have different operational meaning; merging them hides the producer-regression signal).
-
 ### D19. Bounded upstream cost
 
 Bounded query cost (per-query duration, samples, points) is delegated entirely to upstream VictoriaMetrics search limits — KSG does not duplicate them. Operators running large fleets SHALL configure `-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, and `-search.maxSamplesPerQuery` on VM and rely on `502 Bad Gateway` (with `reason: "upstream"`, mapped from VM 5xx) for overflow signalling. Per-cluster scope narrowing is a caller-side concern via the `?cluster=` query parameter on `/v1/graph`; the server itself loads every cluster present in upstream VM on each build.
@@ -824,13 +775,13 @@ Per-endpoint resolution order (revised by D29):
 3. Missing-UID human-label fallback (this decision; only when UID is empty AND human label is non-empty AND the label does **not** contain `"://"`; produces external node — `id=external/<label>`, `labels={}`).
 4. Drop (both UID and label empty).
 
-Consequence of the new ordering: a `"://"`-containing label with an empty UID **always** goes through Stage 1 and **never** reaches the missing-UID fallback. Both unresolvable `"://"` connection strings and non-URL missing-UID labels produce `external/<label>` nodes — the `others` node type has been removed entirely (superseded by this update to D29).
+Consequence of the new ordering: a `"://"`-containing label with an empty UID **always** goes through Stage 1 and **never** reaches the missing-UID fallback. Both unresolvable `"://"` connection strings and non-URL missing-UID labels produce `external/<label>` nodes — there is one `external` category for all non-pod, non-service endpoints.
 
 Decision points:
 
 - **Always on, no knob.** Adding a config gate to revert to "drop edge" was considered and rejected — the prior drop behaviour was silent data loss, and operators already need an actionable signal when a producer regresses. A visible external node is strictly more useful than silence; if the resulting noise becomes a real problem for any deployment, a follow-up change can introduce a gate.
-- **Both sides, symmetric.** The same rule fires independently for client and server endpoints. A series with both UIDs missing and both labels present produces an `external→external` edge — consistent with the others-pattern rule's per-endpoint independence (D18).
-- **Unified `external/<label>` ID scheme.** The fallback writes into the `external/...` namespace and a shared dedupe map with the unresolvable connection-string path (D29). Both unresolvable `"://"` connection strings and non-URL missing-UID human labels produce `external/<label>` nodes. The `others` node type has been removed — there is one `external` category for all non-pod, non-service endpoints.
+- **Both sides, symmetric.** The same rule fires independently for client and server endpoints. A series with both UIDs missing and both labels present produces an `external→external` edge — each endpoint is resolved independently.
+- **Unified `external/<label>` ID scheme.** The fallback writes into the `external/...` namespace and a shared dedupe map with the unresolvable connection-string path (D29). Both unresolvable `"://"` connection strings and non-URL missing-UID human labels produce `external/<label>` nodes — there is one `external` category for all non-pod, non-service endpoints.
 - **Edge `labels.cluster` rule unchanged.** When the client side is a non-pod (`external` via connection-string resolution OR this fallback), the edge `labels.cluster` is omitted. When the client side is still a pod and only the server fell back, the edge keeps `labels.cluster=<trace-source cluster>`.
 - **Drop only when both UID AND label are empty.** With no identity at all there is no node to emit. The edge is dropped silently (consistent with the v1 contract for fully-unidentified endpoints).
 - **No marker label on inferred externals.** Considered (`labels.source="missing_pod_uid"`) but rejected for v1 — the `external/<label>` ID space and the empty `labels` payload are sufficient for v1. A future revision MAY add it if richer producer-health observability becomes a priority.
@@ -840,7 +791,7 @@ Alternatives considered:
 - **Drop edge on missing UID (status quo)**: rejected — silent data loss; operators routinely lose dependencies under known Beyla / Alloy resource-attribute regressions, and have no in-API signal to chase the producer.
 - **Synthesise a pod node from the human label**: rejected — invents a pod identity that does not exist (no cluster, no UID, no namespace). The endpoint is not a pod; modelling it as one violates the assumption that pod IDs are `<cluster>/<uid>` and confuses traversal / filtering downstream.
 - **Gate behind a new env var (e.g., `KSG_FALLBACK_MISSING_UID`)**: rejected for v1 — adds an opt-in knob with no clearly preferable default (off = silent loss, on = visible). Simpler to make the more useful behaviour unconditional and revisit if real noise emerges.
-- **Maintain a separate `others` node type**: was originally retained to distinguish operator-declared third-party endpoints from producer-regression inferred endpoints, but this distinction was later removed — both unresolvable connection strings and non-URL missing-UID labels are now unified under `external`. A sudden growth of `type=external` nodes remains the actionable signal that a producer dropped `k8s.pod.uid`.
+- **Maintain a second node type to distinguish declared third-party endpoints from producer-regression inferred endpoints**: rejected — both unresolvable connection strings and non-URL missing-UID labels are unified under `external`. A sudden growth of `type=external` nodes remains the actionable signal that a producer dropped `k8s.pod.uid`.
 - **Surface a fix-the-producer error response instead**: rejected — the API server is a faithful relay, not a producer validator. Operators learn about the producer regression by seeing many `external/*` nodes appear in the graph; a single response-shape signal would be both noisy (per-request) and weaker (no per-endpoint visibility).
 
 ### D28. Top-level `ipaddress` attribute on pod and K8s-node entries
@@ -860,11 +811,9 @@ Alternatives considered:
 - **Per-type schema variance (`pod.address` vs `node.address`)**: rejected — breaks the sealed-interface uniformity that lets the serialiser iterate `GraphNode` without type switches.
 - **Numeric / structured IP form (`{family, value}`)**: rejected for v1 — the JSON consumer base treats IPs as opaque strings; encoding family would force a schema change once IPv6 lands and adds zero value to today's renderers.
 
-### D29. Connection-string endpoint resolution, service nodes, and removal of `KSG_OTHERS_NAME_PATTERN`
+### D29. Connection-string endpoint resolution, service nodes, and `external` fallback
 
-Service-graph dependencies whose remote end is not a pod frequently carry a connection-string value in the `client` / `server` label — e.g. `mongodb://mongo-0.mongo.db.svc.cluster.local:27017`, `https://payments.partner.example/api`. D18 surfaced these via the operator-configured `KSG_OTHERS_NAME_PATTERN` substring knob. This decision **removes that knob entirely** and replaces it with hardcoded `"://"` detection plus a resolution pipeline that recognises an in-cluster Kubernetes Service named by such a string and models it as a first-class graph node — fanning out `service-selects-pod` edges to all of its backing pods — falling back to an `external` node when the string does not resolve in topology. **Every** recognised in-cluster `"://"` reference resolves to the Service, including the headless per-pod form `<pod>.<service>.<namespace>`: the pod-hostname is dropped and the address is treated as its parent Service. There is no per-pod resolution — a `"://"` endpoint is never a pod. The `others` node type is **removed**: unresolvable `"://"` connection strings and non-URL missing-UID labels are both represented as `external` nodes.
-
-**Knob removal.** `KSG_OTHERS_NAME_PATTERN` (env var), `--others-name-pattern` (flag), the `config.OthersNamePattern` field, the builder-side threading of the `othersPattern` parameter through `ReadServiceGraph` / `parseServiceGraph` / `resolveClientEndpoint` / `resolveServerEndpoint`, and the `others_name_pattern_set` startup-log field are all deleted. The configurable substring mechanism is gone. Because this is pre-GA with no deployed users, there is no backward-compatibility burden; the spec and this design simply stop referencing the knob (code removal is tracked in `tasks.md`).
+Service-graph dependencies whose remote end is not a pod frequently carry a connection-string value in the `client` / `server` label — e.g. `mongodb://mongo-0.mongo.db.svc.cluster.local:27017`, `https://payments.partner.example/api`. The server detects these via hardcoded `"://"` detection (no configurable knob) plus a resolution pipeline that recognises an in-cluster Kubernetes Service named by such a string and models it as a first-class graph node — fanning out `service-selects-pod` edges to all of its backing pods — falling back to an `external` node when the string does not resolve in topology. **Every** recognised in-cluster `"://"` reference resolves to the Service, including the headless per-pod form `<pod>.<service>.<namespace>`: the pod-hostname is dropped and the address is treated as its parent Service. There is no per-pod resolution — a `"://"` endpoint is never a pod. Unresolvable `"://"` connection strings and non-URL missing-UID labels are both represented as `external` nodes.
 
 **Hardcoded `"://"` detection.** The substring `"://"` is the only discriminator, and it is evaluated **only** against the service-graph `client` / `server` label values, per endpoint (client and server evaluated independently). When an endpoint's pod UID is **empty** AND its label contains `"://"`, connection-string resolution (Stage 0, below) runs *before* the missing-UID fallback (D27). When the UID is non-empty, normal pod-UID resolution applies unchanged — connection strings appear only when the UID is empty.
 
@@ -878,7 +827,7 @@ Service-graph dependencies whose remote end is not a pod frequently carry a conn
 3. Resolve `(cluster, namespace, service)` against the topology index `ServicesByNameNS` (built from `kube_service_info`). **HIT** → the endpoint resolves to a **service node**: `id="<cluster>/<namespace>/<service>"`, `type="service"`, `labels={cluster, namespace}`, `ipaddress=[cluster_ip]` when `cluster_ip != "None"` (omitted for a headless service's `cluster_ip="None"`). The service-graph reader **also** materialises, on demand and deduped, one `service-selects-pod` edge from this service node to **each** backing pod found in the topology index `EndpointsByService` (built from `kube_endpointslice_endpoints` joined to topology pods by `(namespace, targetref_name) → pod UID`). A known service with zero backing endpoints still materialises the service node, with no fan-out edges. **MISS** (service absent from topology) → unresolvable.
 4. **Cluster determination**: the lookup is scoped to the trace-source `cluster` label (client side), because `.svc.cluster.local` is in-cluster DNS — the target lives in the same Kubernetes cluster as the caller. The reader buckets a missing `cluster` label to `"unknown"` (`bucketCluster`), so the lookup is always cluster-scoped; a connection string whose service is absent from that cluster's topology is **unresolvable**.
 
-**Unresolvable `"://"` labels.** A `"://"` label that is not a parseable Kubernetes `.svc` name, OR whose service is absent from the trace cluster's topology, falls back to an **external node**: `id="external/<label>"`, `name="<label>"` (verbatim), `type="external"`, `labels={}` (empty). This keeps truly-external URLs (e.g. `https://payments.partner.example/api`) and unknown in-cluster names visible in the graph. The `others` node type is **removed** — all non-pod, non-service endpoints are `external`.
+**Unresolvable `"://"` labels.** A `"://"` label that is not a parseable Kubernetes `.svc` name, OR whose service is absent from the trace cluster's topology, falls back to an **external node**: `id="external/<label>"`, `name="<label>"` (verbatim), `type="external"`, `labels={}` (empty). This keeps truly-external URLs (e.g. `https://payments.partner.example/api`) and unknown in-cluster names visible in the graph. All non-pod, non-service endpoints are `external`.
 
 **Per-endpoint resolution order (updated, supersedes D27's ordering):**
 
@@ -903,7 +852,7 @@ A `"://"`-bearing label with an empty UID therefore always flows through Stage 1
 
 **Metric-prefix scope (D26).** `KSG_METRIC_PREFIX` extends to the three new KSM-shaped series (`kube_service_info`, `kube_endpointslice_endpoints`, `kube_endpointslice_labels`). It is NOT applied to `traces_service_graph_*` or `up{}`.
 
-**KSM requirements (tracked in `tasks.md`).** Full connection-string resolution requires KSM to export services + endpointslices (`--resources`, `--metric-allowlist`) and the scrape ServiceAccount to hold `list`/`watch` on services and endpointslices — documented in `docs/operations.md`. The removed `KSG_OTHERS_NAME_PATTERN` env / flag / config field is deleted everywhere (see "Knob removal" above).
+**KSM requirements (tracked in `tasks.md`).** Full connection-string resolution requires KSM to export services + endpointslices (`--resources`, `--metric-allowlist`) and the scrape ServiceAccount to hold `list`/`watch` on services and endpointslices — documented in `docs/operations.md`.
 
 Why:
 
@@ -913,7 +862,7 @@ Why:
 
 Alternatives considered:
 
-- **Keep `KSG_OTHERS_NAME_PATTERN` and layer service resolution on top** (rejected — two overlapping detection mechanisms for the same `"://"` shape; the configurable substring earned its keep only because nothing parsed the value, and now something does).
+- **Keep a configurable substring knob and layer service resolution on top** (rejected — two overlapping detection mechanisms for the same `"://"` shape; a configurable substring earned its keep only when nothing parsed the value, and now something does).
 - **Emit all services + endpointslices wholesale as nodes/edges** (rejected — graph bloat; the vast majority of services are never called by a traced pod in a given window, so they would be inert clutter).
 - **Resolve services by parsing the URL host with a regex instead of the DNS-grammar label-count rule** (rejected — the 2-label vs 3-label distinction is exactly the ClusterIP-vs-headless-pod distinction; a regex hides that semantic and is harder to reason about across the `.svc` / `.svc.<domain>` / bare forms).
 - **Resolve a headless `<pod>.<service>.<namespace>` to the specific addressed pod** (rejected — an earlier revision did this via an endpointslice-`hostname` lookup with a `PodsByNameNS` (pod-name == hostname) fallback. It added two topology surfaces (`PodsByNameNS`, the endpoint `hostname` label) and a separate resolution branch, and let a client-side headless string carry `cluster` — yet it still only ever pinned the edge to one replica DNS-derived name, not the trace's actual target pod. Collapsing both DNS forms to the Service + fan-out is uniform, drops the extra indexes, and matches how a service-graph consumer reasons about a dependency: at the Service level, not the replica level).
@@ -931,7 +880,7 @@ rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unk
 
 - **Anchored, exact, case-sensitive.** PromQL / MetricsQL `!~` is a fully-anchored RE2 match, so `client!~"user|unknown"` excludes a series only when the *entire* `client` value is `user` or `unknown`. A connection-string label like `http://user/path` is **not** excluded (it is not equal to `user`), so D29 resolution is unaffected; `User` / `UNKNOWN` are not excluded (RE2 is case-sensitive). This matches the design intent exactly — two literal sentinels, nothing fuzzier.
 - **Both sides, OR semantics.** The two matchers are ANDed in the selector, so a series survives only if `client` is non-sentinel AND `server` is non-sentinel — i.e. a series is dropped when **either** endpoint is a sentinel. Symmetric: `user` is client-only in practice, but matching both sides is harmless and future-proofs against connector changes.
-- **Fixed, no knob.** The sentinel set `{user, unknown}` is compiled in, consistent with D29's removal of operator-tunable matching (`KSG_OTHERS_NAME_PATTERN`). An operator who genuinely wants to *see* uninstrumented ingress is not served by v1; if a real deployment needs it, a follow-up can add an opt-in, exactly as D27 left that door open for its own fallback.
+- **Fixed, no knob.** The sentinel set `{user, unknown}` is compiled in, consistent with D29's no operator-tunable matching. An operator who genuinely wants to *see* uninstrumented ingress is not served by v1; if a real deployment needs it, a follow-up can add an opt-in, exactly as D27 left that door open for its own fallback.
 
 **Why the query layer, not the resolver.** The series never leave VictoriaMetrics, so the reader does zero work for them — no fetch, no parse, no node materialisation, no edge dedupe. This is strictly cheaper than fetching then dropping in `parseServiceGraph`, and it needs no new Go branch: only the `QServiceGraphTotal` arm of `promql.Renderer.Render` changes. It is also impossible, by the connector's contract, for a sentinel `client` / `server` value to co-occur with a populated `*_k8s_pod_uid` — the virtual node exists *precisely because* there was no instrumented (hence no pod-identified) peer — so dropping the whole series can never discard a real pod-resolved edge. A workload whose OTel `service.name` is *literally* `user` or `unknown` would be excluded, but that naming is pathological and these strings are de-facto reserved by the connector; the trade-off is accepted.
 
@@ -1068,6 +1017,34 @@ Why / Alternatives considered:
 - **Drop the self-loop edge entirely when UIDs collide** (rejected — discards a real dependency the `"://"` label fully describes; resolving it to the service is strictly more informative than dropping).
 - **Gate behind a config knob** (rejected — consistent with D29 / D30's no-knob stance; the collision fingerprint is specific enough that the guard is safe to apply unconditionally, and an always-on defensive normalisation needs no operator tuning).
 
+### D34. Pod controller-owner labels (`owner_kind` / `owner_name`) with ReplicaSet skipped to Deployment
+
+**Decision.** Enrich every `type="pod"` node with its controller owner as two strict-string `labels` entries, `owner_kind` and `owner_name`, sourced from kube-state-metrics' `kube_pod_owner` series. The intermediate **ReplicaSet is skipped**: when a pod's controller owner is a `ReplicaSet`, the reader resolves one level up via `kube_replicaset_owner` to the owning `Deployment` and stamps the Deployment as the owner. This adds **no new node or edge type** — the owner is purely topological metadata on the existing pod node.
+
+**Source series.** Both are kube-state-metrics defaults emitted without any `--metric-labels-allowlist` (unlike the D29 endpointslice→service join, which needs an explicit allowlist):
+
+- `kube_pod_owner{cluster, namespace, pod, owner_kind, owner_name, owner_is_controller}` — the pod's owner references. A pod can have multiple; the **controller** is the one with `owner_is_controller="true"`.
+- `kube_replicaset_owner{cluster, namespace, replicaset, owner_kind, owner_name}` — the ReplicaSet's owner (typically a Deployment).
+
+Both are added to the topology `ReadTopology` errgroup fan-out (raising it from 8 to 10 parallel queries) and to the `KSG_METRIC_PREFIX` set, with bare `Query` constants (`QPodOwner`, `QReplicaSetOwner`) so `query_name` self-metric / span dimensions stay stable across prefixes (consistent with D26 / the prefix renderer). They are **OPTIONAL**: absence yields a valid topology with no owner labels and never fails a build (mirrors the `kube_node_labels` / service-index degradation in the topology spec).
+
+**Resolution algorithm** (pure function of the loaded series — determinism preserved, D6):
+
+1. For each pod `(cluster, namespace, pod)`, select the `kube_pod_owner` sample with `owner_is_controller="true"`. If several report `true`, pick the lexically-smallest `(owner_kind, owner_name)` so the emitted entity is stable across upstream result ordering.
+2. If the selected `owner_kind == "ReplicaSet"`, look up `kube_replicaset_owner` by `(cluster, namespace, replicaset=owner_name)`. If a `Deployment` owner exists, emit `owner_kind="Deployment"`, `owner_name=<deployment>`. If no such series exists (a bare ReplicaSet), keep `owner_kind="ReplicaSet"`, `owner_name=<replicaset>`.
+3. Any other `owner_kind` (`DaemonSet`, `StatefulSet`, `Job`, …) is surfaced verbatim with no further lookup.
+4. A pod with no controller owner omits **both** keys — never empty strings (keeps `labels` clean and the serialised body deterministic; absent ≠ empty).
+
+**Why skip only the ReplicaSet, and only one level.** The ReplicaSet is an implementation detail of Deployment rollouts — its name carries a pod-template hash (`checkout-7f9c`) that churns on every deploy, so surfacing it as the owner would make the label unstable and analytically useless. The Deployment is the unit operators reason about. The symmetric `Job→CronJob` hop is intentionally **out of scope** for this change (Open Questions) to keep the join to a single, well-understood case; `kube_replicaset_owner` is the only second-hop series consumed.
+
+**Label-key choice.** Reserved flat keys `owner_kind` / `owner_name` rather than a single combined `owner` string — flat keys match the existing `labels` style (`cluster`, `namespace`, `node`) and let consumers filter / group by kind independently of name. Strict strings only, per the `map[string]string` `labels` contract (no numbers, no bools — D6 / the labels-are-strict-strings rule). A real K8s pod label literally named `owner_kind` would collide; treated as a non-issue (such keys are vanishingly rare and Kubernetes label keys are conventionally dotted/slashed, e.g. `app.kubernetes.io/name`).
+
+**Alternatives considered.**
+
+- **Emit owner as a separate `Deployment` / `ReplicaSet` node + `pod-owned-by` edge** (rejected — the user requirement is a node-info label, not a topology relationship; a node/edge would balloon the graph and duplicate what `owner_kind`/`owner_name` already expresses on the pod. Reconsider only if owners need to become first-class filterable/traversable entities).
+- **Surface the raw ReplicaSet without skipping** (rejected — unstable hash-suffixed name; not what operators reason about).
+- **Resolve arbitrary owner chains generically** (rejected for v1 — only `ReplicaSet→Deployment` is consumed; `Job→CronJob` and deeper custom-controller chains are deferred to keep the join bounded and the series set small).
+
 ## Risks / Trade-offs
 
 - [Per-request build cost] → Every `/v1/graph` request runs a fresh upstream PromQL fan-out (target ≤ 3 s for ≤ 5 k pods aggregated across clusters in scope). With no in-process result cache, upstream load scales linearly with HTTP traffic; `--build-timeout` bounds tail latency (`504 timeout`); concurrency control is delegated to HPA + Pod resource limits (no in-process semaphore). A future cache mechanism is expected to absorb this cost.
@@ -1089,6 +1066,7 @@ Why / Alternatives considered:
 - [Expanded KSM resource / RBAC surface for service resolution] → Full connection-string resolution (D29) requires `kube_service_info`, `kube_endpointslice_endpoints`, and `kube_endpointslice_labels`, which means KSM must export services + endpointslices (`--resources`, `--metric-allowlist`) and the scrape ServiceAccount must hold `list`/`watch` on services and endpointslices. Absence degrades gracefully: every `"://"` label simply falls back to an `external/<label>` node, so the feature is additive on the topology surface and never fails a build. Document the required KSM resources / RBAC in `docs/operations.md`. See D29.
 - [Self-loop UID guard masks a producer defect instead of fixing it] → The D33 guard reroutes a `"://"` peer to its service node when an exporter stamps the caller's own pod UID on both sides (`client_k8s_pod_uid == server_k8s_pod_uid`). This makes the graph correct but hides the underlying producer bug — operators see a healthy `pod-calls-service` edge and may never learn their `servicegraph` exporter is mis-stamping UIDs. The guard is intentionally a defensive complement, not a substitute, for fixing the producer; document the root-cause fix in `docs/operations.md`. A genuine self-call *through* a Service is also rerouted from a `pod-calls-pod` self-loop to `pod-calls-service` + fan-out — accepted as the more faithful representation. See D33.
 - [Sentinel exclusion hides uninstrumented ingress] → Dropping `client` / `server ∈ {user, unknown}` series at the query layer (D30) removes the connector's virtual `user` node, so uninstrumented end-user / external ingress traffic is no longer visible as a `pod-calls-pod` edge. This is intentional — the node resolves to nothing actionable and clutters every graph — but operators who want ingress visibility lose it with no knob in v1; a follow-up opt-in can reintroduce it. A workload whose OTel `service.name` is literally `user` or `unknown` is also excluded — accepted as pathological, since those strings are de-facto reserved by the servicegraph connector. Distinct from the `cluster="unknown"` bucketing (a different label, unaffected). See D30.
+- [Owner labels add two upstream queries and depend on KSM pod/replicaset owner series] → D34 raises the topology fan-out from 8 to 10 parallel PromQL queries per build. Both `kube_pod_owner` and `kube_replicaset_owner` are KSM defaults (no allowlist), so the common case needs no extra KSM config, but a deployment that has trimmed KSM `--resources` to exclude `pods` owner refs or `replicasets` will silently get no owner labels (graceful degradation, never a build failure). The two extra queries are subject to the same per-call timeout and VictoriaMetrics search limits (D19) as the existing topology legs. Document the KSM resource expectation in `docs/operations.md`. See D34.
 
 ## Migration Plan
 
@@ -1100,7 +1078,6 @@ Greenfield repository — no migration. Rollback is `git revert` of the merge co
 - Alignment-grid policy across DST or leap seconds — likely "always UTC, no DST adjustment", confirm during spec.
 - Shape of the future cache mechanism for distributed deployment (Redis L2 vs background materialiser vs graph DB). Tracked as a separate change once the deployment topology firms up.
 - Whether `/v1/edge-types` should ever support time-window filtering — defer to v1.1.
+- Whether the controller-owner resolution (D34) should also collapse the `Job → CronJob` hop (and other intermediate controllers) the way it skips `ReplicaSet → Deployment` — deferred; v1 consumes only `kube_replicaset_owner` and skips the ReplicaSet alone. Revisit if operators want CronJob-level grouping for `Job`-owned pods.
 - Whether `/v1/clusters` should also report per-cluster pod / node counts in its response, or keep it minimal (names + first-seen / last-seen) — defer to spec.
 - ~~Fake-fixtures program shape: continuous Deployment with steady-state metrics vs YAML-driven snapshot replayer~~ — resolved: no fixtures program. Integration tests (`internal/integration/`) ingest series directly via `POST /api/v1/import/prometheus` to a `testcontainers-go` VictoriaMetrics container.
-- ~~Whether `KSG_OTHERS_NAME_PATTERN` should evolve to a regex (`KSG_OTHERS_NAME_REGEX`) or accept multiple comma-separated patterns~~ — resolved by D29: the knob was removed entirely and `"://"` detection is hardcoded (checked only on the service-graph `client` / `server` labels), with connection-string resolution to service nodes or `external` fallback.
-- ~~Whether others nodes should expose any additional `labels` (e.g., scheme parsed out of URL-shaped values)~~ — resolved (D29 + Task 8): the `others` node type is removed entirely. Unresolvable `"://"` labels produce `external` nodes with `labels={}`.

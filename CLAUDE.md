@@ -111,9 +111,8 @@ These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
   `external/<value>`. Node names are not globally unique without the prefix.
 - **Connection-string resolution rule** (D29, hardcoded — no knob): for any
   service-graph endpoint whose pod UID is empty, the verbatim `client`/`server`
-  label is checked for a `"://"` connection string. The `KSG_OTHERS_NAME_PATTERN`
-  env var / `--others-name-pattern` flag / `config.OthersNamePattern` field are
-  **REMOVED entirely** — there is no operator-tunable substring. Per-endpoint
+  label is checked for a `"://"` connection string. Detection is hardcoded —
+  there is no operator-tunable substring and no config knob. Per-endpoint
   independent (both sides of a single edge are evaluated separately); edge `type`
   is `pod-calls-service` when the target resolves to a service node, otherwise
   `pod-calls-pod`. When a `"://"` label is found, its URL host is parsed and
