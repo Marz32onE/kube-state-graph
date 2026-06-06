@@ -14,6 +14,7 @@ import (
 
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/pkg/clock"
+	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
 )
 
 // fixedNow is the absolute timestamp anchor every fixture and query uses.
@@ -240,6 +241,62 @@ func (s *GraphSuite) TestConnStringUnresolvableProducesExternalNode() {
 	body, _ := io.ReadAll(resp.Body)
 	s.Contains(string(body), `"type":"external"`)
 	s.Contains(string(body), `"name":"https://payments.partner.example/api"`)
+}
+
+// TestMissingUIDNonURLClientProducesExternalNode exercises the D27 missing-UID
+// fallback end-to-end against a real VM (tasks §31.E.4): a service-graph series
+// whose client_k8s_pod_uid is EMPTY and whose client label is a plain non-URL
+// human name ("stray-caller", no "://") promotes that endpoint to an
+// external/<label> node (rather than dropping the edge), and the resulting
+// pod-calls-pod edge to the resolved server pod omits labels.cluster because the
+// client side is not a pod. This is the non-URL counterpart to the "://"
+// unresolvable case above — distinct code path (D27, not D29).
+func (s *GraphSuite) TestMissingUIDNonURLClientProducesExternalNode() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	// server resolves to the standard checkout pod (uid alpha-1); client UID is
+	// empty with a plain non-URL label. Two counter samples so rate() > 0.
+	extra := fmt.Sprintf(`# HELP traces_service_graph_request_total dummy
+traces_service_graph_request_total{client="stray-caller",server="checkout",cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="stray-caller",server="checkout",cluster="cluster-alpha",client_k8s_pod_uid="",server_k8s_pod_uid="alpha-1",client_k8s_namespace_name="",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	s.Require().True(
+		s.WaitForSeries(`rate(traces_service_graph_request_total{client="stray-caller",test=`+strconv.Quote(disc)+`}[5m]) > 0`, fixedNow, 30*time.Second),
+		"VM did not observe the non-URL missing-UID series")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	var body cytoscape.Body
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+
+	// external/stray-caller node present with the human label as name, empty labels.
+	var ext *cytoscape.NodeData
+	for i := range body.Elements.Nodes {
+		if body.Elements.Nodes[i].Data.ID == "external/stray-caller" {
+			ext = &body.Elements.Nodes[i].Data
+		}
+	}
+	s.Require().NotNil(ext, "missing-UID non-URL client must promote to external/stray-caller (edge not dropped)")
+	s.Equal("external", ext.Type)
+	s.Equal("stray-caller", ext.Name, "external node carries the verbatim human label as name")
+	s.Empty(ext.Labels, "missing-UID external node carries empty labels")
+
+	// pod-calls-pod edge external/stray-caller → cluster-alpha/alpha-1, no cluster label.
+	var sawEdge bool
+	for _, e := range body.Elements.Edges {
+		if e.Data.Source == "external/stray-caller" && e.Data.Target == "cluster-alpha/alpha-1" {
+			sawEdge = true
+			s.Equal("pod-calls-pod", e.Data.Type)
+			s.NotContains(e.Data.Labels, "cluster",
+				"edge omits labels.cluster when the client side is external (D27/D9)")
+		}
+	}
+	s.True(sawEdge, "expected pod-calls-pod edge from external/stray-caller to the resolved server pod")
 }
 
 // TestConnStringServiceResolvesToServiceNodeWithBackingPods exercises the full
