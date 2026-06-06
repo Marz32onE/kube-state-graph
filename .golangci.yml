@@ -1,0 +1,73 @@
+version: "2"
+
+run:
+  concurrency: 4
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - exhaustive
+    # Modern Go idioms
+    - copyloopvar
+    - intrange
+    # Error handling
+    - errorlint
+    - nilerr
+    # Performance
+    - bodyclose
+    - unconvert
+    - prealloc
+    # Style / cleanliness
+    - misspell
+    - unparam
+    # Security
+    - gosec
+    # Testify usage
+    - testifylint
+
+  settings:
+    gocognit:
+      min-complexity: 10
+    exhaustive:
+      default-signifies-exhaustive: true
+    testifylint:
+      enable-all: true
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+  exclusions:
+    paths:
+      - openspec
+      - .claude
+      - .cursor
+      - docs
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+          - errcheck
+          - bodyclose
+      - path: internal/graph/property_test\.go
+        text: "G404"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

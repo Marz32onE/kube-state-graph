@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kubernetes Service / Endpoint 指標與圖譜建構（繁體中文）</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #9aa8bc;
+      --accent: #5eb3f6;
+      --accent2: #7ee787;
+      --warn: #f0b429;
+      --code-bg: #0d1117;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "SF Pro Text", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      font-size: 16px;
+    }
+    header {
+      background: linear-gradient(135deg, #1e3a5f 0%, #0f1419 60%);
+      border-bottom: 1px solid var(--border);
+      padding: 2.5rem 2rem 2rem;
+    }
+    header h1 { margin: 0 0 0.5rem; font-size: 1.85rem; font-weight: 700; }
+    header p { margin: 0; color: var(--muted); max-width: 52rem; }
+    .wrap { display: flex; max-width: 1200px; margin: 0 auto; }
+    nav {
+      width: 260px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      align-self: flex-start;
+      max-height: 100vh;
+      overflow-y: auto;
+      padding: 1.5rem 1rem 2rem;
+      border-right: 1px solid var(--border);
+      background: var(--bg);
+    }
+    nav a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      padding: 0.35rem 0.5rem;
+      border-radius: 4px;
+    }
+    nav a:hover { color: var(--accent); background: var(--surface); }
+    nav .nav-h2 { margin-top: 1rem; font-weight: 600; color: var(--text); font-size: 0.85rem; }
+    main { flex: 1; padding: 2rem 2.5rem 4rem; min-width: 0; }
+    h2 {
+      margin: 2.5rem 0 1rem;
+      font-size: 1.45rem;
+      color: var(--accent2);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.4rem;
+    }
+    h3 { margin: 1.75rem 0 0.75rem; font-size: 1.15rem; color: var(--accent); }
+    h4 { margin: 1.25rem 0 0.5rem; font-size: 1rem; }
+    p, li { max-width: 48rem; }
+    a { color: var(--accent); }
+    code, pre {
+      font-family: "SF Mono", "Menlo", "Consolas", monospace;
+      font-size: 0.88em;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      overflow-x: auto;
+      max-width: 52rem;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      max-width: 52rem;
+      margin: 1rem 0;
+      font-size: 0.92rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.55rem 0.75rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--surface); color: var(--accent); font-weight: 600; }
+    tr:nth-child(even) { background: rgba(26, 35, 50, 0.5); }
+    .note {
+      background: rgba(94, 179, 246, 0.08);
+      border-left: 3px solid var(--accent);
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+      max-width: 48rem;
+      border-radius: 0 6px 6px 0;
+    }
+    .warn {
+      background: rgba(240, 180, 41, 0.1);
+      border-left: 3px solid var(--warn);
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+      max-width: 48rem;
+      border-radius: 0 6px 6px 0;
+    }
+    .flow {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      max-width: 52rem;
+      font-family: "SF Mono", monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 1.5rem 2rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: center;
+    }
+    @media (max-width: 900px) {
+      .wrap { flex-direction: column; }
+      nav { width: 100%; position: static; max-height: none; border-right: none; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Kubernetes Service / Endpoint 指標與圖譜建構</h1>
+    <p>
+      說明 <code>kube-state-graph</code> 為建構服務拓撲圖所需的三個 kube-state-metrics（KSM）系列、
+      各系列使用的 label、以及這些資料在圖譜中的用途。內容依據設計文件 D29 與原始碼實作整理。
+    </p>
+  </header>
+
+  <div class="wrap">
+    <nav>
+      <div class="nav-h2">目錄</div>
+      <a href="#overview">為什麼需要</a>
+      <a href="#metrics">三個指標系列</a>
+      <a href="#labels">Label 對照表</a>
+      <a href="#indexes">Topology 索引</a>
+      <a href="#resolution">連線字串解析</a>
+      <a href="#graph-output">圖譜輸出</a>
+      <a href="#promql">PromQL 查詢</a>
+      <a href="#ksm-config">KSM 設定</a>
+      <a href="#degradation">缺失時行為</a>
+      <a href="#related">相關指標</a>
+    </nav>
+
+    <main>
+      <section id="overview">
+        <h2>為什麼需要 Service / Endpoint 指標？</h2>
+        <p>
+          <code>kube-state-graph</code> 的主要呼叫關係來自
+          <code>traces_service_graph_request_total</code>（Grafana Alloy / Tempo 的 servicegraph connector）。
+          當某個 endpoint 的 pod UID 為空，但 <code>client</code> 或 <code>server</code> label 是
+          <strong>連線字串</strong>（含 <code>://</code>，例如
+          <code>mongodb://payments-svc.shop.svc.cluster.local:27017</code>）時，
+          API 必須把 DNS host 解析成叢集內的 Kubernetes 資源，而不是一律當成外部節點。
+        </p>
+        <p>這就是設計決策 <strong>D29（connection-string resolution）</strong> 要解決的問題：</p>
+        <ul>
+          <li><strong>兩段式 DNS</strong>（<code>&lt;service&gt;.&lt;namespace&gt;</code>）→ 解析為 <code>type="service"</code> 節點</li>
+          <li><strong>三段式 DNS</strong>（<code>&lt;pod&gt;.&lt;service&gt;.&lt;namespace&gt;</code>，Headless Service）→ 解析為<strong>真實後端 Pod</strong></li>
+          <li><strong>無法解析</strong> → 退回 <code>type="others"</code> 節點（保留原樣 label 字串）</li>
+        </ul>
+        <p>
+          Pod、Node 等基礎拓撲來自 <code>kube_pod_info</code> 等既有指標；
+          <strong>Service 與 EndpointSlice 指標則專門用來建立「Service → 後端 Pod」的解析索引</strong>，
+          並在需要時<strong>按需</strong>物化 <code>service-selects-pod</code> 邊。
+        </p>
+        <div class="note">
+          重要：這三個指標<strong>不會</strong>把叢集內所有 Service 都畫進圖裡。
+          它們只建記憶體索引；只有被 service-graph 連線字串<strong>實際引用</strong>到的 Service 才會變成圖節點，
+          以避免圖過於龐大。
+        </div>
+      </section>
+
+      <section id="metrics">
+        <h2>三個指標系列</h2>
+        <p>資料來源為 <strong>kube-state-metrics</strong>，由 topology reader 在每次 <code>/v1/graph</code> 請求時平行查詢。</p>
+
+        <h3>1. <code>kube_service_info</code></h3>
+        <p><strong>用途：</strong>記錄每個 Service 的基本屬性，主要是 <code>cluster_ip</code>。</p>
+        <ul>
+          <li>建立 <code>ServicesByNameNS</code> 索引：以 <code>(cluster, namespace, service)</code> 為 key</li>
+          <li>連線字串解析到 Service 層級時，物化 <code>type="service"</code> 節點的 <code>ipaddress</code></li>
+          <li><code>cluster_ip="None"</code> 表示 Headless Service，此時<strong>不輸出</strong> <code>ipaddress</code></li>
+        </ul>
+
+        <h3>2. <code>kube_endpointslice_labels</code></h3>
+        <p><strong>用途：</strong>把 EndpointSlice 對應到其所屬的 Service 名稱。</p>
+        <ul>
+          <li>讀取 <code>label_kubernetes_io_service_name</code>（KSM 將 Kubernetes label <code>kubernetes.io/service-name</code> 扁平化後的名稱）</li>
+          <li>以 <code>(cluster, namespace, endpointslice)</code> join，得到 slice → service 對照表</li>
+          <li><strong>預設 KSM 不匯出此 label</strong>，需額外 allowlist（見下方設定章節）</li>
+        </ul>
+
+        <h3>3. <code>kube_endpointslice_endpoints</code></h3>
+        <p><strong>用途：</strong>列出每個 EndpointSlice 中的各個 endpoint，並解析其後端 Pod。</p>
+        <ul>
+          <li>透過 <code>targetref_kind</code> / <code>targetref_name</code> / <code>targetref_namespace</code> 對應到 Pod</li>
+          <li>只處理 <code>targetref_kind="Pod"</code>（或空值視為 Pod）的 endpoint</li>
+          <li>保留 <code>hostname</code>，供 Headless Service 三段式 DNS 比對（StatefulSet 自訂 hostname 等情境）</li>
+          <li>結合 slice→service 對照，建立 <code>EndpointsByService</code> 索引</li>
+        </ul>
+      </section>
+
+      <section id="labels">
+        <h2>Label 對照表</h2>
+        <p>以下 label 為 exporter 相容性合約的一部分；名稱必須一致，否則 join 會失敗。</p>
+
+        <h3><code>kube_service_info</code></h3>
+        <table>
+          <thead>
+            <tr><th>Label</th><th>是否必要</th><th>圖譜建構用途</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>cluster</code></td>
+              <td>是</td>
+              <td>多叢集隔離；索引 key 的第一段；連線字串解析限定在 trace 來源叢集</td>
+            </tr>
+            <tr>
+              <td><code>namespace</code></td>
+              <td>是</td>
+              <td>索引 key；Service 節點 <code>labels.namespace</code>；節點 ID 為 <code>&lt;cluster&gt;/&lt;namespace&gt;/&lt;service&gt;</code></td>
+            </tr>
+            <tr>
+              <td><code>service</code></td>
+              <td>是</td>
+              <td>索引 key；Service 節點名稱；與 DNS 兩段式 host 的 service 段比對</td>
+            </tr>
+            <tr>
+              <td><code>cluster_ip</code></td>
+              <td>是</td>
+              <td>ClusterIP Service 的 <code>ipaddress</code>；值 <code>"None"</code> 表示 Headless，省略 IP</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3><code>kube_endpointslice_labels</code></h3>
+        <table>
+          <thead>
+            <tr><th>Label</th><th>是否必要</th><th>圖譜建構用途</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>cluster</code></td>
+              <td>是</td>
+              <td>slice→service join 的 key 之一</td>
+            </tr>
+            <tr>
+              <td><code>namespace</code></td>
+              <td>是</td>
+              <td>slice→service join 的 key 之一</td>
+            </tr>
+            <tr>
+              <td><code>endpointslice</code></td>
+              <td>是</td>
+              <td>EndpointSlice 資源名稱；與 <code>kube_endpointslice_endpoints</code> join</td>
+            </tr>
+            <tr>
+              <td><code>label_kubernetes_io_service_name</code></td>
+              <td>是（需 allowlist）</td>
+              <td>此 slice 所屬 Service 名稱；缺少則無法建立 <code>EndpointsByService</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3><code>kube_endpointslice_endpoints</code></h3>
+        <table>
+          <thead>
+            <tr><th>Label</th><th>是否必要</th><th>圖譜建構用途</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>cluster</code></td>
+              <td>是</td>
+              <td>endpoint 所屬叢集</td>
+            </tr>
+            <tr>
+              <td><code>namespace</code></td>
+              <td>是</td>
+              <td>EndpointSlice 所在 namespace；join slice→service 時使用</td>
+            </tr>
+            <tr>
+              <td><code>endpointslice</code></td>
+              <td>是</td>
+              <td>對應到 <code>kube_endpointslice_labels</code>，取得 owning Service</td>
+            </tr>
+            <tr>
+              <td><code>address</code></td>
+              <td>合約要求</td>
+              <td>KSM 標準欄位；目前圖譜建構邏輯<strong>未直接使用</strong> IP，但 exporter 必須提供</td>
+            </tr>
+            <tr>
+              <td><code>hostname</code></td>
+              <td>是</td>
+              <td>Headless 三段式 DNS 解析：比對 <code>&lt;pod-hostname&gt;</code> 以找到正確後端 Pod</td>
+            </tr>
+            <tr>
+              <td><code>targetref_kind</code></td>
+              <td>是</td>
+              <td>只接受 <code>Pod</code>（或非空且非 Pod 則略過該 endpoint）</td>
+            </tr>
+            <tr>
+              <td><code>targetref_name</code></td>
+              <td>是</td>
+              <td>後端 Pod 名稱；與 topology 的 <code>PodsByNameNS</code> join</td>
+            </tr>
+            <tr>
+              <td><code>targetref_namespace</code></td>
+              <td>建議</td>
+              <td>Pod 所在 namespace；若空則 fallback 為 EndpointSlice 的 <code>namespace</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="warn">
+          <strong>共通 external label：</strong>所有 KSM 系列（含上述三個）都應帶 <code>cluster</code> external label，
+          以支援多叢集 VictoriaMetrics 匯總。若缺失，reader 會 bucket 成 <code>"unknown"</code>。
+        </div>
+      </section>
+
+      <section id="indexes">
+        <h2>Topology 索引如何建立</h2>
+        <p>在 <code>ReadTopology</code> 中，三個指標系列與既有 pod 指標一起解析，產生以下索引（<strong>僅記憶體結構，非圖節點</strong>）：</p>
+
+        <div class="flow">kube_service_info
+  └─► ServicesByNameNS[(cluster, namespace, service)] → { cluster_ip }
+
+kube_endpointslice_labels
+  └─► sliceToService[(cluster, namespace, endpointslice)] → service_name
+        │
+        ▼ join
+kube_endpointslice_endpoints + PodsByNameNS（來自 kube_pod_info）
+  └─► EndpointsByService[(cluster, namespace, service)] → [{ Pod, hostname }, ...]
+
+kube_pod_info（既有）
+  └─► PodsByNameNS[(cluster, namespace, pod-name)] → PodNode
+      （Headless fallback：pod 名稱 == DNS hostname 時使用）</div>
+
+        <h3>Join 邏輯摘要</h3>
+        <ol>
+          <li><code>kube_endpointslice_labels</code>：以 <code>(cluster, namespace, endpointslice)</code> 對應 Service 名</li>
+          <li><code>kube_endpointslice_endpoints</code>：同一 key 找到 slice，再取 <code>targetref_*</code> 指向 Pod</li>
+          <li>Pod 必須已存在於 <code>PodsByNameNS</code>（由 <code>kube_pod_info</code> 建立）；否則該 endpoint 被略過</li>
+          <li>最終以 <code>(cluster, namespace, service)</code> 聚合為 <code>EndpointsByService</code></li>
+        </ol>
+      </section>
+
+      <section id="resolution">
+        <h2>連線字串解析（D29）如何使用這些索引</h2>
+        <p>
+          觸發條件：<code>traces_service_graph_request_total</code> 某側的
+          <code>client_k8s_pod_uid</code> 或 <code>server_k8s_pod_uid</code> 為空，
+          且對應的 <code>client</code> / <code>server</code> label 含 <code>://</code>。
+        </p>
+
+        <h3>解析流程</h3>
+        <ol>
+          <li>將 label 當 URL 解析，取出 host</li>
+          <li>剝除可選的 <code>.svc.&lt;cluster-domain&gt;</code> 後綴（如 <code>.svc.cluster.local</code>）</li>
+          <li>依 dotted label 數量分類：</li>
+        </ol>
+
+        <table>
+          <thead>
+            <tr><th>Host 形狀</th><th>語意</th><th>使用的索引 / 指標</th><th>圖譜結果</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>&lt;service&gt;.&lt;namespace&gt;</code>（2 段）</td>
+              <td>ClusterIP / Service DNS</td>
+              <td><code>ServicesByNameNS</code> + <code>EndpointsByService</code></td>
+              <td><code>type="service"</code> 節點 + 按需 <code>service-selects-pod</code> 邊</td>
+            </tr>
+            <tr>
+              <td><code>&lt;pod&gt;.&lt;service&gt;.&lt;namespace&gt;</code>（3 段）</td>
+              <td>Headless 逐 Pod DNS</td>
+              <td>先比對 <code>EndpointsByService[].hostname</code>，再 fallback <code>PodsByNameNS</code></td>
+              <td>直接連到<strong>真實 Pod 節點</strong>（不建立 service 節點）</td>
+            </tr>
+            <tr>
+              <td>其他 / topology 找不到</td>
+              <td>外部 URL 或未知名稱</td>
+              <td>—</td>
+              <td><code>type="others"</code>，<code>id="others/&lt;原樣 label&gt;"</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="note">
+          <strong>為什麼需要 <code>hostname</code>？</strong>
+          KSM 不匯出 Pod 的 <code>spec.hostname</code>。Headless StatefulSet 可能使用自訂 hostname，
+          此時 DNS 第一段與 Pod 名稱不同；<code>kube_endpointslice_endpoints.hostname</code> 是唯一能正確對上的欄位。
+          若 hostname 比對失敗，才 fallback 到「pod 名稱 == DNS 第一段」的慣例。
+        </div>
+
+        <div class="note">
+          <strong>為什麼需要 <code>cluster_ip</code>？</strong>
+          Service 節點的 <code>ipaddress</code> 來自 <code>kube_service_info.cluster_ip</code>。
+          Headless（<code>cluster_ip="None"</code>）沒有 Cluster IP，故刻意省略 <code>ipaddress</code>，
+          與 Pod / Node 的 IP 呈現規則一致（IP 放在 typed 欄位，不在 <code>labels</code> 裡）。
+        </div>
+      </section>
+
+      <section id="graph-output">
+        <h2>圖譜輸出長什麼樣</h2>
+
+        <h3>Service 節點（按需物化）</h3>
+        <ul>
+          <li><code>type</code>：<code>"service"</code></li>
+          <li><code>id</code>：<code>&lt;cluster&gt;/&lt;namespace&gt;/&lt;service&gt;</code></li>
+          <li><code>labels</code>：<code>{ "cluster": "...", "namespace": "..." }</code>（嚴格 <code>map[string]string</code>）</li>
+          <li><code>ipaddress</code>：來自 <code>cluster_ip</code>；Headless 時省略</li>
+          <li>Cytoscape 複合節點：<code>parent = cluster/&lt;cluster&gt;</code>（cluster 群組下）</li>
+        </ul>
+
+        <h3><code>service-selects-pod</code> 邊（按需物化）</h3>
+        <ul>
+          <li>方向：Service → Pod（有向）</li>
+          <li>來源：<code>EndpointsByService</code> 中該 Service 的每個已解析後端 Pod</li>
+          <li>永遠<strong>叢集內</strong>（intra-cluster）</li>
+          <li>邊 <code>labels</code> 可含 <code>namespace</code></li>
+          <li>只在連線字串解析命中 Service 層級時建立；不會為未引用的 Service 批量輸出</li>
+        </ul>
+      </section>
+
+      <section id="promql">
+        <h2>PromQL 查詢</h2>
+        <p>在請求時間窗 <code>[start, end]</code> 內，topology reader 對三個系列執行：</p>
+        <pre>last_over_time(kube_service_info[&lt;window&gt;])
+last_over_time(kube_endpointslice_endpoints[&lt;window&gt;])
+last_over_time(kube_endpointslice_labels[&lt;window&gt;])</pre>
+        <p>
+          若設定 <code>KSG_METRIC_PREFIX</code>（或 <code>--metric-prefix</code>），
+          上述 metric 名稱前會加上前綴（例如 <code>o11y_kube_service_info</code>）。
+          <strong>不</strong>套用於 <code>traces_service_graph_*</code> 或 <code>up{}</code>。
+        </p>
+        <p>
+          這三個查詢與其他 5 個 topology 查詢（pod、node、PVC 等）在 <code>errgroup</code> 中<strong>平行</strong>執行，
+          共 8 個 PromQL fan-out。
+        </p>
+      </section>
+
+      <section id="ksm-config">
+        <h2>KSM 必要設定</h2>
+
+        <h3>1. 啟用 resources</h3>
+        <p>KSM 必須匯出 <code>services</code> 與 <code>endpointslices</code> 資源（透過 <code>--resources</code> 或等效 allowlist）。</p>
+        <p>ServiceAccount 需具備對 <code>services</code>、<code>endpointslices</code> 的 <code>list</code>/<code>watch</code> RBAC。</p>
+
+        <h3>2. EndpointSlice label allowlist（關鍵）</h3>
+        <pre>--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name]</pre>
+        <p>
+          沒有此設定，KSM 不會在 <code>kube_endpointslice_labels</code> 上輸出
+          <code>label_kubernetes_io_service_name</code>，
+          導致 slice 無法對應 Service —— 即使 <code>kube_service_info</code> 存在，
+          <code>service-selects-pod</code> 邊也會缺失，連線字串只能退回 <code>others</code>。
+        </p>
+
+        <h3>3. 多叢集 external label</h3>
+        <p>Scrape 設定應為每個叢集的 KSM 加上一致的 <code>cluster</code> external label，供索引與跨叢集拓撲使用。</p>
+      </section>
+
+      <section id="degradation">
+        <h2>指標缺失時的行為（優雅降級）</h2>
+        <p>Service / EndpointSlice 查詢是 <strong>best-effort</strong> 的：</p>
+        <ul>
+          <li>上游未匯出這三個系列 → 索引為空，<strong>不會</strong>讓整次 graph build 失敗</li>
+          <li>缺少 <code>label_kubernetes_io_service_name</code> → slice 無法 join Service，該 Service 的 endpoint 被略過</li>
+          <li>endpoint 的 Pod 不在 <code>kube_pod_info</code> → 該 endpoint 被略過</li>
+          <li>連線字串無法解析 → <code>others/&lt;label&gt;</code> 節點（與 D29 之前行為相容的可見性）</li>
+        </ul>
+        <p>因此 D29 功能對 topology 表面是<strong>加法</strong>：有指標就解析 Service，沒有就退回 others。</p>
+      </section>
+
+      <section id="related">
+        <h2>相關指標（非 KSM，但與 Service 解析搭配）</h2>
+        <p>Service/Endpoint 指標只解決「連線字串 → 叢集內 Service/Pod」；完整呼叫圖還需要：</p>
+
+        <table>
+          <thead>
+            <tr><th>指標</th><th>來源</th><th>關鍵 label</th><th>用途</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>traces_service_graph_request_total</code></td>
+              <td>Alloy / Tempo servicegraph</td>
+              <td>
+                <code>client</code>, <code>server</code>,
+                <code>client_k8s_pod_uid</code>, <code>server_k8s_pod_uid</code>,
+                <code>cluster</code>
+              </td>
+              <td>
+                產生 <code>pod-calls-pod</code> 邊；當 UID 為空且 label 含 <code>://</code> 時
+                觸發 D29，才會用到 Service/Endpoint 索引
+              </td>
+            </tr>
+            <tr>
+              <td><code>kube_pod_info</code></td>
+              <td>KSM</td>
+              <td><code>cluster</code>, <code>namespace</code>, <code>pod</code>, <code>uid</code>, …</td>
+              <td>
+                建立 <code>PodsByNameNS</code> / <code>PodsByUID</code>；
+                EndpointSlice 的 <code>targetref_*</code> 必須 join 到這裡的 Pod
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Service-graph 查詢層過濾（D30）</h3>
+        <p>
+          <code>client!~"user|unknown",server!~"user|unknown"</code> 會在 PromQL 層排除
+          servicegraph 的虛擬 peer。這與 Service/Endpoint 指標無關，但影響哪些邊會進入解析管線。
+        </p>
+      </section>
+
+      <section id="refs">
+        <h2>參考</h2>
+        <ul>
+          <li>原始碼：<code>internal/build/topology.go</code>、<code>internal/build/servicegraph.go</code></li>
+          <li>PromQL：<code>internal/promql/queries.go</code></li>
+          <li>營運文件：<code>docs/operations.md</code>（Exporter compatibility contract）</li>
+          <li>連線字串語法：<code>docs/others-substitution.md</code></li>
+          <li>設計：<code>openspec/changes/add-k8s-pod-graph-api/design.md</code> D29</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    kube-state-graph · 產生日期：2026-06-01 · 繁體中文
+  </footer>
+</body>
+</html>

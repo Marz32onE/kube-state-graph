@@ -1,0 +1,112 @@
+package promql
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestRender_PodInfoNoClusterFilter(t *testing.T) {
+	got := Render(QPodInfo, time.Minute)
+	assert.Contains(t, got, "kube_pod_info")
+	assert.Contains(t, got, "[1m]")
+	assert.NotContains(t, got, "cluster=~", "PromQL must not push cluster filtering")
+}
+
+func TestRender_ServiceGraphTotal(t *testing.T) {
+	got := Render(QServiceGraphTotal, time.Minute)
+	assert.Contains(t, got, "traces_service_graph_request_total")
+	assert.NotContains(t, got, "client_cluster")
+	assert.NotContains(t, got, "server_cluster")
+}
+
+// TestRender_ServiceGraphExcludesSentinelPeers pins design.md D30: the
+// service-graph selector drops the servicegraph connector's virtual peers
+// (uninstrumented caller "user", unresolved peer "unknown") at the query
+// layer via anchored negative matchers on the client and server labels. The
+// match is exact (RE2 is fully anchored) and case-sensitive, so a connection
+// string such as "http://user/..." is NOT excluded.
+func TestRender_ServiceGraphExcludesSentinelPeers(t *testing.T) {
+	got := Render(QServiceGraphTotal, time.Minute)
+	assert.Equal(t, `rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unknown"}[1m])`, got)
+	assert.Contains(t, got, `client!~"user|unknown"`)
+	assert.Contains(t, got, `server!~"user|unknown"`)
+
+	// The Query constant itself MUST stay the bare metric name so the
+	// `query` / `query_name` self-metric + span dimensions stay stable across
+	// deployments (design.md D25 / D26); only the rendered PromQL gains the
+	// matchers.
+	assert.Equal(t, "traces_service_graph_request_total", string(QServiceGraphTotal))
+}
+
+func TestRender_NodeAddressesIncludesExternalIPSelector(t *testing.T) {
+	got := Render(QNodeAddresses, time.Minute)
+	assert.Contains(t, got, `type="ExternalIP"`)
+}
+
+// TestRenderer_PrefixApplied covers the additive metric-name prefix knob
+// (design.md D26) across every kube-state-metrics-shaped query plus the
+// cluster-discovery query that wraps kube_node_info.
+func TestRenderer_PrefixApplied(t *testing.T) {
+	cases := []struct {
+		name   string
+		q      Query
+		window time.Duration
+		want   string
+	}{
+		{"pod-info", QPodInfo, time.Minute, "last_over_time(o11y_kube_pod_info[1m])"},
+		{"node-info", QNodeInfo, time.Minute, "last_over_time(o11y_kube_node_info[1m])"},
+		{"node-addresses", QNodeAddresses, time.Minute, `last_over_time(o11y_kube_node_status_addresses{type="ExternalIP"}[1m])`},
+		{"pvc-bindings", QPVCBindings, time.Minute, "last_over_time(o11y_kube_pod_spec_volumes_persistentvolumeclaims_info[1m])"},
+		{"node-labels", QNodeLabels, time.Minute, "last_over_time(o11y_kube_node_labels[1m])"},
+		{"pod-owner", QPodOwner, time.Minute, "last_over_time(o11y_kube_pod_owner[1m])"},
+		{"replicaset-owner", QReplicaSetOwner, time.Minute, "last_over_time(o11y_kube_replicaset_owner[1m])"},
+		{"cluster-discovery", QClusterDiscovery, time.Hour, "group by (cluster) (last_over_time(o11y_kube_node_info[1h]))"},
+	}
+	r := Renderer{Prefix: "o11y_"}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, r.Render(tc.q, tc.window))
+		})
+	}
+}
+
+// TestRenderer_PrefixNotAppliedToServiceGraphOrUp asserts the negative
+// scope rule: the configurable prefix targets only kube-state-metrics-shaped
+// series. Service-graph metrics (Alloy/Tempo family) and the Prometheus-native
+// `up{}` readiness probe MUST be unaffected.
+func TestRenderer_PrefixNotAppliedToServiceGraphOrUp(t *testing.T) {
+	r := Renderer{Prefix: "o11y_"}
+	sg := r.Render(QServiceGraphTotal, time.Minute)
+	assert.Equal(t, `rate(traces_service_graph_request_total{client!~"user|unknown",server!~"user|unknown"}[1m])`, sg)
+	assert.NotContains(t, sg, "o11y_", "prefix must NOT apply to service-graph metric")
+
+	up := r.Render(QUpProbe, 0)
+	assert.Equal(t, "up", up)
+	assert.NotContains(t, up, "o11y_", "prefix must NOT apply to up{} probe")
+}
+
+// TestRender_ZeroPrefixIdenticalToBareNames pins the back-compat contract:
+// the package-level Render is a zero-prefix Renderer; a deployment that
+// leaves MetricPrefix empty issues bit-identical PromQL to the pre-D26
+// behaviour.
+func TestRender_ZeroPrefixIdenticalToBareNames(t *testing.T) {
+	r := Renderer{}
+	assert.Equal(t, Render(QPodInfo, time.Minute), r.Render(QPodInfo, time.Minute))
+	assert.Equal(t, Render(QNodeInfo, time.Minute), r.Render(QNodeInfo, time.Minute))
+	assert.Equal(t, Render(QClusterDiscovery, time.Hour), r.Render(QClusterDiscovery, time.Hour))
+	assert.Contains(t, r.Render(QPodInfo, time.Minute), "kube_pod_info")
+}
+
+func TestFormatDuration(t *testing.T) {
+	cases := map[time.Duration]string{
+		0:                "0s",
+		2 * time.Hour:    "2h",
+		15 * time.Minute: "15m",
+		90 * time.Second: "90s",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, FormatDuration(in), "FormatDuration(%s)", in)
+	}
+}

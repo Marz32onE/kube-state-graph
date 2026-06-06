@@ -1,0 +1,93 @@
+name: CI
+
+# `lint`, `vuln`, `test`, and `docs-drift` are separate jobs; they run in
+# parallel (no `needs` edges) so PR feedback latency = max, not sum.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout=5m
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run unit + integration tests
+        run: go test ./... -count=1 -race -shuffle=on
+
+  docs-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Pre-download modules so `swag init` does not race the module cache
+      # while parsing transitive deps; without this the CI runner hits
+      # "cannot find all dependencies" and swag exits 1.
+      - name: Pre-download modules
+        run: go mod download
+
+      # Single source of truth: `make check-docs` regenerates the OpenAPI spec
+      # via the `swag` tool pinned in go.mod (`tool` directive) and diffs the
+      # committed docs/ spec (embedded into the binary via docs/embed.go).
+      - name: Verify docs in sync
+        run: make check-docs
+
+  mocks-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pre-download modules
+        run: go mod download
+
+      # Mockery is pinned via the go.mod `tool` directive and invoked through
+      # `go tool mockery`, so no separate install step is needed.
+      - name: Verify mocks in sync
+        run: make verify-mocks

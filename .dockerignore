@@ -1,0 +1,42 @@
+# VCS
+.git
+.gitignore
+.github
+
+# Editor / OS
+.vscode
+.idea
+.cursor
+.claude
+.editorconfig
+.DS_Store
+
+# Build artefacts
+bin/
+coverage.out
+*.out
+*.test
+*.prof
+
+# Local rig (not part of the image)
+local/
+deploy/grafana
+deploy/docker
+
+# Docs: drop doc files but KEEP the embedded OpenAPI Go package — internal/api
+# imports github.com/marz32one/kube-state-graph/docs, which //go:embeds the
+# swagger spec into the binary, so these three files must reach the build stage.
+docs/*
+!docs/embed.go
+!docs/swagger.json
+!docs/swagger.yaml
+openspec/
+README.md
+README.zh-tw.md
+LICENSE
+CLAUDE.md
+*.md
+
+# Tooling configs
+.golangci.yml
+scripts/

@@ -1,0 +1,545 @@
+components:
+  schemas:
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Body:
+      properties:
+        apiVersion:
+          type: string
+        clusters:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        elements:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Elements'
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Edge:
+      properties:
+        data:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.EdgeData'
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.EdgeData:
+      properties:
+        id:
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+        source:
+          type: string
+        target:
+          type: string
+        type:
+          type: string
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Elements:
+      properties:
+        edges:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Edge'
+          type: array
+          uniqueItems: false
+        nodes:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Node'
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.Node:
+      properties:
+        data:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.NodeData'
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_cytoscape.NodeData:
+      properties:
+        id:
+          type: string
+        ipaddress:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        labels:
+          additionalProperties:
+            type: string
+          type: object
+        name:
+          type: string
+        owner:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.Owner'
+        parent:
+          type: string
+        type:
+          type: string
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_graph.EdgeType:
+      enum:
+      - pod-mounts-pvc
+      - pod-calls-pod
+      - pod-calls-service
+      - service-selects-pod
+      - switch-to-switch
+      - node-to-switch
+      type: string
+      x-enum-varnames:
+      - EdgeTypePodMountsPVC
+      - EdgeTypePodCallsPod
+      - EdgeTypePodCallsService
+      - EdgeTypeServiceSelectsPod
+      - EdgeTypeSwitchToSwitch
+      - EdgeTypeNodeToSwitch
+    github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition:
+      properties:
+        description:
+          type: string
+        directed:
+          type: boolean
+        labels:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeLabel'
+          type: array
+          uniqueItems: false
+        may_cross_cluster:
+          type: boolean
+        source_type:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.NodeType'
+          type: array
+          uniqueItems: false
+        target_type:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.NodeType'
+          type: array
+          uniqueItems: false
+        type:
+          $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.EdgeType'
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeLabel:
+      properties:
+        description:
+          type: string
+        name:
+          type: string
+        value_type:
+          type: string
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_graph.NodeType:
+      enum:
+      - pod
+      - node
+      - pvc
+      - service
+      - external
+      - switch
+      type: string
+      x-enum-varnames:
+      - NodeTypePod
+      - NodeTypeK8sNode
+      - NodeTypePVC
+      - NodeTypeService
+      - NodeTypeExternal
+      - NodeTypeSwitch
+    github_com_marz32one_kube-state-graph_pkg_graph.Owner:
+      properties:
+        kind:
+          type: string
+        name:
+          type: string
+      type: object
+    internal_api.ClusterInfo:
+      properties:
+        name:
+          type: string
+      type: object
+    internal_api.clustersBody:
+      properties:
+        apiVersion:
+          type: string
+        clusters:
+          items:
+            $ref: '#/components/schemas/internal_api.ClusterInfo'
+          type: array
+          uniqueItems: false
+      type: object
+    internal_api.edgeTypesBody:
+      properties:
+        apiVersion:
+          type: string
+        edge_types:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition'
+          type: array
+          uniqueItems: false
+      type: object
+    internal_api.errorBody:
+      properties:
+        apiVersion:
+          type: string
+        error:
+          $ref: '#/components/schemas/internal_api.errorField'
+      type: object
+    internal_api.errorField:
+      properties:
+        message:
+          type: string
+        reason:
+          type: string
+      type: object
+  securitySchemes:
+    ApiKeyAuth:
+      description: API key presented in the `X-API-Key` header. Required on `/v1/*`
+        when the server is started with keys configured. Health, metrics, and docs
+        routes are exempt.
+      in: header
+      name: X-API-Key
+      type: apiKey
+externalDocs:
+  description: ""
+  url: ""
+info:
+  description: |-
+    Multi-cluster pod / node / PVC graph API. Reads kube-state-metrics and pod-UID-resolved service-graph metrics from a centralised VictoriaMetrics and returns the joined cross-cluster graph as Cytoscape.js JSON.
+
+    **Authentication.** When the server is started with API keys configured (`--api-keys-file` or `--api-keys`), every request to `/v1/*` MUST carry an `X-API-Key: <key>` header. Missing or invalid keys yield `401 Unauthorized`. Health probes (`/livez`, `/readyz`), the metrics endpoint (`/metrics`), and the OpenAPI / Scalar UI routes (`/openapi.*`, `/docs`) are exempt and require no key.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  title: kube-state-graph API
+  version: v1
+openapi: 3.1.0
+paths:
+  /docs:
+    get:
+      responses:
+        "200":
+          content:
+            text/html:
+              schema:
+                type: string
+          description: HTML
+      summary: API reference UI (Scalar)
+      tags:
+      - docs
+  /livez:
+    get:
+      responses:
+        "200":
+          content:
+            text/plain:
+              schema:
+                type: string
+          description: ok
+      summary: Liveness
+      tags:
+      - health
+  /openapi.json:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: OpenAPI 3.1 JSON
+      summary: OpenAPI spec (JSON)
+      tags:
+      - docs
+  /openapi.yaml:
+    get:
+      responses:
+        "200":
+          content:
+            application/yaml:
+              schema:
+                type: string
+          description: OpenAPI 3.1 YAML
+      summary: OpenAPI spec (YAML)
+      tags:
+      - docs
+  /readyz:
+    get:
+      description: Returns 200 only when an `up{}` probe against the configured upstream
+        succeeds within --api-timeout.
+      responses:
+        "200":
+          content:
+            text/plain:
+              schema:
+                type: string
+          description: ok
+        "503":
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Service Unavailable
+      summary: Readiness
+      tags:
+      - health
+  /v1/clusters:
+    get:
+      description: |-
+        Returns the set of clusters observed in `kube_node_info` over a fixed 1 h lookback. Each request hits VictoriaMetrics directly under `--api-timeout`.
+
+        <details><summary><b>Sample response</b></summary>
+
+        ```json
+        {
+        "apiVersion": "v1",
+        "clusters": [
+        { "name": "prod-eu" },
+        { "name": "prod-us" },
+        { "name": "stage-eu" }
+        ]
+        }
+        ```
+
+        </details>
+      parameters:
+      - description: API key. Required when the server is started with API keys configured.
+        in: header
+        name: X-API-Key
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.clustersBody'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Missing or invalid `X-API-Key` (only when API key auth is configured)
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Upstream VictoriaMetrics returned an error
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Discovery query exceeded --api-timeout
+      security:
+      - ApiKeyAuth: []
+      summary: List clusters
+      tags:
+      - discovery
+  /v1/edge-types:
+    get:
+      description: |-
+        Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with `Cache-Control: public, max-age=3600`. Use this to validate the `edge_type` filter on `/v1/graph` and to drive UI legends.
+
+        <details><summary><b>Edge type matrix</b></summary>
+
+        | type | source → target | directed | cross-cluster |
+        |---|---|---|---|
+        | `pod-mounts-pvc` | pod → pvc | yes | no |
+        | `pod-calls-pod` | pod \| service \| external → pod \| external | yes | yes |
+        | `pod-calls-service` | pod \| service \| external → service | yes | no |
+        | `service-selects-pod` | service → pod | yes | no |
+
+        A call endpoint whose pod UID is empty and whose `client`/`server` label is a `://` connection string is resolved (detection hardcoded, no operator knob) to a `service` node (when it names an in-cluster Service — the call edge is then `pod-calls-service`) or an `external` node otherwise; a non-URL missing-UID label resolves to an `external` node. `service-selects-pod` edges are materialised on demand from `service` nodes to their backing pods.
+
+        </details>
+      parameters:
+      - description: API key. Required when the server is started with API keys configured.
+        in: header
+        name: X-API-Key
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.edgeTypesBody'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Missing or invalid `X-API-Key` (only when API key auth is configured)
+      security:
+      - ApiKeyAuth: []
+      summary: Edge-type catalogue
+      tags:
+      - discovery
+  /v1/graph:
+    get:
+      description: |-
+        Returns the joined multi-cluster pod / node / PVC graph for the supplied `[start, end]` window in Cytoscape.js JSON shape (`{ elements: { nodes:[…], edges:[…] } }`).
+
+        **Window**: `start`/`end` accept RFC 3339 or Unix seconds. Only `end > start` is enforced; the pair is passed through to upstream PromQL verbatim. Bounded query cost is delegated to upstream VictoriaMetrics search limits. Each request triggers a fresh fan-out — there is no in-process result cache.
+
+        **Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, external).
+
+        **Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
+
+        **Node types**: `pod`, `node`, `pvc`, `service`, `external`. **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`.
+
+        **Endpoint resolution**: for a call endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): both a `<service>.<namespace>` host and a headless `<pod>.<service>.<namespace>` host resolve to the same `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to each backing pod — the call edge is then typed `pod-calls-service`; an unresolvable host yields an `external` node (`external/<value>`). A non-URL missing-UID label also yields an `external` node. Calls whose target is not a service stay typed `pod-calls-pod`.
+
+        Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
+
+        <details><summary><b>Sample response</b></summary>
+
+        ```json
+        {
+        "apiVersion": "v1",
+        "clusters": ["prod-eu", "prod-us"],
+        "elements": {
+        "nodes": [
+        { "data": { "id": "prod-eu/8f8d4f1a-...-89ab", "type": "pod",  "name": "checkout-7d9f6c8b8-abcde", "owner": { "kind": "Deployment", "name": "checkout" }, "labels": { "cluster": "prod-eu", "namespace": "payments" } } },
+        { "data": { "id": "prod-eu/ip-10-0-1-23",     "type": "node", "name": "ip-10-0-1-23.ec2.internal", "labels": { "cluster": "prod-eu" } } }
+        ],
+        "edges": [
+        { "data": { "id": "...uuidv5...", "type": "pod-calls-pod",   "source": "prod-eu/8f8d4f1a-...-89ab", "target": "prod-us/a1b2c3d4-...-7654", "labels": { "cluster": "prod-eu" } } }
+        ]
+        }
+        }
+        ```
+
+        </details>
+      parameters:
+      - description: Window start. RFC 3339 (`2026-05-05T11:00:00Z`) or Unix seconds
+          (`1746442800`).
+        example: "2026-05-05T11:00:00Z"
+        in: query
+        name: start
+        required: true
+        schema:
+          type: string
+      - description: Window end. RFC 3339 or Unix seconds. Must be > start.
+        example: "2026-05-05T12:00:00Z"
+        in: query
+        name: end
+        required: true
+        schema:
+          type: string
+      - description: Restrict to listed clusters (repeatable, OR-combined). Names
+          match the upstream `cluster` label.
+        example: prod-eu
+        in: query
+        name: cluster
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed Kubernetes namespaces (repeatable, OR-combined).
+        example: payments
+        in: query
+        name: namespace
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Restrict to listed edge types. Repeatable, OR-combined.
+        example: pod-calls-pod
+        in: query
+        name: edge_type
+        schema:
+          items:
+            enum:
+            - pod-mounts-pvc
+            - pod-calls-pod
+            - pod-calls-service
+            - service-selects-pod
+            type: string
+          type: array
+        style: form
+      - description: Restrict to nodes whose name matches exactly across every node
+          type (pod, K8s node, PVC, service, external). Repeatable; name collisions
+          across types or clusters return all matches. Edges incident on a matching
+          node are kept and the partner endpoint is re-added subject to other filters.
+        example: checkout-7d9f6c8b8-abcde
+        in: query
+        name: name
+        schema:
+          items:
+            type: string
+          type: array
+        style: form
+      - description: Cluster-scoped node ID anchoring a traversal. Format depends
+          on type — pods `<cluster>/<uid>`, nodes `<cluster>/<node>`, PVCs `<cluster>/<ns>/<claim>`,
+          services `<cluster>/<ns>/<service>`, externals `external/<value>`.
+        example: prod-eu/8f8d4f1a-1234-4abc-9def-0123456789ab
+        in: query
+        name: root
+        schema:
+          type: string
+      - description: BFS traversal depth in hops. Range `0..6`. Defaults to `2` when
+          `root` is set, ignored otherwise.
+        example: 2
+        in: query
+        name: depth
+        schema:
+          default: 2
+          maximum: 6
+          minimum: 0
+          type: integer
+      - description: Traversal direction relative to `root`. `out` = downstream edges,
+          `in` = upstream edges, `both` = undirected. Defaults to `both`.
+        example: both
+        in: query
+        name: direction
+        schema:
+          default: both
+          enum:
+          - in
+          - out
+          - both
+          type: string
+      - description: API key. Required when the server is started with API keys configured.
+        in: header
+        name: X-API-Key
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_cytoscape.Body'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Invalid parameters (missing/invalid start|end, invalid_range,
+            depth_too_large, invalid_scope, outside_retention)
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Missing or invalid `X-API-Key` (only when API key auth is configured)
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_api.errorBody'
+          description: Build exceeded --build-timeout (RFC 9110 §15.6.5)
+      security:
+      - ApiKeyAuth: []
+      summary: Get multi-cluster graph (Cytoscape.js)
+      tags:
+      - graph
+servers:
+- url: /

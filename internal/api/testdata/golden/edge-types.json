@@ -1,0 +1,87 @@
+{
+  "apiVersion": "v1",
+  "edge_types": [
+    {
+      "type": "pod-mounts-pvc",
+      "description": "Pod mounts a PVC bound on the pod's host node. Always intra-cluster.",
+      "source_type": [
+        "pod"
+      ],
+      "target_type": [
+        "pvc"
+      ],
+      "directed": true,
+      "may_cross_cluster": false,
+      "labels": [
+        {
+          "name": "claim_name",
+          "value_type": "string"
+        },
+        {
+          "name": "storage_class",
+          "value_type": "string"
+        }
+      ]
+    },
+    {
+      "type": "pod-calls-pod",
+      "description": "Pod-UID-resolved RPC edge from service-graph metrics. May cross clusters when the resolved source and target pods live in different clusters (recovered from the topology pod-UID index since the metric only carries the trace-source cluster). An endpoint whose client/server label is a '://' connection string resolving to an in-cluster Kubernetes Service produces a 'pod-calls-service' edge instead (see that type); a '://' string that does NOT resolve to a known service falls back to an 'external' node, and endpoints with a missing pod UID and a non-URL label become 'external' nodes via the human-label fallback (D27).",
+      "source_type": [
+        "pod",
+        "service",
+        "external"
+      ],
+      "target_type": [
+        "pod",
+        "external"
+      ],
+      "directed": true,
+      "may_cross_cluster": true,
+      "labels": [
+        {
+          "name": "cluster",
+          "value_type": "string"
+        }
+      ]
+    },
+    {
+      "type": "pod-calls-service",
+      "description": "Service-graph call edge whose target resolves to an in-cluster Kubernetes Service node (from a '://' connection string per D29). The Service fans out service-selects-pod edges to its backing pods. Always intra-cluster — the service is resolved in the trace-source (client) cluster. Carries labels.cluster when the client side is a pod (D9).",
+      "source_type": [
+        "pod",
+        "service",
+        "external"
+      ],
+      "target_type": [
+        "service"
+      ],
+      "directed": true,
+      "may_cross_cluster": false,
+      "labels": [
+        {
+          "name": "cluster",
+          "value_type": "string"
+        }
+      ]
+    },
+    {
+      "type": "service-selects-pod",
+      "description": "A Kubernetes Service routes to a backing pod, derived from kube_endpointslice_endpoints joined to topology pods (D29). Materialised on demand only for services referenced by a '://' connection-string endpoint. Always intra-cluster.",
+      "source_type": [
+        "service"
+      ],
+      "target_type": [
+        "pod"
+      ],
+      "directed": true,
+      "may_cross_cluster": false,
+      "labels": [
+        {
+          "name": "namespace",
+          "value_type": "string",
+          "description": "Namespace of the service and its backing pod (optional)."
+        }
+      ]
+    }
+  ]
+}
