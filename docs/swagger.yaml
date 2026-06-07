@@ -78,16 +78,12 @@ components:
       - pod-calls-pod
       - pod-calls-service
       - service-selects-pod
-      - switch-to-switch
-      - node-to-switch
       type: string
       x-enum-varnames:
       - EdgeTypePodMountsPVC
       - EdgeTypePodCallsPod
       - EdgeTypePodCallsService
       - EdgeTypeServiceSelectsPod
-      - EdgeTypeSwitchToSwitch
-      - EdgeTypeNodeToSwitch
     github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition:
       properties:
         description:
@@ -130,7 +126,6 @@ components:
       - pvc
       - service
       - external
-      - switch
       type: string
       x-enum-varnames:
       - NodeTypePod
@@ -138,7 +133,6 @@ components:
       - NodeTypePVC
       - NodeTypeService
       - NodeTypeExternal
-      - NodeTypeSwitch
     github_com_marz32one_kube-state-graph_pkg_graph.Owner:
       properties:
         kind:
@@ -517,7 +511,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/internal_api.errorBody'
           description: Invalid parameters (missing/invalid start|end, invalid_range,
-            depth_too_large, invalid_scope, outside_retention)
+            invalid_depth, depth_too_large, invalid_scope, outside_retention)
         "401":
           content:
             application/json:

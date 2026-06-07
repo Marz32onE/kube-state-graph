@@ -66,6 +66,18 @@ func (s Scope) NameFilterActive() bool {
 	return len(s.Names) > 0
 }
 
+// edgeTypeAllowed reports whether an edge of type t is permitted by the
+// edge-type filter (an empty filter permits every type). Traversal consults
+// this so BFS only crosses in-scope edge types — a node reachable solely via a
+// filtered-out edge must not enter the view as an orphan (no incident edge).
+func (s Scope) edgeTypeAllowed(t EdgeType) bool {
+	if len(s.EdgeTypes) == 0 {
+		return true
+	}
+	_, ok := s.EdgeTypes[t]
+	return ok
+}
+
 func stringSet(values []string) map[string]struct{} {
 	if len(values) == 0 {
 		return nil

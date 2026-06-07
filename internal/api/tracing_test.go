@@ -164,6 +164,35 @@ func TestTracing_FailedGraphRecordsErrorSpan(t *testing.T) {
 	assert.True(t, sawErrorEvent, "server span must carry an exception event recording the build error")
 }
 
+// TestTracing_OutsideRetention400_LeavesServerSpanUnset guards F17: a 400
+// outside_retention response is a client-classifiable condition and MUST NOT
+// stamp the server span Error — only 5xx-class failures do. Pairs with the 502
+// case above which DOES mark Error.
+func TestTracing_OutsideRetention400_LeavesServerSpanUnset(t *testing.T) {
+	exporter := installInMemoryTracer(t)
+	// Empty topology + a healthy up{} probe → outside_retention (400).
+	s := newServerWithMocks(t, newMockQuerier(t, fixtureSet{"up": vec(map[string]string{"job": "vm"})}), nil)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/v1/graph?start=2026-05-01T12:00:00Z&end=2026-05-01T12:05:00Z")
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	spans := exporter.GetSpans()
+	var serverSpan *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == "GET /v1/graph" {
+			serverSpan = &spans[i]
+			break
+		}
+	}
+	require.NotNil(t, serverSpan, "server span missing")
+	assert.NotEqual(t, codes.Error, serverSpan.Status.Code,
+		"a 400 outside_retention must NOT mark the server span Error")
+}
+
 // TestAuth_NoAPIKeyInLogs asserts authentication failure does not leak the
 // presented X-API-Key value into log output.
 func TestAuth_NoAPIKeyInLogs(t *testing.T) {

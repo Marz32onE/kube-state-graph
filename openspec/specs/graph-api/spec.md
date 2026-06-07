@@ -259,7 +259,7 @@ For identical input — same `(window, filters, traversal, upstream-data)` — t
 
 The serialiser SHALL maintain determinism by sorting `view.Nodes` and `view.Edges`, sorting `Graph.ClusterNames()`, sorting `IPAddress` slices at construction, and keeping the response body shape fixed at `{apiVersion, clusters, elements}` for graph routes (no time-of-build or echo-of-input fields).
 
-`GET /v1/edge-types`, `GET /openapi.yaml`, `GET /openapi.json`, `GET /docs`, and `GET /docs/assets/*` SHALL carry an explicit `Cache-Control` header (long max-age for the embedded assets). `GET /v1/graph` and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header.
+`GET /v1/edge-types`, `GET /openapi.yaml`, `GET /openapi.json`, and `GET /docs` SHALL carry an explicit `Cache-Control` header. `GET /v1/graph` and `GET /v1/clusters` SHALL NOT emit a `Cache-Control` header.
 
 #### Scenario: Body byte-identical across repeated requests
 
@@ -313,7 +313,7 @@ When the server is started with at least one API key configured (via `--api-keys
 
 When no keys are configured (both flags empty), the middleware SHALL be a no-op: every route SHALL behave as if auth were not configured. The server SHALL log a warning at boot identifying that auth is disabled.
 
-The following routes SHALL be exempt from authentication regardless of configuration: `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`, and `/docs/assets/*`.
+The following routes SHALL be exempt from authentication regardless of configuration: `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, and `/docs`.
 
 Key comparison SHALL be constant-time and SHALL iterate the full configured key set on every request so neither match latency nor early exit reveals the matching position.
 
@@ -436,36 +436,21 @@ Both responses SHALL carry `Cache-Control: public, max-age=3600`. The spec SHALL
 
 ### Requirement: Scalar API Reference UI served at /docs
 
-The server SHALL serve the Scalar API Reference UI at `GET /docs`, rendering the OpenAPI spec from `/openapi.yaml`. All Scalar JS / CSS assets MUST be vendored in the binary (embedded via `embed.FS`) and served from `/docs/assets/*`. The HTML page returned by `/docs` MUST reference those assets via relative paths so the UI renders correctly behind reverse proxies and in air-gapped environments without internet access.
+The server SHALL serve the Scalar API Reference UI at `GET /docs`, rendering the same-origin OpenAPI spec from `/openapi.json` via `Scalar.createApiReference`. The Scalar standalone bundle is loaded from the jsDelivr CDN, pinned to an exact version and carrying a Subresource Integrity (`integrity=`) hash so a mutated CDN artifact cannot execute. The `/docs` response SHALL set `Content-Security-Policy`, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff` headers. There is no vendored `/docs/assets/*` route.
 
-#### Scenario: /docs renders without external network
+#### Scenario: /docs renders the Scalar UI from the pinned CDN bundle
 
-- **WHEN** the server is reachable from a client and the host has no internet connectivity, and the client sends `GET /docs`
-- **THEN** the response is 200, `Content-Type: text/html`, and every `<script>` and `<link>` tag references either the same origin or a relative path; no `<script src="https://…">` or `<link href="https://…">` tag is present
+- **WHEN** a client sends `GET /docs`
+- **THEN** the response is 200, `Content-Type: text/html`, and the page loads the version-pinned `@scalar/api-reference` standalone bundle from `cdn.jsdelivr.net` with an `integrity` hash, then calls `Scalar.createApiReference` against the same-origin `/openapi.json`, and the response carries `Content-Security-Policy`, `X-Frame-Options`, and `X-Content-Type-Options` headers
 
-#### Scenario: Vendored bundle served at /docs/assets/
+### Requirement: Route ↔ spec drift guard
 
-- **WHEN** the HTML page references `/docs/assets/<file>` for the Scalar bundle
-- **THEN** `GET /docs/assets/<file>` returns 200 with appropriate `Content-Type` and `Cache-Control: public, max-age=86400, immutable`
+The repository SHALL guard against handler annotations drifting from the generated OpenAPI spec. The `make check-docs` CI job regenerates the swag output from source annotations and fails on any diff against the committed `docs/`, so an added, removed, or edited `@Router` / `@Summary` annotation that is not reflected in `docs/` fails CI. (A Go test that parses the embedded spec and diffs it against the live Gin route table was considered and descoped to avoid adding a `kin-openapi` dependency; `make check-docs` covers annotation↔source drift.)
 
-### Requirement: Route ↔ spec drift contract test
+#### Scenario: Handler annotation edited without regenerating docs
 
-The repository SHALL include a Go test that parses the embedded OpenAPI spec and asserts that:
-
-- Every `(method, path)` pair declared in the spec corresponds to a registered Gin route in `Server.Handler()`.
-- Every Gin route registered in `Server.Handler()` corresponds to a `(method, path)` pair declared in the spec, modulo an explicit allowlist of infrastructure paths (`/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`, `/docs/assets/*`).
-
-The test SHALL run on every PR via `go test ./...` and SHALL fail when annotations and routes drift.
-
-#### Scenario: Handler added without annotation
-
-- **WHEN** a contributor adds a new `/v1/<route>` handler without `// @Router` and `// @Summary` annotations
-- **THEN** running `go test ./internal/api/` fails with a clear message naming the undocumented route
-
-#### Scenario: Annotation pointing at removed route
-
-- **WHEN** a contributor removes a Gin route but leaves the corresponding `// @Router` annotation in place (and forgets to regenerate the spec)
-- **THEN** running `go test ./internal/api/` fails with a clear message naming the orphan documented path
+- **WHEN** a contributor adds, removes, or edits a `// @Router` / `// @Summary` annotation and does not run `make docs`
+- **THEN** the `check-docs` CI job fails with a `git diff` showing the stale `docs/swagger.{json,yaml}`
 
 ### Requirement: Cytoscape compound node grouping
 

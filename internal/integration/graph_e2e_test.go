@@ -497,9 +497,56 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 	resp := s.httpGet(srv.URL + "/v1/edge-types")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	for _, et := range []string{"pod-mounts-pvc", "pod-calls-pod", "pod-calls-service"} {
+	// Assert the full registry (graph.EdgeTypes) is advertised — including
+	// service-selects-pod, previously omitted (F9).
+	for _, et := range []string{"pod-mounts-pvc", "pod-calls-pod", "pod-calls-service", "service-selects-pod"} {
 		s.Contains(string(body), et)
 	}
+}
+
+// TestPodMountsPVCEdgePresent (F8) closes the integration gap for the
+// pod-mounts-pvc edge: ingest a kube_pod_spec_volumes_persistentvolumeclaims_info
+// binding for the base checkout pod against a real VictoriaMetrics, then assert
+// the HTTP response carries the PVC node and the pod→pvc edge (the only edge
+// type previously lacking real-VM round-trip coverage).
+func (s *GraphSuite) TestPodMountsPVCEdgePresent() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	s.IngestExpFmt(fmt.Sprintf(`# HELP kube_pod_spec_volumes_persistentvolumeclaims_info dummy
+kube_pod_spec_volumes_persistentvolumeclaims_info{cluster="cluster-alpha",namespace="shop",pod="checkout",persistentvolumeclaim="checkout-data",volume="data",test=%q} 1 %d
+`, disc, t1))
+	s.Require().True(
+		s.WaitForSeries(`kube_pod_spec_volumes_persistentvolumeclaims_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested PVC binding")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	var body cytoscape.Body
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+
+	var pvc *cytoscape.NodeData
+	for i := range body.Elements.Nodes {
+		if body.Elements.Nodes[i].Data.Type == "pvc" {
+			pvc = &body.Elements.Nodes[i].Data
+			break
+		}
+	}
+	s.Require().NotNil(pvc, "pvc node must be present in the response")
+	s.Equal("cluster-alpha/shop/checkout-data", pvc.ID)
+	s.Equal("checkout-data", pvc.Name)
+
+	var found bool
+	for _, e := range body.Elements.Edges {
+		if e.Data.Type == "pod-mounts-pvc" &&
+			e.Data.Source == "cluster-alpha/alpha-1" &&
+			e.Data.Target == "cluster-alpha/shop/checkout-data" {
+			found = true
+		}
+	}
+	s.True(found, "pod-mounts-pvc edge checkout→checkout-data must be present")
 }
 
 // TestMetricPrefix_ResolvesPrefixedSeries covers design.md D26 end-to-end

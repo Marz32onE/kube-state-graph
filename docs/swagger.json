@@ -115,18 +115,14 @@
                     "pod-mounts-pvc",
                     "pod-calls-pod",
                     "pod-calls-service",
-                    "service-selects-pod",
-                    "switch-to-switch",
-                    "node-to-switch"
+                    "service-selects-pod"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
                     "EdgeTypePodMountsPVC",
                     "EdgeTypePodCallsPod",
                     "EdgeTypePodCallsService",
-                    "EdgeTypeServiceSelectsPod",
-                    "EdgeTypeSwitchToSwitch",
-                    "EdgeTypeNodeToSwitch"
+                    "EdgeTypeServiceSelectsPod"
                 ]
             },
             "github_com_marz32one_kube-state-graph_pkg_graph.EdgeTypeDefinition": {
@@ -187,8 +183,7 @@
                     "node",
                     "pvc",
                     "service",
-                    "external",
-                    "switch"
+                    "external"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -196,8 +191,7 @@
                     "NodeTypeK8sNode",
                     "NodeTypePVC",
                     "NodeTypeService",
-                    "NodeTypeExternal",
-                    "NodeTypeSwitch"
+                    "NodeTypeExternal"
                 ]
             },
             "github_com_marz32one_kube-state-graph_pkg_graph.Owner": {
@@ -664,7 +658,7 @@
                                 }
                             }
                         },
-                        "description": "Invalid parameters (missing/invalid start|end, invalid_range, depth_too_large, invalid_scope, outside_retention)"
+                        "description": "Invalid parameters (missing/invalid start|end, invalid_range, invalid_depth, depth_too_large, invalid_scope, outside_retention)"
                     },
                     "401": {
                         "content": {

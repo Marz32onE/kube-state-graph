@@ -119,7 +119,15 @@ func FormatDuration(d time.Duration) string {
 	case d%time.Minute == 0:
 		return strconv.FormatInt(int64(d/time.Minute), 10) + "m"
 	default:
-		// Fall back to seconds, rounded.
-		return strconv.FormatInt(int64(d.Seconds()), 10) + "s"
+		// Fall back to seconds, truncated. A positive sub-second window would
+		// truncate to 0 and render a zero-width range selector (`...[0s]`),
+		// which is at best a no-op and at worst rejected by PromQL/MetricsQL.
+		// Floor any positive duration to 1s so a valid (end > start) window
+		// never produces a degenerate `[0s]` selector.
+		secs := int64(d.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		return strconv.FormatInt(secs, 10) + "s"
 	}
 }

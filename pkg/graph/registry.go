@@ -31,7 +31,6 @@ var EdgeTypes = []EdgeTypeDefinition{
 		MayCrossCluster: false,
 		Labels: []EdgeTypeLabel{
 			{Name: "claim_name", ValueType: "string"},
-			{Name: "storage_class", ValueType: "string"},
 		},
 	},
 	{

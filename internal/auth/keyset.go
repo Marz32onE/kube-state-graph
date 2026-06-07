@@ -88,10 +88,12 @@ func (ks *KeySet) Validate(presented string) bool {
 	for _, k := range *keys {
 		kb := []byte(k)
 		if len(kb) != len(pb) {
-			// ConstantTimeCompare on different-length slices returns 0
-			// instantly, which would leak length comparison via timing. Force
-			// a same-length comparison against a discarded buffer instead.
-			subtle.ConstantTimeCompare(kb, kb)
+			// A different length cannot match; skip without a self-compare (the
+			// previous subtle.ConstantTimeCompare(kb, kb) was a no-op against
+			// itself). The whole set is still iterated — no early return — so key
+			// count / position is not leaked via timing. API keys are
+			// high-entropy tokens, so a per-key length difference is not a useful
+			// timing oracle.
 			continue
 		}
 		if subtle.ConstantTimeCompare(kb, pb) == 1 {

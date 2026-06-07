@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -33,10 +34,25 @@ func newMockQuerier(t *testing.T, fixtures fixtureSet) *promqlmocks.MockQuerier 
 	q := promqlmocks.NewMockQuerier(t)
 	q.EXPECT().Instant(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		RunAndReturn(func(_ context.Context, _, query string, _ time.Time) (model.Vector, error) {
+			// Substring dispatch is order-sensitive: if two needles both match a
+			// query, Go's randomised map iteration would pick a non-deterministic
+			// response across runs. Fail loudly on ambiguity so an overlapping
+			// fixtureSet is a clear test error, not a flaky one. t.Errorf (not
+			// Fatalf) because this runs on parallel errgroup goroutines.
+			var hits []string
+			var match model.Vector
 			for needle, vec := range fixtures {
 				if strings.Contains(query, needle) {
-					return vec, nil
+					hits = append(hits, needle)
+					match = vec
 				}
+			}
+			if len(hits) > 1 {
+				sort.Strings(hits)
+				t.Errorf("ambiguous fixture dispatch for query %q: matched needles %v", query, hits)
+			}
+			if len(hits) >= 1 {
+				return match, nil
 			}
 			return model.Vector{}, nil
 		}).
@@ -51,6 +67,21 @@ func newErrQuerier(t *testing.T, err error) *promqlmocks.MockQuerier {
 	q := promqlmocks.NewMockQuerier(t)
 	q.EXPECT().Instant(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, err).
+		Maybe()
+	return q
+}
+
+// newStallQuerier returns a Querier mock whose every Instant call blocks until
+// the context is cancelled, then returns ctx.Err(). Used to drive build-timeout
+// (504) and readiness-timeout (503) paths deterministically.
+func newStallQuerier(t *testing.T) *promqlmocks.MockQuerier {
+	t.Helper()
+	q := promqlmocks.NewMockQuerier(t)
+	q.EXPECT().Instant(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(ctx context.Context, _, _ string, _ time.Time) (model.Vector, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}).
 		Maybe()
 	return q
 }

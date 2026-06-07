@@ -1,10 +1,43 @@
 package build
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 )
+
+// TestClassifyReadError_MapsByCause guards F15: a client cancellation
+// (context.Canceled) classifies as ReasonCanceled (→ 4xx, no 5xx/span-error
+// pollution), distinct from a build timeout (DeadlineExceeded → ReasonTimeout)
+// and a generic upstream failure (→ ReasonUpstream).
+func TestClassifyReadError_MapsByCause(t *testing.T) {
+	t.Parallel()
+	span := trace.SpanFromContext(context.Background()) // non-recording no-op span
+	cases := []struct {
+		name string
+		err  error
+		want Reason
+	}{
+		{"canceled", fmt.Errorf("fan-out: %w", context.Canceled), ReasonCanceled},
+		{"deadline", fmt.Errorf("fan-out: %w", context.DeadlineExceeded), ReasonTimeout},
+		{"upstream", errors.New("dial tcp: connection refused"), ReasonUpstream},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyReadError(span, "topology read failed", tc.err)
+			if AsReason(got) != tc.want {
+				t.Errorf("classifyReadError reason=%q want %q", AsReason(got), tc.want)
+			}
+			if !errors.Is(got, tc.err) {
+				t.Errorf("classifyReadError must preserve the cause via Unwrap")
+			}
+		})
+	}
+}
 
 func TestNewError_FieldsRoundTrip(t *testing.T) {
 	t.Parallel()

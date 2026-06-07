@@ -35,7 +35,7 @@ The server SHALL install the `otelgin` middleware on every `/v1/*` and `/debug/*
 
 The middleware SHALL extract the W3C `traceparent` and `tracestate` headers from inbound requests using the global propagator (`propagation.TraceContext{}` + `propagation.Baggage{}`) so that callers' trace context becomes the parent of the server span.
 
-The middleware SHALL NOT be installed on `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, `/docs`, or `/docs/assets/*` so health probes and documentation requests do not generate spans.
+The middleware SHALL NOT be installed on `/livez`, `/readyz`, `/metrics`, `/openapi.yaml`, `/openapi.json`, or `/docs` so health probes and documentation requests do not generate spans.
 
 Each request span SHALL carry semantic-convention HTTP attributes (`http.request.method`, `http.route`, `url.scheme`, `url.path`, `server.address`, `server.port`, `client.address`, `user_agent.original`, `http.response.status_code`).
 

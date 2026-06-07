@@ -56,6 +56,12 @@ func ParseValues(v url.Values) (start, end time.Time, scope graph.Scope, err err
 		}
 		depth = d
 	}
+	if depth < 0 {
+		// strconv.Atoi accepts a negative integer; reject it here with the same
+		// reason code as a non-integer depth (graph.NewScope would otherwise
+		// surface it as the less-specific invalid_scope).
+		return start, end, scope, &ParseError{"invalid_depth", "depth must be non-negative"}
+	}
 	if depth > graph.MaxTraversalDepth {
 		return start, end, scope, &ParseError{"depth_too_large", "depth exceeds maximum"}
 	}

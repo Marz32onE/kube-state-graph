@@ -1,0 +1,105 @@
+package build
+
+import (
+	"testing"
+
+	"github.com/prometheus/common/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestParseTopology_DuplicateUIDAcrossClusters_DeterministicWinner guards N2:
+// when two pods in different clusters share a raw UID (data anomaly), the pod
+// indexed in PodsByUID must be a pure function of the data — the
+// lexically-smaller cluster-scoped ID — not the randomised map-iteration order
+// addPodToIndex runs in. The service-graph reader resolves pod-calls-pod edge
+// targets through this index, so an unstable winner would break the D6
+// byte-identical response contract.
+func TestParseTopology_DuplicateUIDAcrossClusters_DeterministicWinner(t *testing.T) {
+	pod := func(cluster string) model.Sample {
+		return model.Sample{
+			Metric: model.Metric{
+				"cluster":   model.LabelValue(cluster),
+				"namespace": "shop",
+				"pod":       "checkout",
+				"uid":       "shared-uid",
+				"node":      "worker-0",
+			},
+			Value:     1,
+			Timestamp: 100,
+		}
+	}
+	vec := sampleVec(pod("cluster-b"), pod("cluster-a"))
+
+	// Run many times: with only two map entries, randomised iteration order
+	// exercises both insertion orders within a handful of runs.
+	const runs = 64
+	for i := range runs {
+		tp := parseTopology(topologyVectors{Pod: vec})
+		require.Len(t, tp.Pods, 2, "both colliding pods remain as distinct nodes")
+		winner := tp.PodsByUID["shared-uid"]
+		require.NotNil(t, winner)
+		assert.Equalf(t, "cluster-a/shared-uid", winner.ID(),
+			"PodsByUID winner must be the lexically-smaller ID on every run (run %d)", i)
+	}
+}
+
+// TestParseTopology_EqualTimestampUIDChurn_DeterministicCanonical guards N8:
+// when a (cluster, namespace, pod) churns UIDs at the SAME timestamp, the
+// canonical pod must be a pure function of the data (lexically-larger UID),
+// independent of vector arrival order — VictoriaMetrics does not guarantee a
+// stable vector order across identical queries.
+func TestParseTopology_EqualTimestampUIDChurn_DeterministicCanonical(t *testing.T) {
+	pod := func(uid string) model.Sample {
+		return model.Sample{
+			Metric: model.Metric{
+				"cluster":   "cluster-alpha",
+				"namespace": "shop",
+				"pod":       "checkout",
+				"uid":       model.LabelValue(uid),
+				"node":      "worker-0",
+			},
+			Value:     1,
+			Timestamp: 200, // identical timestamp for both UIDs
+		}
+	}
+	// Both arrival orders must collapse to the same canonical UID.
+	for _, order := range [][]model.Sample{
+		{pod("uid-a"), pod("uid-b")},
+		{pod("uid-b"), pod("uid-a")},
+	} {
+		tp := parseTopology(topologyVectors{Pod: sampleVec(order...)})
+		require.Len(t, tp.Pods, 1, "UID churn collapses to one canonical pod")
+		assert.Equal(t, "cluster-alpha/uid-b", tp.Pods[0].ID(),
+			"equal-timestamp tie-break must pick the lexically-larger UID regardless of arrival order")
+	}
+}
+
+// TestParseServiceGraph_SynthPodNamespace_DeterministicOnConflict guards N7:
+// when the same unknown server UID arrives in two series with conflicting
+// namespace labels, the synthesised pod's namespace must be a pure function of
+// the data (lexically-smaller), not vector arrival order.
+func TestParseServiceGraph_SynthPodNamespace_DeterministicOnConflict(t *testing.T) {
+	series := func(serverNS string) model.Sample {
+		return model.Sample{
+			Metric: model.Metric{
+				"cluster":                   "cluster-alpha",
+				"client":                    "checkout",
+				"client_k8s_pod_uid":        "abc", // known pod in sampleTopology
+				"server":                    "ghost-workload",
+				"server_k8s_pod_uid":        "ghost-uid", // unknown → synth pod, cluster ""
+				"server_k8s_namespace_name": model.LabelValue(serverNS),
+			},
+			Value: 1,
+		}
+	}
+	for _, order := range [][]model.Sample{
+		{series("billing"), series("apps")},
+		{series("apps"), series("billing")},
+	} {
+		res := parseServiceGraph(sampleVec(order...), sampleTopology())
+		require.Len(t, res.SynthPods, 1, "one synth pod for the unknown server UID")
+		assert.Equal(t, "apps", res.SynthPods[0].Labels()["namespace"],
+			"conflicting-namespace synth pod must keep the lexically-smaller namespace regardless of arrival order")
+	}
+}

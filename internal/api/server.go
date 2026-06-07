@@ -88,7 +88,18 @@ func (s *Server) Handler() http.Handler {
 	r.GET("/openapi.json", s.handleOpenAPIJSON)
 	r.GET("/docs", s.handleDocs)
 
+	r.NoRoute(s.handleNotFound)
+	r.NoMethod(s.handleNotFound)
+
 	return r
+}
+
+// handleNotFound answers any unmatched route/method with the standard error
+// body. Its access-log / metric `path` label is bucketed under unmatchedPath by
+// loggingMiddleware, so an unauthenticated caller cannot inflate metric series
+// cardinality by spraying arbitrary URLs.
+func (s *Server) handleNotFound(c *gin.Context) {
+	writeError(c, http.StatusNotFound, "not_found", "no such route")
 }
 
 // requestIDMiddleware injects a unique X-Request-ID into context and response.
@@ -113,6 +124,14 @@ var quietLogPaths = map[string]struct{}{
 	"/metrics": {},
 }
 
+// unmatchedPath is the bounded label used for any request that matches no
+// registered route. gin runs global middleware before its NoRoute handler, so a
+// 404's c.FullPath() is "" and the raw, attacker-controlled URL path would
+// otherwise become an unbounded `path` metric label (a series-cardinality DoS).
+// Bucketing unmatched requests under a fixed sentinel keeps cardinality bounded
+// by the registered route set.
+const unmatchedPath = "<unmatched>"
+
 // loggingMiddleware emits one slog line per request.
 func (s *Server) loggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -122,7 +141,7 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 		status := c.Writer.Status()
 		path := c.FullPath()
 		if path == "" {
-			path = c.Request.URL.Path
+			path = unmatchedPath
 		}
 		if _, quiet := quietLogPaths[path]; quiet && status < 400 {
 			s.metrics.HTTPRequests.WithLabelValues(path, statusClass(status)).Inc()

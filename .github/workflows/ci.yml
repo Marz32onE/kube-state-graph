@@ -4,6 +4,11 @@ name: CI
 # parallel (no `needs` edges) so PR feedback latency = max, not sum.
 on:
   pull_request:
+  # Also run on direct pushes / merges to the default branch so post-merge
+  # regressions (direct pushes, force-pushes, stale-base merges) get a fresh
+  # signal and `main` carries a build status.
+  push:
+    branches: [main]
 
 permissions:
   contents: read

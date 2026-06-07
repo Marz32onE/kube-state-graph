@@ -31,6 +31,7 @@ func TestParseValues_Errors(t *testing.T) {
 		{"invalid end", url.Values{"start": {"1700000000"}, "end": {"nope"}}, "invalid_end"},
 		{"end not after start", url.Values{"start": {"1700003600"}, "end": {"1700000000"}}, "invalid_range"},
 		{"non-integer depth", url.Values{"start": {"1700000000"}, "end": {"1700003600"}, "depth": {"x"}}, "invalid_depth"},
+		{"negative depth", url.Values{"start": {"1700000000"}, "end": {"1700003600"}, "depth": {"-1"}}, "invalid_depth"},
 		{"depth too large", url.Values{"start": {"1700000000"}, "end": {"1700003600"}, "root": {"c/p"}, "depth": {"99"}}, "depth_too_large"},
 	}
 	for _, tc := range cases {

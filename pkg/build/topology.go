@@ -71,8 +71,11 @@ type Topology struct {
 	// recover the server-side cluster for `pod-calls-pod` edges (the metric
 	// only carries the trace-source / client-side `cluster` label).
 	//
-	// On duplicate UIDs across clusters (data anomaly), the first-inserted
-	// pod wins; downstream resolution would otherwise be ambiguous.
+	// On duplicate UIDs across clusters (data anomaly), the pod with the
+	// lexically-smaller cluster-scoped ID wins. This is a deterministic pure
+	// function of the data — NOT first-inserted — so the chosen pod (and hence
+	// every `pod-calls-pod` edge target resolved through this index) is stable
+	// across rebuilds regardless of map-iteration order (D6 determinism).
 	PodsByUID map[string]*graph.PodNode
 
 	// D29 connection-string resolution indexes. Built only when KSM exports
@@ -280,15 +283,28 @@ func parseTopology(v topologyVectors) Topology {
 				"existing_id", existing.ID(),
 				"new_id", pod.ID(),
 			)
-			return
+			// Deterministic dedupe: the lexically-smaller cluster-scoped ID
+			// wins so the winner is a pure function of the data, independent of
+			// the randomised map-iteration order this runs in (D6 determinism).
+			if existing.ID() <= pod.ID() {
+				return
+			}
 		}
 		podsByUID[uid] = pod
 	}
 	for k, group := range podGroups {
 		// Newest sample first; pods that churned UIDs within the window collapse
 		// to the most recent observation since there is no reliable cross-UID
-		// identity link (deleted pods do not back-fill metrics).
-		sort.SliceStable(group, func(i, j int) bool { return group[i].ts > group[j].ts })
+		// identity link (deleted pods do not back-fill metrics). On equal
+		// timestamps (two distinct UIDs scraped at the same step) the
+		// lexically-larger UID is the deterministic tie-break, so the canonical
+		// pick is a pure function of the data, not vector arrival order (D6).
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].ts != group[j].ts {
+				return group[i].ts > group[j].ts
+			}
+			return group[i].uid > group[j].uid
+		})
 		// kube-state-metrics emits multiple series per pod-UID as labels evolve
 		// during scheduling (e.g. node arrives after the first scrape). Merge
 		// labels across same-UID samples — newer values win — so the emitted
