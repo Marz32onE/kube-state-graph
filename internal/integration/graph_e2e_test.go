@@ -549,6 +549,84 @@ kube_pod_spec_volumes_persistentvolumeclaims_info{cluster="cluster-alpha",namesp
 	s.True(found, "pod-mounts-pvc edge checkout→checkout-data must be present")
 }
 
+// TestPVCStorageClassGroupNesting — ingest a PVC binding plus a matching
+// kube_persistentvolumeclaim_info storageclass against a real VictoriaMetrics,
+// then assert the response carries a type="storageclass" group node and the PVC
+// nests under it (cluster > storageclass > pvc). End-to-end coverage of the
+// StorageClass resolution + compound grouping.
+func (s *GraphSuite) TestPVCStorageClassGroupNesting() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	s.IngestExpFmt(fmt.Sprintf(`# HELP kube_pod_spec_volumes_persistentvolumeclaims_info dummy
+kube_pod_spec_volumes_persistentvolumeclaims_info{cluster="cluster-alpha",namespace="shop",pod="checkout",persistentvolumeclaim="mongo-data",volume="data",test=%q} 1 %d
+# HELP kube_persistentvolumeclaim_info dummy
+kube_persistentvolumeclaim_info{cluster="cluster-alpha",namespace="shop",persistentvolumeclaim="mongo-data",storageclass="gp3-ssd",test=%q} 1 %d
+`, disc, t1, disc, t1))
+	s.Require().True(
+		s.WaitForSeries(`kube_persistentvolumeclaim_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested kube_persistentvolumeclaim_info")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	var body cytoscape.Body
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+
+	byID := map[string]cytoscape.NodeData{}
+	for _, n := range body.Elements.Nodes {
+		byID[n.Data.ID] = n.Data
+	}
+
+	grp, ok := byID["cluster-alpha/storageclass/gp3-ssd"]
+	s.Require().True(ok, "storageclass group node must be present")
+	s.Equal("storageclass", grp.Type)
+	s.Equal("gp3-ssd", grp.Name)
+	s.Equal("cluster/cluster-alpha", grp.Parent, "storageclass group nests under its cluster group")
+	s.Empty(grp.Labels, "storageclass group carries no labels")
+
+	pvc, ok := byID["cluster-alpha/shop/mongo-data"]
+	s.Require().True(ok, "pvc node must be present")
+	s.Equal("cluster-alpha/storageclass/gp3-ssd", pvc.Parent,
+		"pvc nests under its storageclass group (cluster > storageclass > pvc)")
+	_, hasLabel := pvc.Labels["storageclass"]
+	s.False(hasLabel, "storageclass must not leak into pvc labels")
+}
+
+// TestPVCWithoutStorageClassFallsBackToCluster — a PVC binding with NO matching
+// kube_persistentvolumeclaim_info series nests directly under its cluster group
+// (cluster > pvc), exercising the graceful-degradation path end-to-end.
+func (s *GraphSuite) TestPVCWithoutStorageClassFallsBackToCluster() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	s.IngestExpFmt(fmt.Sprintf(`# HELP kube_pod_spec_volumes_persistentvolumeclaims_info dummy
+kube_pod_spec_volumes_persistentvolumeclaims_info{cluster="cluster-alpha",namespace="shop",pod="checkout",persistentvolumeclaim="legacy-data",volume="legacy",test=%q} 1 %d
+`, disc, t1))
+	s.Require().True(
+		s.WaitForSeries(`kube_pod_spec_volumes_persistentvolumeclaims_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested PVC binding")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	var body cytoscape.Body
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+
+	var pvc *cytoscape.NodeData
+	for i := range body.Elements.Nodes {
+		if body.Elements.Nodes[i].Data.ID == "cluster-alpha/shop/legacy-data" {
+			pvc = &body.Elements.Nodes[i].Data
+			break
+		}
+	}
+	s.Require().NotNil(pvc, "pvc node must be present")
+	s.Equal("cluster/cluster-alpha", pvc.Parent,
+		"a PVC with no resolved StorageClass falls back to its cluster group")
+}
+
 // TestMetricPrefix_ResolvesPrefixedSeries covers design.md D26 end-to-end
 // against a real VictoriaMetrics container: ingest a topology under an
 // `o11y_`-prefixed metric-name family, start the API with

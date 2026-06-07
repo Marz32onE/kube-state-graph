@@ -116,6 +116,8 @@ type topologyVectors struct {
 	// Pod controller-owner resolution (D34).
 	PodOwner        model.Vector
 	ReplicaSetOwner model.Vector
+	// PVC StorageClass resolution.
+	PVCInfo model.Vector
 }
 
 // ReadTopology runs the topology queries in parallel and assembles the
@@ -155,6 +157,7 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 	g.Go(fetch(promql.QEndpointSliceLabels, &v.EpLabels))
 	g.Go(fetch(promql.QPodOwner, &v.PodOwner))
 	g.Go(fetch(promql.QReplicaSetOwner, &v.ReplicaSetOwner))
+	g.Go(fetch(promql.QPVCInfo, &v.PVCInfo))
 	if err := g.Wait(); err != nil {
 		return Topology{}, fmt.Errorf("topology fan-out: %w", err)
 	}
@@ -171,6 +174,7 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 		string(promql.QEndpointSliceLabels):    len(v.EpLabels),
 		string(promql.QPodOwner):               len(v.PodOwner),
 		string(promql.QReplicaSetOwner):        len(v.ReplicaSetOwner),
+		string(promql.QPVCInfo):                len(v.PVCInfo),
 	}
 	return t, nil
 }
@@ -182,6 +186,11 @@ func parseTopology(v topologyVectors) Topology {
 	// owning Deployment. Built up-front so the per-pod assembly below can set
 	// each pod's typed Owner attribute (never a label).
 	podOwners := resolvePodOwners(v.PodOwner, v.ReplicaSetOwner)
+
+	// PVC StorageClass resolution. Built up-front so the per-PVC assembly below
+	// can set each PVC's StorageClass (consumed by the Cytoscape serialiser for
+	// compound grouping — never a label, never serialised).
+	pvcStorageClass := resolvePVCStorageClass(v.PVCInfo)
 
 	// External IP map: (cluster, node-name) -> IP.
 	externalIPs := map[[2]string]string{}
@@ -374,9 +383,10 @@ func parseTopology(v topologyVectors) Topology {
 				labels["volume"] = vol
 			}
 			pvcs = append(pvcs, &graph.PVCNode{
-				IDValue:     id,
-				NameValue:   claim,
-				LabelsValue: labels,
+				IDValue:           id,
+				NameValue:         claim,
+				LabelsValue:       labels,
+				StorageClassValue: pvcStorageClass[pvcKey{cluster, ns, claim}],
 			})
 		}
 		if podName != "" {
@@ -535,6 +545,40 @@ func resolvePodOwners(ownerVec, rsOwnerVec model.Vector) map[podNameKey]ownerRef
 		owners[key] = ownerRef{kind, name}
 	}
 	return owners
+}
+
+// pvcKey identifies a PVC by its cluster-scoped namespace/name for the
+// StorageClass join. The claim component matches the binding metric's
+// persistentvolumeclaim / claim_name and the info metric's
+// persistentvolumeclaim.
+type pvcKey struct{ cluster, namespace, claim string }
+
+// resolvePVCStorageClass builds the (cluster, namespace, persistentvolumeclaim) →
+// storageclass index from kube_persistentvolumeclaim_info. The result enriches
+// PVC nodes that already exist (from the pod→PVC binding metric); it never
+// materialises a PVC on its own.
+//
+// OPTIONAL: an absent or empty vector yields an empty map and PVCs carry no
+// StorageClass (graceful degradation). Pure function of the input vector — on a
+// duplicate (cluster, namespace, claim) the lexically-smallest storageclass
+// wins, so the emitted grouping is stable across rebuilds (D6 determinism).
+func resolvePVCStorageClass(vec model.Vector) map[pvcKey]string {
+	out := make(map[pvcKey]string, len(vec))
+	for _, s := range vec {
+		cluster := bucketCluster(string(s.Metric["cluster"]))
+		ns := string(s.Metric["namespace"])
+		claim := string(s.Metric["persistentvolumeclaim"])
+		sc := string(s.Metric["storageclass"])
+		if claim == "" || sc == "" {
+			continue
+		}
+		key := pvcKey{cluster, ns, claim}
+		if cur, ok := out[key]; ok && cur <= sc {
+			continue
+		}
+		out[key] = sc
+	}
+	return out
 }
 
 // bucketCluster returns "unknown" when the upstream cluster label is missing.

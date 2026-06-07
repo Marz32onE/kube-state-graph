@@ -32,6 +32,12 @@ type GraphNode interface {
 	// owning Deployment (see build/topology). All other node kinds, and pods
 	// with no controller owner, return nil.
 	Owner() *Owner
+	// StorageClass is a PVC's resolved StorageClass name. It is NOT serialised
+	// as a node attribute and NOT a label — the Cytoscape serialiser consumes
+	// it only to compute the PVC's compound parent (cluster > storageclass >
+	// pvc; see design.md). Only PVCs carry one; every other node kind, and a
+	// PVC with no resolved StorageClass, returns "".
+	StorageClass() string
 
 	isGraphNode()
 }
@@ -61,6 +67,7 @@ func (p *PodNode) Type() NodeType            { return NodeTypePod }
 func (p *PodNode) Labels() map[string]string { return p.LabelsValue }
 func (p *PodNode) IPAddress() []string       { return p.IPAddressValue }
 func (p *PodNode) Owner() *Owner             { return p.OwnerValue }
+func (p *PodNode) StorageClass() string      { return "" }
 func (p *PodNode) isGraphNode()              {}
 
 // K8sNode represents a Kubernetes node entity.
@@ -77,13 +84,18 @@ func (n *K8sNode) Type() NodeType            { return NodeTypeK8sNode }
 func (n *K8sNode) Labels() map[string]string { return n.LabelsValue }
 func (n *K8sNode) IPAddress() []string       { return n.IPAddressValue }
 func (n *K8sNode) Owner() *Owner             { return nil }
+func (n *K8sNode) StorageClass() string      { return "" }
 func (n *K8sNode) isGraphNode()              {}
 
-// PVCNode represents a PersistentVolumeClaim entity.
+// PVCNode represents a PersistentVolumeClaim entity. StorageClassValue is the
+// PVC's resolved StorageClass (from kube_persistentvolumeclaim_info); it is
+// consumed only by the Cytoscape serialiser for compound grouping and is never
+// serialised as a node attribute or label. Empty when unresolved.
 type PVCNode struct {
-	IDValue     string
-	NameValue   string
-	LabelsValue map[string]string
+	IDValue           string
+	NameValue         string
+	LabelsValue       map[string]string
+	StorageClassValue string
 }
 
 func (p *PVCNode) ID() string                { return p.IDValue }
@@ -92,6 +104,7 @@ func (p *PVCNode) Type() NodeType            { return NodeTypePVC }
 func (p *PVCNode) Labels() map[string]string { return p.LabelsValue }
 func (p *PVCNode) IPAddress() []string       { return nil }
 func (p *PVCNode) Owner() *Owner             { return nil }
+func (p *PVCNode) StorageClass() string      { return p.StorageClassValue }
 func (p *PVCNode) isGraphNode()              {}
 
 // ServiceNode represents a Kubernetes Service surfaced when a service-graph
@@ -113,6 +126,7 @@ func (s *ServiceNode) Type() NodeType            { return NodeTypeService }
 func (s *ServiceNode) Labels() map[string]string { return s.LabelsValue }
 func (s *ServiceNode) IPAddress() []string       { return s.IPAddressValue }
 func (s *ServiceNode) Owner() *Owner             { return nil }
+func (s *ServiceNode) StorageClass() string      { return "" }
 func (s *ServiceNode) isGraphNode()              {}
 
 // ExternalNode represents a non-pod endpoint surfaced by the missing-UID
@@ -131,6 +145,7 @@ func (e *ExternalNode) Type() NodeType            { return NodeTypeExternal }
 func (e *ExternalNode) Labels() map[string]string { return e.LabelsValue }
 func (e *ExternalNode) IPAddress() []string       { return nil }
 func (e *ExternalNode) Owner() *Owner             { return nil }
+func (e *ExternalNode) StorageClass() string      { return "" }
 func (e *ExternalNode) isGraphNode()              {}
 
 // SortNodes orders nodes deterministically by ID for stable output.

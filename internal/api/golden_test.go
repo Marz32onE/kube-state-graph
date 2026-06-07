@@ -25,6 +25,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 		"single-cluster":       buildSingleCluster(),
 		"two-cluster-cross":    buildTwoClusterCross(),
 		"with-service":         buildWithService(),
+		"with-storageclass":    buildWithStorageClass(),
 		"name-filter":          buildNameFilter(),
 		"missing-uid-fallback": buildMissingUIDFallback(),
 	}
@@ -96,6 +97,25 @@ func buildWithService() graph.View {
 		graph.NewEdge(graph.EdgeTypeServiceSelectsPod, svc.IDValue, pay0.IDValue, map[string]string{"namespace": "shop"}),
 	}
 	return graph.View{Nodes: []graph.GraphNode{pod, svc, pay0}, Edges: edges}
+}
+
+// buildWithStorageClass snapshots the StorageClass compound grouping: a PVC
+// with a resolved StorageClass nests under a synthetic `type="storageclass"`
+// group node (cluster > storageclass > pvc), while a PVC with no StorageClass
+// falls back to its cluster group (cluster > pvc). The pod nests under its node
+// (cluster > node > pod) and mounts both PVCs via pod-mounts-pvc edges. The
+// StorageClass is reflected ONLY via the group node + data.parent — never as a
+// PVC attribute or label.
+func buildWithStorageClass() graph.View {
+	pod := &graph.PodNode{IDValue: "cluster-alpha/p1", NameValue: "mongo-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "db", "node": "cluster-alpha/worker-0"}}
+	node := &graph.K8sNode{IDValue: "cluster-alpha/worker-0", NameValue: "worker-0", LabelsValue: map[string]string{"cluster": "cluster-alpha"}}
+	pvcGP3 := &graph.PVCNode{IDValue: "cluster-alpha/db/data-mongo-0", NameValue: "data-mongo-0", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "db", "volume": "data"}, StorageClassValue: "gp3"}
+	pvcNone := &graph.PVCNode{IDValue: "cluster-alpha/db/legacy", NameValue: "legacy", LabelsValue: map[string]string{"cluster": "cluster-alpha", "namespace": "db"}}
+	edges := []*graph.Edge{
+		graph.NewEdge(graph.EdgeTypePodMountsPVC, pod.IDValue, pvcGP3.IDValue, map[string]string{"claim_name": "data-mongo-0"}),
+		graph.NewEdge(graph.EdgeTypePodMountsPVC, pod.IDValue, pvcNone.IDValue, map[string]string{"claim_name": "legacy"}),
+	}
+	return graph.View{Nodes: []graph.GraphNode{node, pod, pvcGP3, pvcNone}, Edges: edges}
 }
 
 // buildMissingUIDFallback snapshots the D27 fallback shape: a service-graph
