@@ -11,7 +11,6 @@ const (
 	NodeTypePVC      NodeType = "pvc"
 	NodeTypeService  NodeType = "service"
 	NodeTypeExternal NodeType = "external"
-	NodeTypeSwitch   NodeType = "switch"
 )
 
 // GraphNode is the sealed interface implemented by every node kind.

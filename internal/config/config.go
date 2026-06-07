@@ -54,7 +54,9 @@ func Defaults() Config {
 // Env vars override defaults; flags override env vars.
 func Parse(args []string, lookup LookupEnvFunc) (Config, error) {
 	cfg := Defaults()
-	applyEnv(&cfg, lookup)
+	if err := applyEnv(&cfg, lookup); err != nil {
+		return Config{}, err
+	}
 
 	fs := flag.NewFlagSet("kube-state-graph", flag.ContinueOnError)
 	fs.StringVar(&cfg.PromURL, "prom-url", cfg.PromURL, "VictoriaMetrics Prometheus-compatible URL.")
@@ -76,29 +78,42 @@ func Parse(args []string, lookup LookupEnvFunc) (Config, error) {
 	return cfg, nil
 }
 
-func applyEnv(cfg *Config, lookup LookupEnvFunc) {
+func applyEnv(cfg *Config, lookup LookupEnvFunc) error {
 	getStr := func(env string, dst *string) {
 		if v, ok := lookup(env); ok {
 			*dst = v
 		}
 	}
-	getDur := func(env string, dst *time.Duration) {
+	// getDur surfaces a parse error instead of silently keeping the default, so
+	// a misconfigured duration env (e.g. KSG_BUILD_TIMEOUT=15 with no unit)
+	// fails loudly at startup — parity with the flag path (flag.DurationVar).
+	getDur := func(env string, dst *time.Duration) error {
 		if v, ok := lookup(env); ok {
-			if d, err := time.ParseDuration(v); err == nil {
-				*dst = d
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return fmt.Errorf("invalid %s=%q: must be a Go duration such as 15s or 2m", env, v)
 			}
+			*dst = d
 		}
+		return nil
 	}
 
 	getStr("KSG_PROM_URL", &cfg.PromURL)
 	getStr("KSG_LISTEN_ADDR", &cfg.ListenAddr)
-	getDur("KSG_BUILD_TIMEOUT", &cfg.BuildTimeout)
-	getDur("KSG_API_TIMEOUT", &cfg.APITimeout)
+	if err := getDur("KSG_BUILD_TIMEOUT", &cfg.BuildTimeout); err != nil {
+		return err
+	}
+	if err := getDur("KSG_API_TIMEOUT", &cfg.APITimeout); err != nil {
+		return err
+	}
 	getStr("KSG_API_KEYS_FILE", &cfg.APIKeysFile)
 	getStr("KSG_API_KEYS", &cfg.APIKeys)
-	getDur("KSG_API_KEYS_RELOAD_INTERVAL", &cfg.APIKeysReloadInterval)
+	if err := getDur("KSG_API_KEYS_RELOAD_INTERVAL", &cfg.APIKeysReloadInterval); err != nil {
+		return err
+	}
 	getStr("KSG_LOG_LEVEL", &cfg.LogLevel)
 	getStr("KSG_METRIC_PREFIX", &cfg.MetricPrefix)
+	return nil
 }
 
 // Validate checks Config invariants.
@@ -118,6 +133,9 @@ func (c Config) Validate() error {
 	}
 	if c.APITimeout <= 0 {
 		return errors.New("api-timeout must be positive")
+	}
+	if c.APIKeysReloadInterval < 0 {
+		return errors.New("api-keys-reload-interval must be >= 0 (0 disables hot reload)")
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":

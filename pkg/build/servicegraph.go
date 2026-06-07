@@ -227,7 +227,17 @@ func (r *sgResolver) resolveClient(label, traceCluster, podUID, namespace string
 	if _, ok := r.podByID[id]; ok {
 		return id, true
 	}
-	r.synthPod(id, traceCluster, namespace, podUID) // cluster known from metric
+	// The trace's `cluster` label is frequently missing (bucketed to "unknown")
+	// or disagrees with the client pod's real topology cluster, so the
+	// cluster-scoped podByID lookup misses even though the pod exists. Recover
+	// the real pod via the global UID index — symmetric with resolveServer —
+	// before minting a ghost, otherwise every client pod in a no-cluster-label
+	// deployment would duplicate as an "unknown/<uid>" synth node. Only
+	// synthesise when the UID is unknown to BOTH indexes.
+	if pod, ok := r.podByUID[podUID]; ok {
+		return pod.ID(), true
+	}
+	r.synthPod(id, traceCluster, namespace, podUID)
 	return id, true
 }
 
@@ -331,7 +341,16 @@ func (r *sgResolver) external(label string) string {
 }
 
 func (r *sgResolver) synthPod(id, cluster, namespace, podUID string) {
-	if _, ok := r.synthPods[id]; ok {
+	if existing, ok := r.synthPods[id]; ok {
+		// Deterministic dedupe: the same synth-pod id can arrive again with a
+		// different namespace label (conflicting upstream series in arbitrary
+		// vector order). Keep the lexically-smaller namespace so the node's
+		// content is a pure function of the data, not arrival order (D6). The
+		// node is build-local and unpublished, so mutating its label map is safe.
+		existingNS := existing.LabelsValue["namespace"]
+		if namespace != "" && (existingNS == "" || namespace < existingNS) {
+			existing.LabelsValue["namespace"] = namespace
+		}
 		return
 	}
 	labels := map[string]string{"cluster": cluster}

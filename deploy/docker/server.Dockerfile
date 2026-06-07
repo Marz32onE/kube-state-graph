@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- build stage ---------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS build
+# Base image Go must match go.mod's `toolchain` directive (go1.26.4); a lower
+# base would trigger a silent mid-build toolchain download from dl.google.com
+# (GOTOOLCHAIN is not pinned to local), breaking reproducibility.
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS build
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 
 WORKDIR /src
 
@@ -18,7 +22,7 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags "-s -w" \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
         -o /out/kube-state-graph ./cmd/kube-state-graph
 
 # ---- runtime stage -------------------------------------------------------

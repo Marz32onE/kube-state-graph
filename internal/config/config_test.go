@@ -39,6 +39,34 @@ func TestValidate_RejectsZeroAPITimeout(t *testing.T) {
 	assert.Error(t, cfg.Validate(), "expected error for zero api-timeout")
 }
 
+// F22: a negative reload interval silently disabled hot reload; it must now be
+// rejected (0 stays the documented disable sentinel).
+func TestValidate_RejectsNegativeReloadInterval(t *testing.T) {
+	cfg := Defaults()
+	cfg.APIKeysReloadInterval = -time.Second
+	require.Error(t, cfg.Validate(), "expected error for negative api-keys-reload-interval")
+
+	cfg.APIKeysReloadInterval = 0
+	assert.NoError(t, cfg.Validate(), "zero must remain valid (disables hot reload)")
+}
+
+// F4: an invalid duration env var must fail loudly instead of silently keeping
+// the default — parity with the flag path.
+func TestParse_RejectsInvalidDurationEnv(t *testing.T) {
+	for _, env := range []string{"KSG_BUILD_TIMEOUT", "KSG_API_TIMEOUT", "KSG_API_KEYS_RELOAD_INTERVAL"} {
+		t.Run(env, func(t *testing.T) {
+			_, err := Parse(nil, func(k string) (string, bool) {
+				if k == env {
+					return "15", true // missing unit → ParseDuration error
+				}
+				return "", false
+			})
+			require.Error(t, err, "invalid %s must fail parsing", env)
+			assert.Contains(t, err.Error(), env, "error should name the offending env var")
+		})
+	}
+}
+
 func TestValidate_RejectsInvalidPromURL(t *testing.T) {
 	cfg := Defaults()
 	cfg.PromURL = "not-a-url"

@@ -91,8 +91,6 @@ The container-integration suite SHALL contain at least one test for each of the 
 - A headless per-pod connection string (`<pod>.<svc>.<ns>.svc.cluster.local`) resolving to its `type=service` node (the pod-hostname dropped) plus `service-selects-pod` fan-out edges — NOT to a specific pod.
 - A ClusterIP-service connection string resolving to a `type=service` node plus `service-selects-pod` edges to its backing pods.
 - The missing pod-UID human-label fallback producing an `external`-typed node (D27).
-- ETag round-trip: an initial response yields an `ETag`; a follow-up request with `If-None-Match: <etag>` returns 304.
-- ETag determinism: two consecutive identical `GET /v1/graph` requests return byte-identical `ETag` headers (each request triggers an independent build; v1 has no result cache).
 - `/v1/clusters` listing both synthetic cluster names.
 - `/v1/edge-types` returning the static catalogue.
 

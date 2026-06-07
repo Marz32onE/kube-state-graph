@@ -9,6 +9,11 @@ const (
 	ReasonTimeout          Reason = "timeout"
 	ReasonOutsideRetention Reason = "outside_retention"
 	ReasonUpstream         Reason = "upstream"
+	// ReasonCanceled marks a build aborted by client disconnect
+	// (context.Canceled). It is a client action, not a server/upstream fault,
+	// so the API layer maps it to a 4xx and avoids 5xx metric / span-error
+	// pollution.
+	ReasonCanceled Reason = "canceled"
 )
 
 // Error wraps an underlying cause with a typed Reason for HTTP mapping.

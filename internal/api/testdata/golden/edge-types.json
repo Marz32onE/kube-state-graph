@@ -16,10 +16,6 @@
         {
           "name": "claim_name",
           "value_type": "string"
-        },
-        {
-          "name": "storage_class",
-          "value_type": "string"
         }
       ]
     },

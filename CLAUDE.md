@@ -62,7 +62,7 @@ go test ./internal/api/ -update -run Golden
 ./bin/kube-state-graph --prom-url=http://localhost:8428 --listen-addr=:8080
 ```
 
-Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`); build toolchain pinned to `go1.26.3` via the `toolchain` directive.
+Module path: `github.com/marz32one/kube-state-graph`. Minimum Go 1.25 (`go.mod`); build toolchain pinned to `go1.26.4` via the `toolchain` directive.
 
 ## Architecture (the 90 % you need to know)
 
@@ -77,7 +77,7 @@ parseGraphRequest        ── validates start/end (RFC 3339 or Unix seconds); 
    ▼
 context.WithTimeout(ctx, --build-timeout)   ── graph endpoints only; deadline exceeded → 504 timeout
    └─ Builder.Build(ctx, window, end)
-         ├─ ReadTopology  (errgroup of 8 PromQL queries in parallel: 5 KSM topology + 3 D29 service/endpointslice)
+         ├─ ReadTopology  (errgroup of 10 PromQL queries in parallel: 5 KSM topology + 3 D29 service/endpointslice + 2 D34 owner)
          ├─ ReadServiceGraph (1 PromQL, `user`/`unknown` peers excluded at selector — D30; joined with topology)
          └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
    (no in-process concurrency cap; HPA + Pod resource limits handle load shedding)
@@ -91,8 +91,10 @@ v1 has **no in-process result cache** and **no singleflight**. Each request runs
 
 ### Load-bearing design rules
 
-These are non-obvious; read `openspec/changes/add-k8s-pod-graph-api/design.md`
-(D1–D19) before changing any of them.
+These are non-obvious; read the archived design doc
+`openspec/changes/archive/2026-06-06-add-k8s-pod-graph-api/design.md`
+(D1–D34) before changing any of them. The capability specs it produced now
+live under `openspec/specs/`.
 
 - **No server-side result cache.** Each `/v1/graph` request runs a fresh upstream PromQL fan-out. Filters (`cluster`, `namespace`, `edge_type`, `name`, traversal) are applied at response time as a projection over the freshly built `*Graph`. A horizontally scalable cache mechanism for distributed deployment is anticipated but out of scope for v1.
 - **No time-window alignment, no window cap, no future-time guard.** `start` and `end` are passed through to upstream PromQL verbatim; only `end > start` is enforced. The previous 60 s `floor`/`ceil` grid was removed alongside the in-process cache it was bucketing for. Bounded query cost is delegated to upstream VictoriaMetrics search limits (`-search.maxQueryDuration`, `-search.maxPointsPerTimeseries`, `-search.maxSamplesPerQuery`). Response body is `{apiVersion, clusters, elements}` — no time fields are echoed.
@@ -303,9 +305,11 @@ openspec verify "<name>"                            # before archive
 openspec archive "<name>"                           # promote to openspec/specs/
 ```
 
-The active change for the v1 implementation is **`add-k8s-pod-graph-api`**.
-When making non-trivial behaviour changes, update the relevant artifact
-(usually `specs/<capability>/spec.md` or `design.md`) before touching code.
+The v1 implementation change **`add-k8s-pod-graph-api`** is archived under
+`openspec/changes/archive/2026-06-06-add-k8s-pod-graph-api/`; its capability
+specs were promoted to `openspec/specs/`. When making non-trivial behaviour
+changes, start a new change and update the relevant promoted spec
+(`openspec/specs/<capability>/spec.md`) before touching code.
 
 ## Repository conventions
 

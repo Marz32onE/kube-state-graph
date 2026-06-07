@@ -45,21 +45,38 @@ func traverse(g *Graph, scope Scope) map[string]struct{} {
 		return map[string]struct{}{} // empty: unknown root
 	}
 
+	// A Scope built directly (not via NewScope) may leave Direction unset; a
+	// Root-anchored traversal then matched none of the branches below and
+	// silently collapsed to the root alone. Default an empty Direction to
+	// "both", matching the HTTP path's NewScope behaviour (D32 reusable engine).
+	dir := scope.Direction
+	if dir == "" {
+		dir = DirectionBoth
+	}
+
 	visited := map[string]struct{}{scope.Root: {}}
 	frontier := []string{scope.Root}
 	for depth := 0; depth < scope.Depth && len(frontier) > 0; depth++ {
 		next := make([]string, 0, len(frontier))
 		for _, id := range frontier {
-			if scope.Direction == DirectionOut || scope.Direction == DirectionBoth {
+			if dir == DirectionOut || dir == DirectionBoth {
 				for _, e := range g.Forward[id] {
+					// Only cross in-scope edge types so a node reachable solely
+					// via a filtered-out edge never enters the view as an orphan.
+					if !scope.edgeTypeAllowed(e.Type) {
+						continue
+					}
 					if _, seen := visited[e.Target]; !seen {
 						visited[e.Target] = struct{}{}
 						next = append(next, e.Target)
 					}
 				}
 			}
-			if scope.Direction == DirectionIn || scope.Direction == DirectionBoth {
+			if dir == DirectionIn || dir == DirectionBoth {
 				for _, e := range g.Reverse[id] {
+					if !scope.edgeTypeAllowed(e.Type) {
+						continue
+					}
 					if _, seen := visited[e.Source]; !seen {
 						visited[e.Source] = struct{}{}
 						next = append(next, e.Source)

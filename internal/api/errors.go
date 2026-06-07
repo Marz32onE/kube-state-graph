@@ -1,14 +1,20 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/marz32one/kube-state-graph/pkg/build"
 )
+
+// statusClientClosedRequest is the non-standard 499 (nginx convention) returned
+// when the client disconnects mid-request. It is a 4xx, so it neither marks the
+// server span Error nor inflates the 5xx request counter — a client cancellation
+// is not a server/upstream fault.
+const statusClientClosedRequest = 499
 
 type errorBody struct {
 	APIVersion string     `json:"apiVersion"`
@@ -20,7 +26,21 @@ type errorField struct {
 	Message string `json:"message"`
 }
 
+// writeError emits the JSON error body and owns the response-side telemetry that
+// every error path shares: it stashes the machine reason for spanEnrichMiddleware
+// (so a 5xx server span carries the precise reason rather than the generic
+// "internal" fallback) and records a single exception event for any 5xx — giving
+// encode / clusters / readyz failures the same span fidelity as build errors. A
+// 4xx leaves the server span Unset and event-free (OTel HTTP semconv: a
+// client-classifiable condition is not a server error). Span *status* is set in
+// exactly one place — spanEnrichMiddleware — so it is never double-written.
 func writeError(c *gin.Context, status int, reason, message string) {
+	c.Set("build_reason", reason)
+	if status >= 500 {
+		if span := trace.SpanFromContext(c.Request.Context()); span.IsRecording() {
+			span.RecordError(errors.New(message))
+		}
+	}
 	c.JSON(status, errorBody{
 		APIVersion: APIVersion,
 		Error: errorField{
@@ -31,24 +51,19 @@ func writeError(c *gin.Context, status int, reason, message string) {
 }
 
 // mapBuildError translates a typed build error into a REST-conventional HTTP
-// status (RFC 9110 §15.6.3 Bad Gateway, §15.6.5 Gateway Timeout). The reason
-// string is also stashed on the gin context so spanEnrichMiddleware can stamp
-// it onto the otelgin server span and recorded onto the active span (if any).
+// status (RFC 9110 §15.6.3 Bad Gateway, §15.6.5 Gateway Timeout). A client
+// cancellation maps to 499 (no 5xx pollution); span status/error recording is
+// handled uniformly by writeError + spanEnrichMiddleware.
 func mapBuildError(c *gin.Context, err error) {
-	reason := build.AsReason(err)
-	c.Set("build_reason", string(reason))
-	span := trace.SpanFromContext(c.Request.Context())
-	if span.IsRecording() {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, string(reason))
-	}
-	switch reason {
+	switch build.AsReason(err) {
 	case build.ReasonTimeout:
 		writeError(c, http.StatusGatewayTimeout, "timeout", err.Error())
 	case build.ReasonOutsideRetention:
 		writeError(c, http.StatusBadRequest, "outside_retention", err.Error())
 	case build.ReasonUpstream:
 		writeError(c, http.StatusBadGateway, "upstream", err.Error())
+	case build.ReasonCanceled:
+		writeError(c, statusClientClosedRequest, "canceled", "request canceled")
 	default:
 		writeError(c, http.StatusInternalServerError, "internal", err.Error())
 	}

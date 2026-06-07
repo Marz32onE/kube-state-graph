@@ -60,6 +60,9 @@ func TestRenderer_PrefixApplied(t *testing.T) {
 		{"node-addresses", QNodeAddresses, time.Minute, `last_over_time(o11y_kube_node_status_addresses{type="ExternalIP"}[1m])`},
 		{"pvc-bindings", QPVCBindings, time.Minute, "last_over_time(o11y_kube_pod_spec_volumes_persistentvolumeclaims_info[1m])"},
 		{"node-labels", QNodeLabels, time.Minute, "last_over_time(o11y_kube_node_labels[1m])"},
+		{"service-info", QServiceInfo, time.Minute, "last_over_time(o11y_kube_service_info[1m])"},
+		{"endpointslice-endpoints", QEndpointSliceEndpoints, time.Minute, "last_over_time(o11y_kube_endpointslice_endpoints[1m])"},
+		{"endpointslice-labels", QEndpointSliceLabels, time.Minute, "last_over_time(o11y_kube_endpointslice_labels[1m])"},
 		{"pod-owner", QPodOwner, time.Minute, "last_over_time(o11y_kube_pod_owner[1m])"},
 		{"replicaset-owner", QReplicaSetOwner, time.Minute, "last_over_time(o11y_kube_replicaset_owner[1m])"},
 		{"cluster-discovery", QClusterDiscovery, time.Hour, "group by (cluster) (last_over_time(o11y_kube_node_info[1h]))"},
@@ -101,10 +104,14 @@ func TestRender_ZeroPrefixIdenticalToBareNames(t *testing.T) {
 
 func TestFormatDuration(t *testing.T) {
 	cases := map[time.Duration]string{
-		0:                "0s",
-		2 * time.Hour:    "2h",
-		15 * time.Minute: "15m",
-		90 * time.Second: "90s",
+		0:                       "0s",
+		2 * time.Hour:           "2h",
+		15 * time.Minute:        "15m",
+		90 * time.Second:        "90s",
+		500 * time.Millisecond:  "1s", // F1: positive sub-second never renders [0s]
+		999 * time.Millisecond:  "1s",
+		time.Nanosecond:         "1s",
+		1500 * time.Millisecond: "1s", // truncates, but floored at 1s
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, FormatDuration(in), "FormatDuration(%s)", in)

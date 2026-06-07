@@ -73,11 +73,13 @@ const nodeTypeCluster = "cluster"
 func clusterParentID(cluster string) string { return "cluster/" + cluster }
 
 // Serialise renders a projected view into the deterministic Cytoscape body.
-// g supplies only ClusterNames(); view supplies the in-scope nodes and edges.
+// The view supplies the in-scope nodes and edges; the response `clusters` field
+// is derived from the clusters actually present in that view (see below).
+//
+//nolint:unparam // g is retained for the stable reusable-engine signature (D32); the response clusters now derive from the projected view, not the full graph.
 func Serialise(g *graph.Graph, view graph.View) Body {
 	body := Body{
 		APIVersion: APIVersion,
-		Clusters:   g.ClusterNames(),
 	}
 
 	// Index emitted node ids so a pod's parent (its K8s node) is referenced
@@ -93,10 +95,18 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 		}
 	}
 
+	// The top-level `clusters` describes the RESPONSE: it lists the clusters
+	// present in the projected view (including cross-cluster partners re-added by
+	// projection), not every cluster in upstream VictoriaMetrics. Under a
+	// `?cluster=` / `?name=` filter this keeps `clusters` consistent with
+	// `elements` instead of advertising clusters with zero nodes in the body.
+	sortedClusters := slices.Sorted(maps.Keys(clusterSeen))
+	body.Clusters = append(make([]string, 0, len(sortedClusters)), sortedClusters...)
+
 	body.Elements.Nodes = make([]Node, 0, len(view.Nodes)+len(clusterSeen))
 
 	// Synthetic cluster group nodes first, sorted by name (determinism, D6).
-	for _, c := range slices.Sorted(maps.Keys(clusterSeen)) {
+	for _, c := range sortedClusters {
 		body.Elements.Nodes = append(body.Elements.Nodes, Node{
 			Data: NodeData{
 				ID:     clusterParentID(c),

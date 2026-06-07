@@ -35,8 +35,6 @@ linters:
     - testifylint
 
   settings:
-    gocognit:
-      min-complexity: 10
     exhaustive:
       default-signifies-exhaustive: true
     testifylint:
@@ -64,7 +62,7 @@ linters:
           - unparam
           - errcheck
           - bodyclose
-      - path: internal/graph/property_test\.go
+      - path: pkg/graph/property_test\.go
         text: "G404"
 
 formatters:

@@ -88,6 +88,9 @@ per source cluster).
 | `kube_pod_spec_volumes_persistentvolumeclaims_info` | PVC nodes; pod-mounts-pvc edges | `cluster`, `namespace`, `pod`, `persistentvolumeclaim`, `volume` | Optional (no PVCs ⇒ no PVC nodes/edges) |
 | `kube_pod_owner` | Pod controller-owner attribute `data.owner` = `{kind, name}` (ReplicaSet skipped to its Deployment; omitted when no controller owner) | `cluster`, `namespace`, `pod`, `owner_kind`, `owner_name`, `owner_is_controller` | Optional (absent ⇒ no `data.owner`) |
 | `kube_replicaset_owner` | Resolves a ReplicaSet pod-owner up to its owning Deployment | `cluster`, `namespace`, `replicaset`, `owner_kind`, `owner_name` | Optional (absent ⇒ ReplicaSet kept as owner) |
+| `kube_service_info` | Service nodes for `://` connection-string resolution (D29); `cluster_ip` (headless `None` ⇒ no `data.ipaddress`) | `cluster`, `namespace`, `service`, `cluster_ip` | Optional (absent ⇒ `://` endpoints fall back to `external`) |
+| `kube_endpointslice_endpoints` | Service → backing-pod fan-out (`service-selects-pod` edges) | `cluster`, `namespace`, `endpointslice`, `targetref_kind`, `targetref_namespace`, `targetref_name` | Optional |
+| `kube_endpointslice_labels` | Joins an EndpointSlice to its owning Service | `cluster`, `namespace`, `endpointslice`, `label_kubernetes_io_service_name` | Optional — **requires** `--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name]` (NOT a KSM default); absent ⇒ no `service-selects-pod` resolution |
 
 Each is wrapped in `last_over_time(<metric>[<window>]) @ <end>` so the result
 reflects the most recent value within the requested `[start, end]` window.
@@ -187,7 +190,7 @@ make doctor         # verify toolchain (go, golangci-lint, govulncheck, mockery,
 make init-hooks     # (optional) install pre-commit hook (gofmt + go vet)
 ```
 
-Required: Go 1.25+. The toolchain pinned in `go.mod` (currently `go1.26.3`)
+Required: Go 1.25+. The toolchain pinned in `go.mod` (currently `go1.26.4`)
 will be auto-fetched by Go on first build.
 
 ### Day-to-day commands
@@ -221,7 +224,7 @@ files — the `mocks-drift` CI job blocks merges otherwise.
 
 | Suite | Where | Real I/O? |
 |---|---|---|
-| Unit | `internal/{graph,build,promql,config,clock,auth,telemetry}/*_test.go` | None — pure Go. |
+| Unit | `pkg/{graph,build,promql,clock,cytoscape,kubegraph}/*_test.go` + `internal/{config,auth,telemetry}/*_test.go` | None — pure Go. |
 | Component | `internal/api/*_test.go` | None — `MockQuerier` injected via interface; `httptest.NewServer` only wraps the server-under-test, never fakes upstream. |
 | Golden | `internal/api/golden_test.go` + `testdata/golden/*.json` | None. Run with `-update` to refresh snapshots. |
 | Integration | `internal/integration/*` | **Docker required.** testcontainers-go spins a real VictoriaMetrics container; `SkipIfDockerUnavailable` skips locally without Docker. CI runs the full suite. |

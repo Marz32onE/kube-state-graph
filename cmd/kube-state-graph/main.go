@@ -53,6 +53,12 @@ func run() error {
 		return fmt.Errorf("config: %w", err)
 	}
 
+	// appCtx bounds background goroutines (e.g. the API-key reload loop) to the
+	// process lifecycle; defer-cancel stops them on any return path so graceful
+	// shutdown is deterministic rather than relying on process exit.
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+
 	bootCtx, bootCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	telemetryProviders, telErr := telemetry.Init(bootCtx, version)
 	bootCancel()
@@ -80,7 +86,7 @@ func run() error {
 		return fmt.Errorf("promql client: %w", err)
 	}
 
-	keys, err := loadAPIKeys(cfg, logger)
+	keys, err := loadAPIKeys(appCtx, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("api keys: %w", err)
 	}
@@ -131,7 +137,7 @@ func run() error {
 // neither source is configured. When --api-keys-file is set and the reload
 // interval is positive, a background goroutine re-reads the file periodically
 // so a Kubernetes Secret rotation is picked up without a restart.
-func loadAPIKeys(cfg config.Config, logger *slog.Logger) (*auth.KeySet, error) {
+func loadAPIKeys(ctx context.Context, cfg config.Config, logger *slog.Logger) (*auth.KeySet, error) {
 	ks := auth.NewKeySet()
 	switch {
 	case cfg.APIKeysFile != "":
@@ -144,7 +150,7 @@ func loadAPIKeys(cfg config.Config, logger *slog.Logger) (*auth.KeySet, error) {
 			"reload_interval", cfg.APIKeysReloadInterval,
 		)
 		if cfg.APIKeysReloadInterval > 0 {
-			go reloadAPIKeys(ks, cfg.APIKeysFile, cfg.APIKeysReloadInterval, logger)
+			go reloadAPIKeys(ctx, ks, cfg.APIKeysFile, cfg.APIKeysReloadInterval, logger)
 		}
 	case cfg.APIKeys != "":
 		ks.LoadCSV(cfg.APIKeys)
@@ -155,13 +161,17 @@ func loadAPIKeys(cfg config.Config, logger *slog.Logger) (*auth.KeySet, error) {
 	return ks, nil
 }
 
-func reloadAPIKeys(ks *auth.KeySet, path string, interval time.Duration, logger *slog.Logger) {
+func reloadAPIKeys(ctx context.Context, ks *auth.KeySet, path string, interval time.Duration, logger *slog.Logger) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		if err := ks.LoadFile(path); err != nil {
-			logger.Error("api keys reload failed", "path", path, "err", err)
-			continue
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := ks.LoadFile(path); err != nil {
+				logger.Error("api keys reload failed", "path", path, "err", err)
+			}
 		}
 	}
 }

@@ -62,12 +62,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 
 	topology, err := ReadTopology(ctx, b.q, b.r, window, end)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, NewError(ReasonTimeout, "build timeout", err)
-		}
-		return nil, NewError(ReasonUpstream, "topology read failed", err)
+		return nil, classifyReadError(span, "topology read failed", err)
 	}
 
 	// Outside-retention check: zero pods + healthy upstream ⇒ retention miss.
@@ -87,8 +82,10 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 				promql.QNodeInfo, nodeRaw, len(topology.Nodes),
 			)
 			err := NewError(ReasonOutsideRetention, msg, nil)
+			// outside_retention maps to HTTP 400 (a client-classifiable no-data
+			// condition), so record the event for trace completeness but leave
+			// the span status Unset — only 5xx-class failures mark Error.
 			span.RecordError(err)
-			span.SetStatus(codes.Error, string(ReasonOutsideRetention))
 			slog.WarnContext(ctx, "outside_retention",
 				"start", startStr,
 				"end", endStr,
@@ -104,12 +101,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 
 	sg, err := ReadServiceGraph(ctx, b.q, b.r, window, end, topology)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, NewError(ReasonTimeout, "build timeout", err)
-		}
-		return nil, NewError(ReasonUpstream, "service-graph read failed", err)
+		return nil, classifyReadError(span, "service-graph read failed", err)
 	}
 
 	nodes, edges := assemble(topology, sg)
@@ -158,6 +150,25 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	return g, nil
 }
 
+// classifyReadError maps an upstream read failure to a typed build error and
+// records it on the build span. context.Canceled (client disconnect) is NOT a
+// server/upstream fault: it is recorded as a span event but does not set the
+// span Error status, and downstream maps to a 4xx rather than a 5xx so it does
+// not pollute error-rate metrics/traces. DeadlineExceeded (build timeout) and
+// any other upstream error are genuine failures and mark the span Error.
+func classifyReadError(span trace.Span, what string, err error) error {
+	if errors.Is(err, context.Canceled) {
+		span.RecordError(err)
+		return NewError(ReasonCanceled, "request canceled", err)
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+	if errors.Is(err, context.DeadlineExceeded) {
+		return NewError(ReasonTimeout, "build timeout", err)
+	}
+	return NewError(ReasonUpstream, what, err)
+}
+
 func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*graph.Edge) {
 	// Nodes: pods + k8s nodes + pvcs + synthesised pods + services + externals.
 	total := len(topology.Pods) + len(topology.Nodes) + len(topology.PVCs) +
@@ -190,9 +201,16 @@ func assemble(topology Topology, sg ServiceGraphResult) ([]graph.GraphNode, []*g
 }
 
 func (b *Builder) upProbe(ctx context.Context) (bool, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, b.opts.APITimeout)
-	defer cancel()
-	vec, err := b.q.Instant(probeCtx, string(promql.QUpProbe),
+	// Honour the documented contract (Options.APITimeout): zero means inherit
+	// the caller's context deadline. context.WithTimeout(ctx, 0) would otherwise
+	// produce an immediately-expired context, silently failing the probe (and
+	// skipping outside-retention classification) for a zero-value embedder.
+	if b.opts.APITimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.opts.APITimeout)
+		defer cancel()
+	}
+	vec, err := b.q.Instant(ctx, string(promql.QUpProbe),
 		b.r.Render(promql.QUpProbe, 0), b.clk.Now().UTC())
 	if err != nil {
 		return false, err

@@ -71,7 +71,7 @@ import (
 //	@Param			direction	query		string		false	"Traversal direction relative to `root`. `out` = downstream edges, `in` = upstream edges, `both` = undirected. Defaults to `both`."	Enums(in,out,both)	default(both)	example(both)
 //	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200			{object}	cytoscape.Body
-//	@Failure		400			{object}	errorBody	"Invalid parameters (missing/invalid start|end, invalid_range, depth_too_large, invalid_scope, outside_retention)"
+//	@Failure		400			{object}	errorBody	"Invalid parameters (missing/invalid start|end, invalid_range, invalid_depth, depth_too_large, invalid_scope, outside_retention)"
 //	@Failure		401			{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
 //	@Failure		502			{object}	errorBody	"Upstream VictoriaMetrics returned an error (RFC 9110 §15.6.3)"
 //	@Failure		504			{object}	errorBody	"Build exceeded --build-timeout (RFC 9110 §15.6.5)"
@@ -151,8 +151,6 @@ type clustersBody struct {
 }
 
 // edgeTypesBody is the response shape of GET /v1/edge-types.
-//
-//nolint:unused // referenced via swag @Success annotation
 type edgeTypesBody struct {
 	APIVersion string                     `json:"apiVersion"`
 	EdgeTypes  []graph.EdgeTypeDefinition `json:"edge_types"`
@@ -207,9 +205,9 @@ func (s *Server) handleClusters(c *gin.Context) {
 		writeError(c, http.StatusBadGateway, "upstream", err.Error())
 		return
 	}
-	body := map[string]any{
-		"apiVersion": APIVersion,
-		"clusters":   clusters,
+	body := clustersBody{
+		APIVersion: APIVersion,
+		Clusters:   clusters,
 	}
 	raw, _ := json.Marshal(body)
 	c.Data(http.StatusOK, "application/json; charset=utf-8", raw)
@@ -265,9 +263,9 @@ func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 //	@Security		ApiKeyAuth
 //	@Router			/v1/edge-types [get]
 func (s *Server) handleEdgeTypes(c *gin.Context) {
-	body := map[string]any{
-		"apiVersion": APIVersion,
-		"edge_types": graph.EdgeTypes,
+	body := edgeTypesBody{
+		APIVersion: APIVersion,
+		EdgeTypes:  graph.EdgeTypes,
 	}
 	raw, _ := json.Marshal(body)
 	c.Header("Cache-Control", "public, max-age=3600")
@@ -302,7 +300,11 @@ func (s *Server) handleReadyz(c *gin.Context) {
 	defer cancel()
 	_, err := s.prom.Instant(probeCtx, string(promql.QUpProbe), s.r.Render(promql.QUpProbe, 0), s.clk.Now().UTC())
 	if err != nil {
-		writeError(c, http.StatusServiceUnavailable, "upstream_unreachable", err.Error())
+		// /readyz is unauthenticated; the raw upstream error embeds the internal
+		// VictoriaMetrics URL/host/IP. Return a static message and keep the
+		// detail server-side (the promql client already logs it at Error level).
+		s.logger.WarnContext(c.Request.Context(), "readyz upstream probe failed", "err", err)
+		writeError(c, http.StatusServiceUnavailable, "upstream_unreachable", "upstream probe failed")
 		return
 	}
 	c.String(http.StatusOK, "ok")
