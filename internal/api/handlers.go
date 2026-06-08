@@ -33,7 +33,7 @@ import (
 //	@Description
 //	@Description	**Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
 //	@Description
-//	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `external`. **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`.
+//	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `external`, plus the presentation-only `cluster` and `storageclass` compound group nodes synthesised by the Cytoscape serialiser (`cluster > node > pod`, `cluster > storageclass > pvc`). **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`.
 //	@Description
 //	@Description	**Endpoint resolution**: for a call endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): both a `<service>.<namespace>` host and a headless `<pod>.<service>.<namespace>` host resolve to the same `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to each backing pod — the call edge is then typed `pod-calls-service`; an unresolvable host yields an `external` node (`external/<value>`). A non-URL missing-UID label also yields an `external` node. Calls whose target is not a service stay typed `pod-calls-pod`.
 //	@Description

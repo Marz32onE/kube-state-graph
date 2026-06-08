@@ -323,3 +323,68 @@ func TestParseTopology_NoServiceSeriesYieldsEmptyIndexes(t *testing.T) {
 	assert.Empty(t, tp.ServicesByNameNS)
 	assert.Empty(t, tp.EndpointsByService)
 }
+
+// TestParseTopology_PVCStorageClass — StorageClass resolution from
+// kube_persistentvolumeclaim_info, joined on (cluster, namespace, claim) to PVC
+// nodes that already exist (from the binding metric). Covers: resolved (never a
+// label), no matching info series (empty), and the info metric absent entirely
+// (all empty, build succeeds).
+func TestParseTopology_PVCStorageClass(t *testing.T) {
+	binding := func(cluster, ns, pod, claim string) model.Sample {
+		return model.Sample{Metric: model.Metric{
+			"cluster": model.LabelValue(cluster), "namespace": model.LabelValue(ns),
+			"pod": model.LabelValue(pod), "persistentvolumeclaim": model.LabelValue(claim),
+		}}
+	}
+	info := func(cluster, ns, claim, sc string) model.Sample {
+		return model.Sample{Metric: model.Metric{
+			"cluster": model.LabelValue(cluster), "namespace": model.LabelValue(ns),
+			"persistentvolumeclaim": model.LabelValue(claim), "storageclass": model.LabelValue(sc),
+		}}
+	}
+
+	pvcVec := sampleVec(
+		binding("c-a", "db", "mongo-0", "data-mongo-0"), // matched by info → gp3
+		binding("c-a", "db", "redis-0", "data-redis-0"), // no matching info → empty
+	)
+	infoVec := sampleVec(info("c-a", "db", "data-mongo-0", "gp3"))
+
+	tp := parseTopology(topologyVectors{PVC: pvcVec, PVCInfo: infoVec})
+	byID := map[string]*graph.PVCNode{}
+	for _, p := range tp.PVCs {
+		byID[p.ID()] = p
+	}
+
+	mongo := byID["c-a/db/data-mongo-0"]
+	require.NotNil(t, mongo)
+	assert.Equal(t, "gp3", mongo.StorageClass(), "storageclass resolved from kube_persistentvolumeclaim_info")
+	_, hasLabel := mongo.Labels()["storageclass"]
+	assert.False(t, hasLabel, "storageclass must NEVER appear in labels")
+
+	redis := byID["c-a/db/data-redis-0"]
+	require.NotNil(t, redis)
+	assert.Empty(t, redis.StorageClass(), "PVC with no matching info series carries empty StorageClass")
+
+	// Info metric absent entirely → every PVC empty, build still succeeds.
+	tp2 := parseTopology(topologyVectors{PVC: pvcVec})
+	require.Len(t, tp2.PVCs, 2)
+	for _, p := range tp2.PVCs {
+		assert.Emptyf(t, p.StorageClass(), "no info series → PVC %q must be empty", p.ID())
+	}
+}
+
+// TestParseTopology_PVCStorageClassDeterministic — a duplicate
+// (cluster, namespace, claim) in kube_persistentvolumeclaim_info resolves to the
+// lexically-smallest storageclass regardless of upstream vector order.
+func TestParseTopology_PVCStorageClassDeterministic(t *testing.T) {
+	binding := model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "pod": "p", "persistentvolumeclaim": "claim"}}
+	scGP3 := model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "persistentvolumeclaim": "claim", "storageclass": "gp3"}}
+	scGP2 := model.Sample{Metric: model.Metric{"cluster": "c", "namespace": "n", "persistentvolumeclaim": "claim", "storageclass": "gp2"}}
+
+	fwd := parseTopology(topologyVectors{PVC: sampleVec(binding), PVCInfo: sampleVec(scGP3, scGP2)})
+	rev := parseTopology(topologyVectors{PVC: sampleVec(binding), PVCInfo: sampleVec(scGP2, scGP3)})
+	require.Len(t, fwd.PVCs, 1)
+	require.Len(t, rev.PVCs, 1)
+	assert.Equal(t, "gp2", fwd.PVCs[0].StorageClass(), "lexically-smallest storageclass wins")
+	assert.Equal(t, fwd.PVCs[0].StorageClass(), rev.PVCs[0].StorageClass(), "order-independent")
+}

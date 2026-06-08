@@ -1,0 +1,100 @@
+{
+  "apiVersion": "v1",
+  "clusters": [
+    "cluster-alpha"
+  ],
+  "elements": {
+    "nodes": [
+      {
+        "data": {
+          "id": "cluster/cluster-alpha",
+          "name": "cluster-alpha",
+          "type": "cluster",
+          "labels": {}
+        }
+      },
+      {
+        "data": {
+          "id": "cluster-alpha/storageclass/gp3",
+          "name": "gp3",
+          "type": "storageclass",
+          "parent": "cluster/cluster-alpha",
+          "labels": {}
+        }
+      },
+      {
+        "data": {
+          "id": "cluster-alpha/worker-0",
+          "name": "worker-0",
+          "type": "node",
+          "parent": "cluster/cluster-alpha",
+          "labels": {
+            "cluster": "cluster-alpha"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "cluster-alpha/p1",
+          "name": "mongo-0",
+          "type": "pod",
+          "parent": "cluster-alpha/worker-0",
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "db",
+            "node": "cluster-alpha/worker-0"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "cluster-alpha/db/data-mongo-0",
+          "name": "data-mongo-0",
+          "type": "pvc",
+          "parent": "cluster-alpha/storageclass/gp3",
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "db",
+            "volume": "data"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "cluster-alpha/db/legacy",
+          "name": "legacy",
+          "type": "pvc",
+          "parent": "cluster/cluster-alpha",
+          "labels": {
+            "cluster": "cluster-alpha",
+            "namespace": "db"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "data": {
+          "id": "64198393-9529-53f1-b4fe-d6ffad8bd939",
+          "type": "pod-mounts-pvc",
+          "source": "cluster-alpha/p1",
+          "target": "cluster-alpha/db/data-mongo-0",
+          "labels": {
+            "claim_name": "data-mongo-0"
+          }
+        }
+      },
+      {
+        "data": {
+          "id": "f7fff6cb-3dda-52ac-9d77-43081abb655e",
+          "type": "pod-mounts-pvc",
+          "source": "cluster-alpha/p1",
+          "target": "cluster-alpha/db/legacy",
+          "labels": {
+            "claim_name": "legacy"
+          }
+        }
+      }
+    ]
+  }
+}

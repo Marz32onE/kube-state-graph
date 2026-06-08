@@ -65,6 +65,7 @@ func TestRenderer_PrefixApplied(t *testing.T) {
 		{"endpointslice-labels", QEndpointSliceLabels, time.Minute, "last_over_time(o11y_kube_endpointslice_labels[1m])"},
 		{"pod-owner", QPodOwner, time.Minute, "last_over_time(o11y_kube_pod_owner[1m])"},
 		{"replicaset-owner", QReplicaSetOwner, time.Minute, "last_over_time(o11y_kube_replicaset_owner[1m])"},
+		{"pvc-info", QPVCInfo, time.Minute, "last_over_time(o11y_kube_persistentvolumeclaim_info[1m])"},
 		{"cluster-discovery", QClusterDiscovery, time.Hour, "group by (cluster) (last_over_time(o11y_kube_node_info[1h]))"},
 	}
 	r := Renderer{Prefix: "o11y_"}
@@ -100,6 +101,17 @@ func TestRender_ZeroPrefixIdenticalToBareNames(t *testing.T) {
 	assert.Equal(t, Render(QNodeInfo, time.Minute), r.Render(QNodeInfo, time.Minute))
 	assert.Equal(t, Render(QClusterDiscovery, time.Hour), r.Render(QClusterDiscovery, time.Hour))
 	assert.Contains(t, r.Render(QPodInfo, time.Minute), "kube_pod_info")
+}
+
+// TestRender_PVCInfoPrefixAware pins the new kube_persistentvolumeclaim_info
+// query: bare by default (stable self-metric dimension), prefix-aware via
+// Renderer like every other KSM-shaped series.
+func TestRender_PVCInfoPrefixAware(t *testing.T) {
+	assert.Equal(t, "last_over_time(kube_persistentvolumeclaim_info[1m])", Render(QPVCInfo, time.Minute))
+	assert.Equal(t, "kube_persistentvolumeclaim_info", string(QPVCInfo),
+		"Query constant stays the bare metric name for stable query/query_name dimensions")
+	assert.Equal(t, "last_over_time(o11y_kube_persistentvolumeclaim_info[1m])",
+		Renderer{Prefix: "o11y_"}.Render(QPVCInfo, time.Minute))
 }
 
 func TestFormatDuration(t *testing.T) {

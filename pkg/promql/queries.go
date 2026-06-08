@@ -36,6 +36,14 @@ const (
 	// skipped). Both are KSM defaults (no --metric-labels-allowlist required).
 	QPodOwner        Query = "kube_pod_owner"
 	QReplicaSetOwner Query = "kube_replicaset_owner"
+
+	// PVC StorageClass resolution. KSM-shaped, so prefix-aware via Renderer.
+	// kube_persistentvolumeclaim_info carries the `storageclass` label that the
+	// pod→PVC binding metric (QPVCBindings) lacks; it is joined on
+	// (cluster, namespace, persistentvolumeclaim) to enrich existing PVC nodes
+	// (never to materialise new ones). OPTIONAL — a KSM default, no
+	// --metric-labels-allowlist required.
+	QPVCInfo Query = "kube_persistentvolumeclaim_info"
 )
 
 // ClusterDiscoveryLookback is the fixed lookback used by /v1/clusters
@@ -107,6 +115,8 @@ func (r Renderer) Render(q Query, window time.Duration) string {
 		return fmt.Sprintf(`last_over_time(%skube_pod_owner[%s])`, r.Prefix, w)
 	case QReplicaSetOwner:
 		return fmt.Sprintf(`last_over_time(%skube_replicaset_owner[%s])`, r.Prefix, w)
+	case QPVCInfo:
+		return fmt.Sprintf(`last_over_time(%skube_persistentvolumeclaim_info[%s])`, r.Prefix, w)
 	case QServiceGraphTotal:
 		// Service-graph metrics come from Alloy/Tempo, not kube-state-metrics;
 		// the configurable prefix deliberately does NOT apply here. The metric

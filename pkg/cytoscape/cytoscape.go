@@ -8,6 +8,7 @@
 package cytoscape
 
 import (
+	"cmp"
 	"maps"
 	"slices"
 
@@ -69,8 +70,24 @@ type EdgeData struct {
 // design.md D31.
 const nodeTypeCluster = "cluster"
 
+// nodeTypeStorageClass is the synthetic node type for the StorageClass compound
+// group. Like cluster groups these exist only in the Cytoscape presentation (to
+// satisfy a PVC's data.parent); they are not graph.GraphNodes. See design.md.
+const nodeTypeStorageClass = "storageclass"
+
 // clusterParentID is the synthetic group-node id for a cluster.
 func clusterParentID(cluster string) string { return "cluster/" + cluster }
+
+// storageClassParentID is the synthetic group-node id for a (cluster,
+// StorageClass) pair. StorageClass names are DNS-1123 subdomains (no "/"), so
+// the id is unambiguous against namespace-scoped PVC ids.
+func storageClassParentID(cluster, sc string) string {
+	return cluster + "/storageclass/" + sc
+}
+
+// scKey identifies a synthesised StorageClass group by its (cluster,
+// StorageClass) pair.
+type scKey struct{ cluster, sc string }
 
 // Serialise renders a projected view into the deterministic Cytoscape body.
 // The view supplies the in-scope nodes and edges; the response `clusters` field
@@ -88,10 +105,21 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 	// distinct clusters to synthesise group nodes for.
 	present := make(map[string]struct{}, len(view.Nodes))
 	clusterSeen := map[string]struct{}{}
+	// StorageClass compound groups: one synthetic group node per (cluster,
+	// StorageClass) pair carried by an emitted PVC with a resolved StorageClass.
+	// Derived from the same emitted node set as the cluster groups, so a PVC's
+	// data.parent can never dangle.
+	scSeen := map[scKey]struct{}{}
 	for _, n := range view.Nodes {
 		present[n.ID()] = struct{}{}
-		if c := n.Labels()["cluster"]; c != "" {
+		c := n.Labels()["cluster"]
+		if c != "" {
 			clusterSeen[c] = struct{}{}
+		}
+		if n.Type() == graph.NodeTypePVC {
+			if sc := n.StorageClass(); sc != "" && c != "" {
+				scSeen[scKey{c, sc}] = struct{}{}
+			}
 		}
 	}
 
@@ -103,7 +131,7 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 	sortedClusters := slices.Sorted(maps.Keys(clusterSeen))
 	body.Clusters = append(make([]string, 0, len(sortedClusters)), sortedClusters...)
 
-	body.Elements.Nodes = make([]Node, 0, len(view.Nodes)+len(clusterSeen))
+	body.Elements.Nodes = make([]Node, 0, len(view.Nodes)+len(clusterSeen)+len(scSeen))
 
 	// Synthetic cluster group nodes first, sorted by name (determinism, D6).
 	for _, c := range sortedClusters {
@@ -112,6 +140,25 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 				ID:     clusterParentID(c),
 				Name:   c,
 				Type:   nodeTypeCluster,
+				Labels: map[string]string{},
+			},
+		})
+	}
+
+	// StorageClass group nodes next, after the cluster groups and before the
+	// real nodes, ordered by (cluster, storageclass) (determinism). Each nests
+	// under its cluster group and carries no labels — its cluster identity lives
+	// in its id and parent.
+	sortedSC := slices.SortedFunc(maps.Keys(scSeen), func(a, b scKey) int {
+		return cmp.Or(cmp.Compare(a.cluster, b.cluster), cmp.Compare(a.sc, b.sc))
+	})
+	for _, k := range sortedSC {
+		body.Elements.Nodes = append(body.Elements.Nodes, Node{
+			Data: NodeData{
+				ID:     storageClassParentID(k.cluster, k.sc),
+				Name:   k.sc,
+				Type:   nodeTypeStorageClass,
+				Parent: clusterParentID(k.cluster),
 				Labels: map[string]string{},
 			},
 		})
@@ -146,26 +193,44 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 	return body
 }
 
-// compoundParent returns the Cytoscape data.parent for a node, per design D31:
+// compoundParent returns the Cytoscape data.parent for a node, per design D31
+// and the StorageClass grouping design:
 //
-//	pod              → its K8s node (labels.node) when present in the view,
-//	                   else its cluster group, else "" (unknown cluster)
-//	node/service/pvc → its cluster group (cluster/<cluster>)
-//	external         → "" (no cluster identity)
+//	pod          → its K8s node (labels.node) when present in the view,
+//	               else its cluster group, else "" (unknown cluster)
+//	pvc          → its StorageClass group (<cluster>/storageclass/<sc>) when it
+//	               has a resolved StorageClass, else its cluster group
+//	node/service → its cluster group (cluster/<cluster>)
+//	external     → "" (no cluster identity)
 func compoundParent(n graph.GraphNode, present map[string]struct{}) string {
 	labels := n.Labels()
-	// A pod nests under its scheduling K8s node (labels.node) when that node is
-	// present in the view; otherwise it falls through to its cluster group.
-	if n.Type() == graph.NodeTypePod {
+	switch n.Type() {
+	case graph.NodeTypePod:
+		// A pod nests under its scheduling K8s node (labels.node) when that node
+		// is present in the view; otherwise it falls through to its cluster group.
 		if node := labels["node"]; node != "" {
 			if _, ok := present[node]; ok {
 				return node
 			}
 		}
+	case graph.NodeTypePVC:
+		// A PVC with a resolved StorageClass nests under its StorageClass group
+		// (cluster > storageclass > pvc); otherwise it falls through to its
+		// cluster group (cluster > pvc). The group node is synthesised from the
+		// same emitted PVC set, so it is guaranteed present — mirroring the
+		// cluster-group invariant.
+		if sc := n.StorageClass(); sc != "" {
+			if c := labels["cluster"]; c != "" {
+				return storageClassParentID(c, sc)
+			}
+		}
+	default:
+		// node / service / external: fall through to the cluster-group fallback
+		// below (external carries no cluster label, so it gets no parent).
 	}
-	// node / service / pvc — and any pod whose node is out of scope — nest
-	// under their cluster group. external nodes carry no cluster label
-	// (labels={}), so they fall through to no parent.
+	// node / service — and any pod whose node is out of scope, or any PVC with no
+	// StorageClass — nest under their cluster group. external nodes carry no
+	// cluster label (labels={}), so they fall through to no parent.
 	if c := labels["cluster"]; c != "" {
 		return clusterParentID(c)
 	}
