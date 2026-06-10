@@ -54,17 +54,29 @@ func writeError(c *gin.Context, status int, reason, message string) {
 // status (RFC 9110 §15.6.3 Bad Gateway, §15.6.5 Gateway Timeout). A client
 // cancellation maps to 499 (no 5xx pollution); span status/error recording is
 // handled uniformly by writeError + spanEnrichMiddleware.
-func mapBuildError(c *gin.Context, err error) {
+//
+// The `reason` strings and status codes are contracts. The upstream and
+// default branches return static human messages: the wrapped promql error
+// embeds the internal VictoriaMetrics URL/host/IP (`Post "http://...": dial
+// tcp ...`), which must never reach a response body — the same redaction
+// handleReadyz applies. The full error is logged server-side so operators
+// keep the detail. The timeout / outside_retention messages are
+// build-generated diagnostics and stay verbatim.
+func (s *Server) mapBuildError(c *gin.Context, err error) {
 	switch build.AsReason(err) {
 	case build.ReasonTimeout:
 		writeError(c, http.StatusGatewayTimeout, "timeout", err.Error())
 	case build.ReasonOutsideRetention:
 		writeError(c, http.StatusBadRequest, "outside_retention", err.Error())
 	case build.ReasonUpstream:
-		writeError(c, http.StatusBadGateway, "upstream", err.Error())
+		s.logger.ErrorContext(c.Request.Context(), "upstream query failed",
+			"err", err, "request_id", c.GetString("request_id"))
+		writeError(c, http.StatusBadGateway, "upstream", "upstream query failed")
 	case build.ReasonCanceled:
 		writeError(c, statusClientClosedRequest, "canceled", "request canceled")
 	default:
-		writeError(c, http.StatusInternalServerError, "internal", err.Error())
+		s.logger.ErrorContext(c.Request.Context(), "graph build failed",
+			"err", err, "request_id", c.GetString("request_id"))
+		writeError(c, http.StatusInternalServerError, "internal", "internal error")
 	}
 }

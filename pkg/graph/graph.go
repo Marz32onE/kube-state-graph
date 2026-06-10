@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"log/slog"
 	"sort"
 	"time"
 )
@@ -31,6 +32,24 @@ func NewGraph(nodes []GraphNode, edges []*Edge, builtAt time.Time) *Graph {
 		Reverse:   make(map[string][]*Edge, len(nodes)),
 	}
 	for _, n := range nodes {
+		// ServiceID mirrors PVCID keying, so a Service and a PVC sharing
+		// (cluster, namespace, name) mint byte-identical IDs. Changing the ID
+		// grammar is a v2 wire-format break, so dedupe here instead.
+		// Deterministic dedupe: the FIRST node wins — the input slice order is
+		// deterministic (build's assemble appends authoritative topology nodes
+		// before on-demand service-graph nodes), so the winner is a pure
+		// function of the input, independent of map-iteration order (D6
+		// determinism). NodesByID is the sole node collection — projection and
+		// serialisation derive their node sets from it — so keep-first here
+		// guarantees the dropped node can never be emitted.
+		if existing, dup := g.NodesByID[n.ID()]; dup {
+			slog.Warn("duplicate node ID; keeping first",
+				"id", n.ID(),
+				"kept_type", string(existing.Type()),
+				"dropped_type", string(n.Type()),
+			)
+			continue
+		}
 		g.NodesByID[n.ID()] = n
 	}
 	for _, e := range edges {

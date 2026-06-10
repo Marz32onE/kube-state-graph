@@ -120,17 +120,29 @@ func run() error {
 		return err
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Size the drain window from config so it covers the slowest legitimate
+	// in-flight request: WriteTimeout is BuildTimeout+5s, so match it (with a
+	// 10s floor for very short build timeouts).
+	shutdownTimeout := cfg.BuildTimeout + 5*time.Second
+	if shutdownTimeout < 10*time.Second {
+		shutdownTimeout = 10 * time.Second
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+
+	// Telemetry shutdown MUST run even when the HTTP drain fails — otherwise
+	// buffered OTLP spans/logs are dropped. Collect both errors.
+	var errs []error
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+		logger.Error("http server shutdown failed", "err", err)
+		errs = append(errs, fmt.Errorf("shutdown: %w", err))
 	}
 	if err := telemetryProviders.Shutdown(shutdownCtx); err != nil {
 		// Bypass the slog OTLP bridge — providers are tearing down.
 		fmt.Fprintf(os.Stderr, "otlp shutdown timed out: %v\n", err)
-		return fmt.Errorf("otlp shutdown: %w", err)
+		errs = append(errs, fmt.Errorf("otlp shutdown: %w", err))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // loadAPIKeys returns a populated KeySet (file or CSV) or an empty one when
@@ -169,8 +181,16 @@ func reloadAPIKeys(ctx context.Context, ks *auth.KeySet, path string, interval t
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := ks.LoadFile(path); err != nil {
+			before := ks.Snapshot()
+			// ReloadFile fails closed: an empty/comment-only/truncated file
+			// cannot wipe a non-empty active set — the error below then
+			// surfaces every interval until the file is fixed.
+			if err := ks.ReloadFile(path); err != nil {
 				logger.Error("api keys reload failed", "path", path, "err", err)
+				continue
+			}
+			if after := ks.Snapshot(); after != before {
+				logger.Info("api keys reloaded", "path", path, "keys", after)
 			}
 		}
 	}

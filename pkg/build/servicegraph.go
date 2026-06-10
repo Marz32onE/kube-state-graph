@@ -98,8 +98,11 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	pairs := make(map[pairKey]aggEdge, len(vec))
 
 	for _, s := range vec {
-		// Drop zero-rate series.
-		if s.Value <= 0 {
+		// Drop zero-rate series. Written as !(v > 0) rather than v <= 0 so
+		// NaN-valued samples are dropped too — every comparison with NaN is
+		// false in Go, so `s.Value <= 0` would let NaN through and materialise
+		// nodes/edges for traffic that never happened.
+		if !(s.Value > 0) {
 			continue
 		}
 
@@ -122,7 +125,17 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 		}
 
 		key := pairKey{src: srcID, tgt: tgtID}
-		if _, dup := pairs[key]; dup {
+		if prev, dup := pairs[key]; dup {
+			// Deterministic dedupe: multiple upstream series can resolve to the
+			// same (src, tgt) pair while carrying different trace `cluster`
+			// labels (e.g. one missing → "unknown", the client pod recovered via
+			// the cluster-agnostic UID index). Keep the lexically-smaller
+			// srcCluster so the emitted edge's labels.cluster is a pure function
+			// of the data, not vector arrival order (D6). srcIsPod is identical
+			// for a given srcID, so only srcCluster needs the tie-break.
+			if traceCluster < prev.srcCluster {
+				pairs[key] = aggEdge{srcIsPod: srcIsPod, srcCluster: traceCluster}
+			}
 			continue
 		}
 		pairs[key] = aggEdge{srcIsPod: srcIsPod, srcCluster: traceCluster}
@@ -387,7 +400,11 @@ func connStringHost(label string) string {
 // part is not 2 or 3 dotted labels.
 func classifyK8sDNS(host string) (service, namespace string, ok bool) {
 	rel := host
-	if i := strings.Index(host, ".svc."); i >= 0 {
+	// The cluster-domain suffix is the LAST ".svc." occurrence: "svc" is a
+	// legal DNS-1123 label, so a namespace or service literally named "svc"
+	// (e.g. "myservice.svc.svc.cluster.local") would be truncated too early by
+	// a first-occurrence strings.Index and fall back to an external node.
+	if i := strings.LastIndex(host, ".svc."); i >= 0 {
 		rel = host[:i]
 	} else if strings.HasSuffix(host, ".svc") {
 		rel = strings.TrimSuffix(host, ".svc")

@@ -206,7 +206,13 @@ func parseTopology(v topologyVectors) Topology {
 		typ := string(s.Metric["type"])
 		addr := string(s.Metric["address"])
 		if typ == "ExternalIP" && addr != "" {
-			externalIPs[[2]string{cluster, nodeName}] = addr
+			key := [2]string{cluster, nodeName}
+			// Deterministic pick: lexically-smallest address wins on duplicate
+			// (cluster, node) samples, so the emitted IP is a pure function of
+			// the data, not upstream vector order (D6 determinism).
+			if cur, ok := externalIPs[key]; !ok || addr < cur {
+				externalIPs[key] = addr
+			}
 		}
 		clusters[cluster] = struct{}{}
 	}
@@ -222,8 +228,15 @@ func parseTopology(v topologyVectors) Topology {
 		}
 		for ln, lv := range s.Metric {
 			name := string(ln)
-			if strings.HasPrefix(name, "label_") {
-				nodeLabels[key][unflattenLabel(name)] = string(lv)
+			if !strings.HasPrefix(name, "label_") {
+				continue
+			}
+			lk, val := unflattenLabel(name), string(lv)
+			// Deterministic merge: when two series disagree on a key, the
+			// lexically-smaller value wins so the emitted label set is a pure
+			// function of the data, not upstream vector order (D6 determinism).
+			if cur, ok := nodeLabels[key][lk]; !ok || val < cur {
+				nodeLabels[key][lk] = val
 			}
 		}
 		clusters[cluster] = struct{}{}
@@ -237,10 +250,16 @@ func parseTopology(v topologyVectors) Topology {
 		if nodeName == "" {
 			continue
 		}
-		labels := map[string]string{"cluster": cluster}
+		labels := map[string]string{}
 		for k, v := range nodeLabels[[2]string{cluster, nodeName}] {
 			labels[k] = v
 		}
+		// Contract keys win: set AFTER the KSM-derived merge. An operator node
+		// label `cluster=...` flattens to label_cluster, and
+		// unflattenLabel("label_cluster") == "cluster" — copying it over the
+		// contract value would clobber the cluster-scoping every consumer
+		// relies on.
+		labels["cluster"] = cluster
 		var ips []string
 		if ip, ok := externalIPs[[2]string{cluster, nodeName}]; ok && ip != "" {
 			ips = []string{ip}
@@ -329,10 +348,13 @@ func parseTopology(v topologyVectors) Topology {
 		canonical := group[0]
 		// Pod IP is sourced from kube_pod_info.pod_ip. Newest sample wins; if
 		// the newest is empty (e.g. arrived before scheduling completed) we
-		// fall back to the most recent non-empty observation.
+		// fall back to the most recent non-empty observation OF THE CANONICAL
+		// UID only — like the label merge above, this is strictly per-UID. A
+		// recreated pod (same name, new UID) must not inherit the dead
+		// predecessor UID's stale pod_ip.
 		var podIP string
 		for _, obs := range group {
-			if obs.podIP != "" {
+			if obs.uid == canonical.uid && obs.podIP != "" {
 				podIP = obs.podIP
 				break
 			}
@@ -363,8 +385,9 @@ func parseTopology(v topologyVectors) Topology {
 	// PVCs + pod-PVC bindings.
 	// Each kube_pod_spec_volumes_persistentvolumeclaims_info series wires one
 	// pod to one PVC via (cluster, namespace, pod, persistentvolumeclaim).
-	pvcSeen := map[string]bool{}
+	pvcByID := map[string]*graph.PVCNode{}
 	pvcs := make([]*graph.PVCNode, 0, len(v.PVC))
+	bindingSeen := map[PodPVCBinding]bool{}
 	bindings := make([]PodPVCBinding, 0, len(v.PVC))
 	canonicalPodUID := map[[3]string]string{}
 	for k, group := range podGroups {
@@ -382,25 +405,36 @@ func parseTopology(v topologyVectors) Topology {
 			continue
 		}
 		id := graph.PVCID(cluster, ns, claim)
-		if !pvcSeen[id] {
-			pvcSeen[id] = true
-			labels := map[string]string{"cluster": cluster, "namespace": ns}
-			if vol := string(s.Metric["volume"]); vol != "" {
-				labels["volume"] = vol
-			}
-			pvcs = append(pvcs, &graph.PVCNode{
+		node, seen := pvcByID[id]
+		if !seen {
+			node = &graph.PVCNode{
 				IDValue:           id,
 				NameValue:         claim,
-				LabelsValue:       labels,
+				LabelsValue:       map[string]string{"cluster": cluster, "namespace": ns},
 				StorageClassValue: pvcStorageClass[pvcKey{cluster, ns, claim}],
-			})
+			}
+			pvcByID[id] = node
+			pvcs = append(pvcs, node)
+		}
+		// Deterministic pick: the lexically-smallest non-empty volume wins
+		// across all samples for this PVC, so the emitted label is a pure
+		// function of the data, not upstream vector order (D6 determinism).
+		if vol := string(s.Metric["volume"]); vol != "" {
+			if cur, ok := node.LabelsValue["volume"]; !ok || vol < cur {
+				node.LabelsValue["volume"] = vol
+			}
 		}
 		if podName != "" {
 			if uid, ok := canonicalPodUID[[3]string{cluster, ns, podName}]; ok {
-				bindings = append(bindings, PodPVCBinding{
-					PodID: graph.PodID(cluster, uid),
-					PVCID: id,
-				})
+				// Dedupe by (PodID, PVCID): one claim mounted via two volume
+				// names, a restarted pod, or HA-KSM duplicate series would
+				// otherwise emit duplicate pod-mounts-pvc edges sharing one
+				// UUIDv5 edge ID.
+				b := PodPVCBinding{PodID: graph.PodID(cluster, uid), PVCID: id}
+				if !bindingSeen[b] {
+					bindingSeen[b] = true
+					bindings = append(bindings, b)
+				}
 			}
 		}
 		clusters[cluster] = struct{}{}

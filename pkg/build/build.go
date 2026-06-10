@@ -67,7 +67,16 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 
 	// Outside-retention check: zero pods + healthy upstream ⇒ retention miss.
 	if len(topology.Pods) == 0 && len(topology.Nodes) == 0 {
-		if up, _ := b.upProbe(ctx); up {
+		up, probeErr := b.upProbe(ctx)
+		if probeErr != nil {
+			// A failed probe must not fail the build (control flow / status
+			// mapping unchanged — that is a spec-level decision), but it must
+			// leave a server-side trace: without it a probe error or timeout
+			// degrades to a silent 200 empty graph with zero signal.
+			slog.WarnContext(ctx, "up probe failed; outside-retention classification skipped",
+				"error", probeErr)
+		}
+		if up {
 			startStr := end.Add(-window).UTC().Format(time.RFC3339)
 			endStr := end.UTC().Format(time.RFC3339)
 			podRaw := topology.RawSeriesCount[string(promql.QPodInfo)]

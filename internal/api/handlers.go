@@ -84,7 +84,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 	}
 	g, err := s.runBuild(c.Request.Context(), req)
 	if err != nil {
-		mapBuildError(c, err)
+		s.mapBuildError(c, err)
 		return
 	}
 
@@ -198,11 +198,22 @@ func (s *Server) handleClusters(c *gin.Context) {
 
 	clusters, err := s.discoverClusters(ctx)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, context.Canceled):
+			// Client disconnect, not an upstream fault — same 499 "canceled"
+			// envelope mapBuildError returns for /v1/graph (no 5xx metric /
+			// span-error pollution; see build.ReasonCanceled).
+			writeError(c, statusClientClosedRequest, "canceled", "request canceled")
+		case errors.Is(err, context.DeadlineExceeded):
 			writeError(c, http.StatusGatewayTimeout, "timeout", err.Error())
-			return
+		default:
+			// The raw error embeds the internal VictoriaMetrics URL/host/IP —
+			// keep the detail server-side, return a static message (same
+			// redaction as mapBuildError's ReasonUpstream and handleReadyz).
+			s.logger.ErrorContext(c.Request.Context(), "cluster discovery upstream query failed",
+				"err", err, "request_id", c.GetString("request_id"))
+			writeError(c, http.StatusBadGateway, "upstream", "upstream query failed")
 		}
-		writeError(c, http.StatusBadGateway, "upstream", err.Error())
 		return
 	}
 	body := clustersBody{

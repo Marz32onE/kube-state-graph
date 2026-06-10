@@ -19,6 +19,26 @@ type EdgeTypeDefinition struct {
 	Labels          []EdgeTypeLabel `json:"labels"`
 }
 
+// validEdgeTypes is the lookup set derived from EdgeTypes at init. Because it
+// is built from the registry itself, it can never drift from what the builder
+// produces and /v1/edge-types advertises.
+var validEdgeTypes = func() map[EdgeType]struct{} {
+	out := make(map[EdgeType]struct{}, len(EdgeTypes))
+	for _, def := range EdgeTypes {
+		out[def.Type] = struct{}{}
+	}
+	return out
+}()
+
+// ValidEdgeType reports whether t is a registered edge type — i.e. present in
+// the EdgeTypes registry served by /v1/edge-types. Request parsers use it to
+// reject unknown ?edge_type= filter values instead of silently matching no
+// edges.
+func ValidEdgeType(t EdgeType) bool {
+	_, ok := validEdgeTypes[t]
+	return ok
+}
+
 // EdgeTypes is the in-code registry consumed by both the graph builder and
 // the /v1/edge-types HTTP handler.
 var EdgeTypes = []EdgeTypeDefinition{

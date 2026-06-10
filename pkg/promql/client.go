@@ -74,7 +74,19 @@ func (c *Client) Instant(ctx context.Context, name, query string, ts time.Time) 
 			c.metrics.ObserveQueryDuration(name, time.Since(start).Seconds())
 		}
 	}()
-	val, _, err := c.api.Query(ctx, query, ts)
+	val, warns, err := c.api.Query(ctx, query, ts)
+	if len(warns) > 0 {
+		// VictoriaMetrics signals truncated / partial responses (e.g. a
+		// -search.* limit hit) via the warnings return; dropping them hides
+		// silent data truncation. Logged regardless of err so a partial
+		// response that still errors keeps both signals. Only the query name
+		// and upstream warning text are logged — never credentials or the
+		// upstream URL.
+		slog.WarnContext(ctx, "upstream query returned warnings",
+			"query_name", name,
+			"warnings", warns,
+		)
+	}
 	if err != nil {
 		if c.metrics != nil {
 			c.metrics.IncQueryFailure(name)
