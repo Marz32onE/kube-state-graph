@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -182,20 +184,24 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 func parseTopology(v topologyVectors) Topology {
 	clusters := map[string]struct{}{}
 
+	// Per-metric tally of samples missing the `cluster` label; surfaced as one
+	// aggregated warn per metric at the end of the parse.
+	mc := missingClusterCounts{}
+
 	// Pod controller-owner resolution (D34), with the ReplicaSet skipped to its
 	// owning Deployment. Built up-front so the per-pod assembly below can set
 	// each pod's typed Owner attribute (never a label).
-	podOwners := resolvePodOwners(v.PodOwner, v.ReplicaSetOwner)
+	podOwners := resolvePodOwners(v.PodOwner, v.ReplicaSetOwner, mc)
 
 	// PVC StorageClass resolution. Built up-front so the per-PVC assembly below
 	// can set each PVC's StorageClass (consumed by the Cytoscape serialiser for
 	// compound grouping — never a label, never serialised).
-	pvcStorageClass := resolvePVCStorageClass(v.PVCInfo)
+	pvcStorageClass := resolvePVCStorageClass(v.PVCInfo, mc)
 
 	// External IP map: (cluster, node-name) -> IP.
 	externalIPs := map[[2]string]string{}
 	for _, s := range v.Addr {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QNodeAddresses, string(s.Metric["cluster"]))
 		nodeName := string(s.Metric["node"])
 		typ := string(s.Metric["type"])
 		addr := string(s.Metric["address"])
@@ -208,7 +214,7 @@ func parseTopology(v topologyVectors) Topology {
 	// K8s node label map: (cluster, node-name) -> labels (with `label_` prefix removed).
 	nodeLabels := map[[2]string]map[string]string{}
 	for _, s := range v.NodeLabels {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QNodeLabels, string(s.Metric["cluster"]))
 		nodeName := string(s.Metric["node"])
 		key := [2]string{cluster, nodeName}
 		if _, ok := nodeLabels[key]; !ok {
@@ -226,7 +232,7 @@ func parseTopology(v topologyVectors) Topology {
 	// K8s nodes.
 	nodes := make([]*graph.K8sNode, 0, len(v.Node))
 	for _, s := range v.Node {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QNodeInfo, string(s.Metric["cluster"]))
 		nodeName := string(s.Metric["node"])
 		if nodeName == "" {
 			continue
@@ -251,7 +257,7 @@ func parseTopology(v topologyVectors) Topology {
 	// Pods (group by (cluster, namespace, pod) for restart handling).
 	podGroups := map[podKey][]podObs{}
 	for _, s := range v.Pod {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QPodInfo, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		name := string(s.Metric["pod"])
 		uid := string(s.Metric["uid"])
@@ -365,7 +371,7 @@ func parseTopology(v topologyVectors) Topology {
 		canonicalPodUID[[3]string{k.cluster, k.namespace, k.pod}] = group[0].uid
 	}
 	for _, s := range v.PVC {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QPVCBindings, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		podName := string(s.Metric["pod"])
 		claim := string(s.Metric["persistentvolumeclaim"])
@@ -403,7 +409,7 @@ func parseTopology(v topologyVectors) Topology {
 	// Services (D29). kube_service_info carries cluster_ip; "None" means headless.
 	servicesByNameNS := map[serviceKey]ServiceObs{}
 	for _, s := range v.Service {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QServiceInfo, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		svc := string(s.Metric["service"])
 		if svc == "" {
@@ -422,7 +428,7 @@ func parseTopology(v topologyVectors) Topology {
 	type sliceKey struct{ cluster, namespace, slice string }
 	sliceToService := map[sliceKey]string{}
 	for _, s := range v.EpLabels {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QEndpointSliceLabels, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		slice := string(s.Metric["endpointslice"])
 		svc := string(s.Metric["label_kubernetes_io_service_name"])
@@ -439,7 +445,7 @@ func parseTopology(v topologyVectors) Topology {
 	// the source of the Service → backing-pod fan-out (service-selects-pod edges).
 	endpointsByService := map[serviceKey][]EndpointObs{}
 	for _, s := range v.EpEndpoints {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QEndpointSliceEndpoints, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		slice := string(s.Metric["endpointslice"])
 		svc, ok := sliceToService[sliceKey{cluster, ns, slice}]
@@ -472,6 +478,8 @@ func parseTopology(v topologyVectors) Topology {
 	}
 	sort.Strings(clusterList)
 
+	mc.warn()
+
 	return Topology{
 		Pods:               pods,
 		Nodes:              nodes,
@@ -498,7 +506,7 @@ type ownerRef struct{ kind, name string }
 // Pure function of the two input vectors — no ordering dependence: when a pod
 // reports multiple controller owners, the lexically-smallest (kind, name) wins
 // so the emitted entity is stable across rebuilds (D6 determinism).
-func resolvePodOwners(ownerVec, rsOwnerVec model.Vector) map[podNameKey]ownerRef {
+func resolvePodOwners(ownerVec, rsOwnerVec model.Vector, mc missingClusterCounts) map[podNameKey]ownerRef {
 	// ReplicaSet → owning Deployment, keyed by (cluster, namespace, replicaset).
 	// Only Deployment owners are retained; a ReplicaSet owned by anything else
 	// (or nothing) is left unresolved so the pod keeps the ReplicaSet.
@@ -507,7 +515,7 @@ func resolvePodOwners(ownerVec, rsOwnerVec model.Vector) map[podNameKey]ownerRef
 		if string(s.Metric["owner_kind"]) != "Deployment" {
 			continue
 		}
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QReplicaSetOwner, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		rs := string(s.Metric["replicaset"])
 		dep := string(s.Metric["owner_name"])
@@ -522,7 +530,7 @@ func resolvePodOwners(ownerVec, rsOwnerVec model.Vector) map[podNameKey]ownerRef
 		if string(s.Metric["owner_is_controller"]) != "true" {
 			continue
 		}
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QPodOwner, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		pod := string(s.Metric["pod"])
 		kind := string(s.Metric["owner_kind"])
@@ -562,10 +570,10 @@ type pvcKey struct{ cluster, namespace, claim string }
 // StorageClass (graceful degradation). Pure function of the input vector — on a
 // duplicate (cluster, namespace, claim) the lexically-smallest storageclass
 // wins, so the emitted grouping is stable across rebuilds (D6 determinism).
-func resolvePVCStorageClass(vec model.Vector) map[pvcKey]string {
+func resolvePVCStorageClass(vec model.Vector, mc missingClusterCounts) map[pvcKey]string {
 	out := make(map[pvcKey]string, len(vec))
 	for _, s := range vec {
-		cluster := bucketCluster(string(s.Metric["cluster"]))
+		cluster := mc.bucket(promql.QPVCInfo, string(s.Metric["cluster"]))
 		ns := string(s.Metric["namespace"])
 		claim := string(s.Metric["persistentvolumeclaim"])
 		sc := string(s.Metric["storageclass"])
@@ -587,6 +595,32 @@ func bucketCluster(c string) string {
 		return "unknown"
 	}
 	return c
+}
+
+// missingClusterCounts tallies, per upstream metric, samples whose `cluster`
+// label is absent and were therefore bucketed into the "unknown" cluster.
+type missingClusterCounts map[promql.Query]int
+
+// bucket records a missing cluster label against metric and returns the
+// bucketed cluster name (see bucketCluster).
+func (m missingClusterCounts) bucket(metric promql.Query, c string) string {
+	if c == "" {
+		m[metric]++
+	}
+	return bucketCluster(c)
+}
+
+// warn emits one aggregated warning per affected metric — not one per sample,
+// so a whole cluster missing the label cannot flood the log — letting
+// operators spot which exporter feeds the "unknown" cluster. Sorted iteration
+// keeps the log order deterministic.
+func (m missingClusterCounts) warn() {
+	for _, q := range slices.Sorted(maps.Keys(m)) {
+		slog.Warn(`samples missing cluster label; bucketed into "unknown" cluster`,
+			"metric", string(q),
+			"samples", m[q],
+		)
+	}
 }
 
 // unflattenLabel inverts kube-state-metrics' `label_*` flattening.

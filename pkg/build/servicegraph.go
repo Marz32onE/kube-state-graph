@@ -68,6 +68,10 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 		return ServiceGraphResult{}
 	}
 
+	// Per-metric tally of samples missing the `cluster` label; surfaced as one
+	// aggregated warn at the end of the parse.
+	mc := missingClusterCounts{}
+
 	podByID := make(map[string]*graph.PodNode, len(topology.Pods))
 	for _, p := range topology.Pods {
 		podByID[p.ID()] = p
@@ -102,7 +106,7 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 		clientLabel := string(s.Metric["client"])
 		serverLabel := string(s.Metric["server"])
 		// Single `cluster` label = trace source / client-side cluster.
-		traceCluster := bucketCluster(string(s.Metric["cluster"]))
+		traceCluster := mc.bucket(promql.QServiceGraphTotal, string(s.Metric["cluster"]))
 		clientUID := string(s.Metric["client_k8s_pod_uid"])
 		serverUID := string(s.Metric["server_k8s_pod_uid"])
 		clientNS := string(s.Metric["client_k8s_namespace_name"])
@@ -162,6 +166,9 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	for _, sp := range res.synthPods {
 		out.SynthPods = append(out.SynthPods, sp)
 	}
+
+	mc.warn()
+
 	return out
 }
 
