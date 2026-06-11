@@ -164,6 +164,28 @@ service-graph behaviour.
 | `--api-keys-reload-interval`    | `KSG_API_KEYS_RELOAD_INTERVAL`   | `30s`                | How often `--api-keys-file` is re-read. Set to `0` to disable hot reload. |
 | `--log-level`                   | `KSG_LOG_LEVEL`                  | `info`               | `debug | info | warn | error`. |
 | `--metric-prefix`               | `KSG_METRIC_PREFIX`              | (empty)              | Additive prefix prepended to every kube-state-metrics-shaped series the topology reader queries (e.g. `o11y_` → `o11y_kube_pod_info`). Does **not** affect `traces_service_graph_request_total` or `up{}`. The metric-name suffix and per-series label set are a fixed contract any compatible exporter must honour. |
+| —                               | `KSG_PROM_USERNAME`              | (empty)              | HTTP Basic Auth username for the upstream VictoriaMetrics endpoint. **Env-only — no flag exists**, because credential-carrying flags leak via `ps` and container specs. Must be set together with `KSG_PROM_PASSWORD`. |
+| —                               | `KSG_PROM_PASSWORD`              | (empty)              | HTTP Basic Auth password for the upstream. Env-only, paired with `KSG_PROM_USERNAME` — setting exactly one of the two fails startup. Rotation requires a restart (no hot reload); changing a Secret-backed env var in a Deployment triggers a rollout anyway. |
+
+### Upstream basic auth
+
+When VictoriaMetrics is protected by basic auth (`-httpAuth.*`, vmauth, or an
+authenticating reverse proxy), set both env vars — in Kubernetes, source them
+from a `Secret`:
+
+```yaml
+env:
+  - name: KSG_PROM_USERNAME
+    valueFrom:
+      secretKeyRef: { name: ksg-upstream-auth, key: username }
+  - name: KSG_PROM_PASSWORD
+    valueFrom:
+      secretKeyRef: { name: ksg-upstream-auth, key: password }
+```
+
+Every upstream request (topology, service-graph, cluster discovery, the
+`/readyz` probe) then carries `Authorization: Basic …`. The credential values
+never appear in logs, traces, metrics, or error responses.
 
 ## Documentation
 

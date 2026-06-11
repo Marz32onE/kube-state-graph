@@ -78,10 +78,19 @@ func run() error {
 		"api_timeout", cfg.APITimeout,
 		"metric_prefix", cfg.MetricPrefix,
 		"otlp_enabled", telemetryProviders.Enabled,
+		// Boolean only — the credential values themselves are never logged.
+		"prom_basic_auth", cfg.PromUsername != "",
 	)
 
 	metrics := observability.NewMetrics()
-	promClient, err := promql.New(cfg.PromURL, metrics)
+	// Upstream basic auth is env-only (KSG_PROM_USERNAME / KSG_PROM_PASSWORD);
+	// config.Validate guarantees the pair is set together or not at all. The
+	// startup log above must never carry the credential values.
+	var promOpts []promql.Option
+	if cfg.PromUsername != "" {
+		promOpts = append(promOpts, promql.WithBasicAuth(cfg.PromUsername, cfg.PromPassword))
+	}
+	promClient, err := promql.New(cfg.PromURL, metrics, promOpts...)
 	if err != nil {
 		return fmt.Errorf("promql client: %w", err)
 	}

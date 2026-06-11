@@ -30,17 +30,61 @@ type Client struct {
 	metrics Metrics
 }
 
+// Option configures optional Client behaviour at construction time.
+type Option func(*clientOptions)
+
+type clientOptions struct {
+	username string
+	password string
+}
+
+// WithBasicAuth attaches HTTP Basic Auth credentials to every outbound
+// upstream request. Empty username and password is a no-op. The credential
+// values are held on the transport only — they are never logged, attached to
+// spans, or included in error messages.
+func WithBasicAuth(username, password string) Option {
+	return func(o *clientOptions) {
+		o.username = username
+		o.password = password
+	}
+}
+
+// basicAuthTransport sets an Authorization: Basic header on a clone of each
+// request (RoundTrippers must not mutate the caller's request) and delegates
+// to the inner transport.
+type basicAuthTransport struct {
+	inner    http.RoundTripper
+	username string
+	password string
+}
+
+func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.SetBasicAuth(t.username, t.password)
+	return t.inner.RoundTrip(clone)
+}
+
 // New constructs a Client targeting the supplied URL. metrics may be nil
 // (no-op). The HTTP transport is wrapped with otelhttp so outbound PromQL
 // requests propagate W3C traceparent headers and emit a client span per call.
-func New(promURL string, metrics Metrics) (*Client, error) {
-	base := &http.Transport{
+// The transport chain is otelhttp → basicAuth (when WithBasicAuth is given) →
+// base, so the traced request is the final authenticated one; otelhttp records
+// method/URL/status only, never headers.
+func New(promURL string, metrics Metrics, opts ...Option) (*Client, error) {
+	var o clientOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	var rt http.RoundTripper = &http.Transport{
 		MaxIdleConnsPerHost: 16,
 		IdleConnTimeout:     30 * time.Second,
 	}
+	if o.username != "" || o.password != "" {
+		rt = &basicAuthTransport{inner: rt, username: o.username, password: o.password}
+	}
 	c, err := promapi.NewClient(promapi.Config{
 		Address:      promURL,
-		RoundTripper: otelhttp.NewTransport(base),
+		RoundTripper: otelhttp.NewTransport(rt),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("prometheus client: %w", err)
