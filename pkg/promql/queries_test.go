@@ -42,7 +42,7 @@ func TestRender_ServiceGraphExcludesSentinelPeers(t *testing.T) {
 
 func TestRender_NodeAddressesIncludesExternalIPSelector(t *testing.T) {
 	got := Render(QNodeAddresses, time.Minute)
-	assert.Contains(t, got, `type="ExternalIP"`)
+	assert.Contains(t, got, `type=~"ExternalIP|InternalIP"`)
 }
 
 // TestRenderer_PrefixApplied covers the additive metric-name prefix knob
@@ -57,7 +57,7 @@ func TestRenderer_PrefixApplied(t *testing.T) {
 	}{
 		{"pod-info", QPodInfo, time.Minute, "last_over_time(o11y_kube_pod_info[1m])"},
 		{"node-info", QNodeInfo, time.Minute, "last_over_time(o11y_kube_node_info[1m])"},
-		{"node-addresses", QNodeAddresses, time.Minute, `last_over_time(o11y_kube_node_status_addresses{type="ExternalIP"}[1m])`},
+		{"node-addresses", QNodeAddresses, time.Minute, `last_over_time(o11y_kube_node_status_addresses{type=~"ExternalIP|InternalIP"}[1m])`},
 		{"pvc-bindings", QPVCBindings, time.Minute, "last_over_time(o11y_kube_pod_spec_volumes_persistentvolumeclaims_info[1m])"},
 		{"node-labels", QNodeLabels, time.Minute, "last_over_time(o11y_kube_node_labels[1m])"},
 		{"service-info", QServiceInfo, time.Minute, "last_over_time(o11y_kube_service_info[1m])"},

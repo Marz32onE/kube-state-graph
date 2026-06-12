@@ -60,6 +60,8 @@ kube_pod_info{cluster="cluster-beta",namespace="billing",pod="payments",uid="bet
 kube_node_info{cluster="cluster-alpha",node="worker-0",test=%q} 1 %d
 kube_node_info{cluster="cluster-beta",node="worker-0",test=%q} 1 %d
 kube_node_status_addresses{cluster="cluster-alpha",node="worker-0",type="ExternalIP",address="203.0.113.10",test=%q} 1 %d
+kube_node_status_addresses{cluster="cluster-alpha",node="worker-0",type="InternalIP",address="10.0.0.7",test=%q} 1 %d
+kube_node_status_addresses{cluster="cluster-beta",node="worker-0",type="InternalIP",address="10.0.1.7",test=%q} 1 %d
 traces_service_graph_request_total{client="checkout",server="cart",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} 0 %d
 traces_service_graph_request_total{client="checkout",server="cart",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="alpha-2",client_k8s_namespace_name="shop",server_k8s_namespace_name="shop",connection_type="virtual_node",test=%q} %g %d
 traces_service_graph_request_total{client="checkout",server="payments",cluster="cluster-alpha",client_k8s_pod_uid="alpha-1",server_k8s_pod_uid="beta-1",client_k8s_namespace_name="shop",server_k8s_namespace_name="billing",connection_type="virtual_node",test=%q} 0 %d
@@ -69,6 +71,7 @@ traces_service_graph_request_total{client="https://payments.partner.example/api"
 `,
 		disc, t1, disc, t1, disc, t1,
 		disc, t1, disc, t1, disc, t1,
+		disc, t1, disc, t1,
 		disc, t0, disc, v(rateCheckoutCart), t1,
 		disc, t0, disc, v(rateCheckoutPayments), t1,
 		disc, t0, disc, v(rateExternalToCheckout), t1,
@@ -146,6 +149,45 @@ func (s *GraphSuite) TestCrossClusterEdgePresent() {
 	s.Contains(bodyStr, `"cluster":"cluster-alpha"`)
 	s.NotContains(bodyStr, `"client_cluster"`, "v1 edges must not carry client_cluster")
 	s.NotContains(bodyStr, `"server_cluster"`, "v1 edges must not carry server_cluster")
+}
+
+// TestNodeIPAddressFallback — K8s node ipaddress resolution against real
+// ingested kube_node_status_addresses series: cluster-alpha/worker-0 has both
+// ExternalIP and InternalIP rows (ExternalIP wins); cluster-beta/worker-0 has
+// only an InternalIP row (fallback surfaces it). IPs never appear in labels.
+func (s *GraphSuite) TestNodeIPAddressFallback() {
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Elements struct {
+			Nodes []struct {
+				Data struct {
+					ID        string            `json:"id"`
+					Type      string            `json:"type"`
+					IPAddress []string          `json:"ipaddress"`
+					Labels    map[string]string `json:"labels"`
+				} `json:"data"`
+			} `json:"nodes"`
+		} `json:"elements"`
+	}
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+
+	ips := map[string][]string{}
+	for _, n := range body.Elements.Nodes {
+		if n.Data.Type != "node" {
+			continue
+		}
+		ips[n.Data.ID] = n.Data.IPAddress
+		s.NotContains(n.Data.Labels, "external_ip", "labels.external_ip must not be emitted")
+		s.NotContains(n.Data.Labels, "internal_ip", "labels.internal_ip must not be emitted")
+	}
+	s.Equal([]string{"203.0.113.10"}, ips["cluster-alpha/worker-0"],
+		"ExternalIP wins when both address types present")
+	s.Equal([]string{"10.0.1.7"}, ips["cluster-beta/worker-0"],
+		"InternalIP fallback when no ExternalIP row exists")
 }
 
 func (s *GraphSuite) TestNameFilter_PodAnchor() {

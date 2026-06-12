@@ -131,6 +131,59 @@ func TestParseTopology_ExternalIPDeterministic(t *testing.T) {
 	assert.Equal(t, fwd.Nodes[0].IPAddress(), rev.Nodes[0].IPAddress(), "order-independent")
 }
 
+// TestParseTopology_InternalIPFallback — a node with only InternalIP rows
+// surfaces the InternalIP on IPAddress; ExternalIP wins whenever present,
+// regardless of upstream vector order; with neither type no IP is emitted;
+// duplicate samples within a type resolve lexically-smallest (D6).
+func TestParseTopology_InternalIPFallback(t *testing.T) {
+	addr := func(typ, a string) model.Sample {
+		return model.Sample{Metric: model.Metric{
+			"cluster": "c", "node": "w0",
+			"type":    model.LabelValue(typ),
+			"address": model.LabelValue(a),
+		}}
+	}
+	nodeVec := sampleVec(model.Sample{Metric: model.Metric{"cluster": "c", "node": "w0"}})
+
+	t.Run("internal-only falls back", func(t *testing.T) {
+		tp := parseTopology(topologyVectors{Node: nodeVec, Addr: sampleVec(addr("InternalIP", "10.0.0.7"))})
+		require.Len(t, tp.Nodes, 1)
+		assert.Equal(t, []string{"10.0.0.7"}, tp.Nodes[0].IPAddress())
+		_, hasInternalIP := tp.Nodes[0].Labels()["internal_ip"]
+		assert.False(t, hasInternalIP, "internal_ip must not appear in labels")
+	})
+
+	t.Run("external wins order-independently", func(t *testing.T) {
+		fwd := parseTopology(topologyVectors{Node: nodeVec, Addr: sampleVec(addr("InternalIP", "10.0.0.7"), addr("ExternalIP", "203.0.113.10"))})
+		rev := parseTopology(topologyVectors{Node: nodeVec, Addr: sampleVec(addr("ExternalIP", "203.0.113.10"), addr("InternalIP", "10.0.0.7"))})
+		require.Len(t, fwd.Nodes, 1)
+		require.Len(t, rev.Nodes, 1)
+		assert.Equal(t, []string{"203.0.113.10"}, fwd.Nodes[0].IPAddress())
+		assert.Equal(t, fwd.Nodes[0].IPAddress(), rev.Nodes[0].IPAddress(), "order-independent")
+	})
+
+	t.Run("duplicate internal samples pick lexically-smallest", func(t *testing.T) {
+		fwd := parseTopology(topologyVectors{Node: nodeVec, Addr: sampleVec(addr("InternalIP", "10.0.0.9"), addr("InternalIP", "10.0.0.10"))})
+		rev := parseTopology(topologyVectors{Node: nodeVec, Addr: sampleVec(addr("InternalIP", "10.0.0.10"), addr("InternalIP", "10.0.0.9"))})
+		require.Len(t, fwd.Nodes, 1)
+		assert.Equal(t, []string{"10.0.0.10"}, fwd.Nodes[0].IPAddress(),
+			"lexically-smallest address wins") // "10.0.0.10" < "10.0.0.9" lexically
+		assert.Equal(t, fwd.Nodes[0].IPAddress(), rev.Nodes[0].IPAddress(), "order-independent")
+	})
+
+	t.Run("non-IP address types ignored", func(t *testing.T) {
+		tp := parseTopology(topologyVectors{Node: nodeVec, Addr: sampleVec(addr("Hostname", "w0.example.internal"))})
+		require.Len(t, tp.Nodes, 1)
+		assert.Nil(t, tp.Nodes[0].IPAddress(), "Hostname rows must never reach ipaddress")
+	})
+
+	t.Run("no address rows omits IP", func(t *testing.T) {
+		tp := parseTopology(topologyVectors{Node: nodeVec})
+		require.Len(t, tp.Nodes, 1)
+		assert.Nil(t, tp.Nodes[0].IPAddress())
+	})
+}
+
 // TestParseTopology_NodeLabelMergeDeterministic — two kube_node_labels series
 // for the same node disagreeing on a label key must resolve to the
 // lexically-smallest value regardless of upstream vector order (D6).

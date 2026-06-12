@@ -181,6 +181,20 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 	return t, nil
 }
 
+// nodeAddrs holds the best (lexically-smallest) address seen per type for one
+// (cluster, node). ExternalIP wins over InternalIP regardless of sample order.
+type nodeAddrs struct {
+	external string
+	internal string
+}
+
+func (a nodeAddrs) pick() string {
+	if a.external != "" {
+		return a.external
+	}
+	return a.internal
+}
+
 func parseTopology(v topologyVectors) Topology {
 	clusters := map[string]struct{}{}
 
@@ -198,21 +212,36 @@ func parseTopology(v topologyVectors) Topology {
 	// compound grouping — never a label, never serialised).
 	pvcStorageClass := resolvePVCStorageClass(v.PVCInfo, mc)
 
-	// External IP map: (cluster, node-name) -> IP.
-	externalIPs := map[[2]string]string{}
+	// Node IP map: (cluster, node-name) -> {ExternalIP, InternalIP}.
+	// ExternalIP is preferred at assembly; InternalIP is the fallback for
+	// nodes without one (private / NATed node pools). Other address types
+	// are ignored even if a wider selector ever leaks them — hostnames must
+	// never reach `ipaddress`.
+	nodeIPs := map[[2]string]nodeAddrs{}
 	for _, s := range v.Addr {
 		cluster := mc.bucket(promql.QNodeAddresses, string(s.Metric["cluster"]))
 		nodeName := string(s.Metric["node"])
 		typ := string(s.Metric["type"])
 		addr := string(s.Metric["address"])
-		if typ == "ExternalIP" && addr != "" {
+		if addr != "" && (typ == "ExternalIP" || typ == "InternalIP") {
 			key := [2]string{cluster, nodeName}
+			cur := nodeIPs[key]
 			// Deterministic pick: lexically-smallest address wins on duplicate
-			// (cluster, node) samples, so the emitted IP is a pure function of
-			// the data, not upstream vector order (D6 determinism).
-			if cur, ok := externalIPs[key]; !ok || addr < cur {
-				externalIPs[key] = addr
+			// (cluster, node) samples WITHIN each address type, so the emitted
+			// IP is a pure function of the data, not upstream vector order
+			// (D6 determinism). The external-over-internal preference is
+			// applied at node assembly.
+			switch typ {
+			case "ExternalIP":
+				if cur.external == "" || addr < cur.external {
+					cur.external = addr
+				}
+			case "InternalIP":
+				if cur.internal == "" || addr < cur.internal {
+					cur.internal = addr
+				}
 			}
+			nodeIPs[key] = cur
 		}
 		clusters[cluster] = struct{}{}
 	}
@@ -261,7 +290,7 @@ func parseTopology(v topologyVectors) Topology {
 		// relies on.
 		labels["cluster"] = cluster
 		var ips []string
-		if ip, ok := externalIPs[[2]string{cluster, nodeName}]; ok && ip != "" {
+		if ip := nodeIPs[[2]string{cluster, nodeName}].pick(); ip != "" {
 			ips = []string{ip}
 		}
 		nodes = append(nodes, &graph.K8sNode{

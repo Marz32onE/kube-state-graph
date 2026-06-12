@@ -99,8 +99,10 @@ func (r Renderer) Render(q Query, window time.Duration) string {
 	case QNodeInfo:
 		return fmt.Sprintf(`last_over_time(%skube_node_info[%s])`, r.Prefix, w)
 	case QNodeAddresses:
-		// External IP only; topology reader filters further if needed.
-		return fmt.Sprintf(`last_over_time(%skube_node_status_addresses{type="ExternalIP"}[%s])`, r.Prefix, w)
+		// ExternalIP preferred, InternalIP fallback; anchored alternation
+		// selects exactly the two types — the topology reader applies the
+		// preference at parse time.
+		return fmt.Sprintf(`last_over_time(%skube_node_status_addresses{type=~"ExternalIP|InternalIP"}[%s])`, r.Prefix, w)
 	case QPVCBindings:
 		return fmt.Sprintf(`last_over_time(%skube_pod_spec_volumes_persistentvolumeclaims_info[%s])`, r.Prefix, w)
 	case QNodeLabels:
