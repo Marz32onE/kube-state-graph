@@ -122,16 +122,41 @@ live under `openspec/specs/`.
   count. **Both** in-cluster DNS forms resolve to the **service** — there is no
   per-pod resolution; a `"://"` endpoint is never a pod:
   - **2 labels** `<service>.<namespace>` and **3 labels**
-    `<pod>.<service>.<namespace>` (headless per-pod) both → a `type="service"`
-    node (`id="<cluster>/<namespace>/<service>"`, `labels={cluster,namespace}`,
+    `<pod>.<service>.<namespace>` (headless per-pod) both → the addressed
+    `(namespace, service)`, resolved by **cluster-family fan-out**: the
+    `(namespace, service)` is looked up in the `ServicesByNameNS` of **every
+    loaded cluster in the caller's family** — two clusters are in one family
+    iff their names are equal after replacing every maximal digit run with a
+    single `0` sentinel (`prod-03` ↔ `prod-12` match; `staging-1` ≠ `prod-1`;
+    digit-free names form exact-name singleton families; the sentinel being a
+    digit makes the mapping collision-free without escaping). The family is
+    anchored on the **UID-recovered client-pod cluster** when the client side
+    resolved to a topology pod (the trace `cluster` label is frequently
+    missing or wrong), falling back to the raw trace label otherwise; edge
+    `labels.cluster` always stays the raw trace label (D9). The anchor cluster
+    is not special — just a family member. **Each** family cluster holding the
+    service materialises its own `type="service"` node
+    (`id="<cluster>/<namespace>/<service>"`, `labels={cluster,namespace}`,
     `ipaddress=[cluster_ip]` unless headless `cluster_ip="None"`) plus on-demand
-    `service-selects-pod` edges (service → pod, intra-cluster) fanning out to each
-    backing pod. The 3-label form drops the leading pod-hostname and resolves as
-    its parent service. A known service with zero backing endpoints still
-    materialises the service node, with no fan-out edges.
+    `service-selects-pod` edges (service → pod, always intra-cluster within the
+    resolved service's own cluster) fanning out to each backing pod, and yields
+    one `pod-calls-service` edge per match (one series → N edges; such edges
+    MAY be cross-cluster). Candidate clusters are iterated in sorted order
+    (determinism). The family rule (`build.clusterFamilyKey`) is a hardcoded
+    pure string function — no knob, no PromQL change (filtering is in-memory
+    at resolution, preserving "no filters pushed to PromQL"). The 3-label form
+    drops the leading pod-hostname and resolves as its parent service. A known
+    service with zero backing endpoints still materialises the service node,
+    with no fan-out edges. When BOTH sides of a series are `"://"` labels
+    resolving to service sets, the cross product of edges is emitted.
   - **unresolvable** (host not a 2/3-label `.svc` name, or service absent from
-    the trace cluster's topology) → an `external` node (`id="external/<label>"`,
-    `labels={}`) with the verbatim label as `name`.
+    **every family cluster's** topology — incl. a missing trace `cluster` label
+    bucketed to `"unknown"` when the client side is also non-pod, whose
+    digit-free family matches no real cluster) → an `external` node
+    (`id="external/<label>"`, `labels={}`) with the verbatim label as `name`.
+  - A series with a **wholly empty side** (no UID, no label) is dropped before
+    any resolution — the other side's `"://"` label must not leak service /
+    external nodes or fan-out edges as an orphan subgraph.
   A client-side `"://"` label resolves to `service` or `external` (never a pod),
   so the edge `labels.cluster` is always omitted for it.
 - **Missing pod-UID human-label fallback** (D27, always on): when
@@ -140,8 +165,9 @@ live under `openspec/specs/`.
   that endpoint is promoted to `external/<label>` (no cluster prefix; `labels={}`)
   instead of dropping the edge. Per-endpoint resolution order:
   (1) connection-string resolution (`"://"` in the label, empty UID) →
-  `service` (+ `service-selects-pod` fan-out) or `external` per the D29 rule above
-  (never a pod);
+  one `service` node per family cluster holding it (+ each cluster's own
+  `service-selects-pod` fan-out) or `external` on zero family matches, per the
+  D29 cluster-family rule above (never a pod);
   (2) UID-based pod resolution / synth-pod fallback (only when UID is non-empty);
   (3) missing-UID human-label fallback (this rule) → external with `labels={}`
   (**only for non-`"://"` labels**);
@@ -201,10 +227,11 @@ live under `openspec/specs/`.
   registry shared with the builder. Adding an edge type = update both the
   builder and the registry in the same change; the API can never list a type
   the builder cannot produce. Current edge types include `pod-calls-pod`,
-  `pod-calls-service` (emitted when a `"://"` connection-string resolves to an
-  in-cluster service node; always intra-cluster), and `service-selects-pod`
-  (directed service → pod, intra-cluster; emitted on demand by the D29
-  connection-string resolution).
+  `pod-calls-service` (emitted when a `"://"` connection-string resolves to
+  in-cluster service nodes via the D29 cluster-family fan-out; MAY be
+  cross-cluster — `may_cross_cluster: true`), and `service-selects-pod`
+  (directed service → pod, always intra-cluster within the resolved service's
+  own cluster; emitted on demand by the D29 connection-string resolution).
 - **API-key auth is the only HTTP auth in v1.** Header is `X-API-Key`. Keys
   come from `--api-keys-file` (K8s `Secret` mount, hot-reloaded) or
   `--api-keys`. Empty keyset = auth disabled (dev default). Open paths

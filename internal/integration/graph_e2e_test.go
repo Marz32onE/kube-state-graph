@@ -15,6 +15,7 @@ import (
 	"github.com/marz32one/kube-state-graph/internal/config"
 	"github.com/marz32one/kube-state-graph/pkg/clock"
 	"github.com/marz32one/kube-state-graph/pkg/cytoscape"
+	"github.com/marz32one/kube-state-graph/pkg/graph"
 )
 
 // fixedNow is the absolute timestamp anchor every fixture and query uses.
@@ -428,6 +429,88 @@ traces_service_graph_request_total{client="checkout",server="https://selfloop-sv
 		"resolved service fans out to its backing pod")
 }
 
+// TestConnStringFamilyFanoutCrossCluster exercises the D29 cluster-family
+// fan-out end-to-end against a real VM: the client pod lives in prod-1 but the
+// addressed Service exists ONLY in prod-2 — a same-family cluster (both
+// normalise to "prod-0"). Pre-fan-out this degraded to an external node; now
+// the (namespace, service) resolves in prod-2, materialising the prod-2
+// service node, a cross-cluster pod-calls-service edge (prod-1 pod →
+// prod-2 service, labels.cluster=prod-1), and the intra-prod-2
+// service-selects-pod fan-out to the backing pod.
+func (s *GraphSuite) TestConnStringFamilyFanoutCrossCluster() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP kube_pod_info dummy
+kube_pod_info{cluster="prod-1",namespace="shop",pod="fanout-client",uid="fam-1",node="worker-0",test=%q} 1 %d
+kube_pod_info{cluster="prod-2",namespace="shop",pod="fanout-nats-0",uid="fam-n2",node="worker-0",test=%q} 1 %d
+kube_node_info{cluster="prod-1",node="worker-0",test=%q} 1 %d
+kube_node_info{cluster="prod-2",node="worker-0",test=%q} 1 %d
+kube_service_info{cluster="prod-2",namespace="shop",service="fanout-svc",cluster_ip="10.96.0.88",test=%q} 1 %d
+kube_endpointslice_labels{cluster="prod-2",namespace="shop",endpointslice="fanout-svc-x1",label_kubernetes_io_service_name="fanout-svc",test=%q} 1 %d
+kube_endpointslice_endpoints{cluster="prod-2",namespace="shop",endpointslice="fanout-svc-x1",targetref_kind="Pod",targetref_name="fanout-nats-0",targetref_namespace="shop",test=%q} 1 %d
+traces_service_graph_request_total{client="fanout-client",server="nats://fanout-svc.shop.svc:4222",cluster="prod-1",client_k8s_pod_uid="fam-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="fanout-client",server="nats://fanout-svc.shop.svc:4222",cluster="prod-1",client_k8s_pod_uid="fam-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	s.Require().True(s.WaitForSeries(`kube_service_info{service="fanout-svc",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested fanout kube_service_info")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// The prod-2 service node materialised even though the trace came from prod-1.
+	s.Contains(bodyStr, `"id":"prod-2/shop/fanout-svc"`,
+		"same-family cluster's service must resolve for a prod-1 trace")
+	s.Contains(bodyStr, `"target":"prod-2/shop/fanout-svc"`,
+		"pod-calls-service edge crosses from the prod-1 pod to the prod-2 service node")
+	s.Contains(bodyStr, `"source":"prod-1/fam-1"`)
+	// No external fallback for the resolved connection string.
+	s.NotContains(bodyStr, `external/nats://fanout-svc.shop.svc:4222`,
+		"a family-resolved connection string must not also produce an external node")
+	// Intra-prod-2 fan-out to the backing pod.
+	s.Contains(bodyStr, `"target":"prod-2/fam-n2"`,
+		"service-selects-pod fan-out stays inside the resolved service's own cluster")
+}
+
+// TestConnStringOutOfFamilyServiceFallsBackToExternal is the family-scoping
+// negative: the addressed Service exists ONLY in staging-1, whose family key
+// ("staging-0") differs from the trace source prod-1 ("prod-0"). The
+// connection string must NOT resolve cross-family and falls back to the
+// external/<label> node (D-C).
+func (s *GraphSuite) TestConnStringOutOfFamilyServiceFallsBackToExternal() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP kube_pod_info dummy
+kube_pod_info{cluster="prod-1",namespace="shop",pod="outfam-client",uid="outfam-1",node="worker-0",test=%q} 1 %d
+kube_node_info{cluster="prod-1",node="worker-0",test=%q} 1 %d
+kube_node_info{cluster="staging-1",node="worker-0",test=%q} 1 %d
+kube_service_info{cluster="staging-1",namespace="shop",service="outfam-svc",cluster_ip="10.96.0.99",test=%q} 1 %d
+traces_service_graph_request_total{client="outfam-client",server="nats://outfam-svc.shop.svc:4222",cluster="prod-1",client_k8s_pod_uid="outfam-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="outfam-client",server="nats://outfam-svc.shop.svc:4222",cluster="prod-1",client_k8s_pod_uid="outfam-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t1, disc, t1, disc, t1, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	s.Require().True(s.WaitForSeries(`kube_service_info{service="outfam-svc",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested out-of-family kube_service_info")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	s.NotContains(bodyStr, `staging-1/shop/outfam-svc`,
+		"an out-of-family cluster's service must NOT be resolved for a prod-1 trace")
+	s.Contains(bodyStr, `"id":"external/nats://outfam-svc.shop.svc:4222"`,
+		"zero family matches must fall back to the external/<label> node")
+}
+
 // TestSentinelPeersExcludedAtQueryLayer exercises design.md D30 end-to-end
 // against a real VM: the servicegraph connector's virtual peers (client="user",
 // server="unknown") are dropped by the anchored selector matchers
@@ -502,6 +585,19 @@ func (s *GraphSuite) TestEdgeTypesCatalogue() {
 	for _, et := range []string{"pod-mounts-pvc", "pod-calls-pod", "pod-calls-service", "service-selects-pod"} {
 		s.Contains(string(body), et)
 	}
+
+	// may_cross_cluster contract: pod-calls-service flipped to true by the D29
+	// cluster-family fan-out; service-selects-pod stays intra-cluster.
+	var catalogue struct {
+		EdgeTypes []graph.EdgeTypeDefinition `json:"edge_types"`
+	}
+	s.Require().NoError(json.Unmarshal(body, &catalogue))
+	got := map[graph.EdgeType]bool{}
+	for _, et := range catalogue.EdgeTypes {
+		got[et.Type] = et.MayCrossCluster
+	}
+	s.True(got["pod-calls-service"], "pod-calls-service may_cross_cluster must be true (cluster-family fan-out)")
+	s.False(got["service-selects-pod"], "service-selects-pod must stay intra-cluster")
 }
 
 // TestPodMountsPVCEdgePresent (F8) closes the integration gap for the

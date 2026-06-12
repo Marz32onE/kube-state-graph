@@ -34,7 +34,13 @@ func NewGraph(nodes []GraphNode, edges []*Edge, builtAt time.Time) *Graph {
 	for _, n := range nodes {
 		// ServiceID mirrors PVCID keying, so a Service and a PVC sharing
 		// (cluster, namespace, name) mint byte-identical IDs. Changing the ID
-		// grammar is a v2 wire-format break, so dedupe here instead.
+		// grammar is a v2 wire-format break, so dedupe here instead. Known
+		// consequence: edges minted against the dropped node's ID (e.g.
+		// pod-calls-service edges whose service node lost to a same-ID PVC)
+		// resolve to the surviving node's type, violating the catalogue's
+		// source/target-type contract for that edge. The D29 cluster-family
+		// fan-out widens the collision window from the trace-source cluster
+		// to every family cluster — tracked as a v2 ID-grammar fix.
 		// Deterministic dedupe: the FIRST node wins — the input slice order is
 		// deterministic (build's assemble appends authoritative topology nodes
 		// before on-demand service-graph nodes), so the winner is a pure
@@ -91,23 +97,36 @@ func (g *Graph) NodeCountByKind() map[[2]string]int {
 }
 
 // EdgeCountByType returns counts grouped by edge type and a "true"|"false"
-// cross-cluster bucket. Cross-cluster status for `pod-calls-pod` edges is
-// derived by comparing the resolved source-node and target-node `cluster`
-// labels (the edge itself only carries the trace-source / client-side
-// cluster). Edges whose endpoints are missing or external are bucketed as
-// "false".
+// cross-cluster bucket. Cross-cluster status is derived for EVERY edge by
+// comparing the resolved source-node and target-node `cluster` labels (the
+// edge itself only carries the trace-source / client-side cluster) — this
+// covers both pod-calls-pod (server pod recovered via the UID index) and
+// pod-calls-service (service resolved via the D29 cluster-family fan-out).
+// Always-intra-cluster types bucket as "false" by construction; edges whose
+// endpoints are missing or external are bucketed as "false".
 func (g *Graph) EdgeCountByType() map[[2]string]int {
 	out := map[[2]string]int{}
 	for _, e := range g.Edges {
 		cross := "false"
-		if e.Type == EdgeTypePodCallsPod {
-			if g.isCrossCluster(e) {
-				cross = "true"
-			}
+		if g.isCrossCluster(e) {
+			cross = "true"
 		}
 		out[[2]string{string(e.Type), cross}]++
 	}
 	return out
+}
+
+// CrossClusterEdgeCount returns the number of edges whose resolved endpoint
+// nodes live in different clusters — any edge type, same derivation as
+// EdgeCountByType's "true" bucket.
+func (g *Graph) CrossClusterEdgeCount() int {
+	n := 0
+	for _, e := range g.Edges {
+		if g.isCrossCluster(e) {
+			n++
+		}
+	}
+	return n
 }
 
 // isCrossCluster returns true when both endpoints of the edge are non-external

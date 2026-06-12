@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,13 +55,27 @@ func ReadServiceGraph(
 // service-selects-pod edges are materialised on demand (only for services a
 // "://" connection string actually references) and deduped here.
 type sgResolver struct {
-	topology  Topology
-	podByID   map[string]*graph.PodNode // client side: cluster known from metric
-	podByUID  map[string]*graph.PodNode // server side: cluster recovered via index
-	externals map[string]*graph.ExternalNode
-	synthPods map[string]*graph.PodNode
-	services  map[string]*graph.ServiceNode // keyed by service id
-	svcEdges  map[string]*graph.Edge        // service-selects-pod, keyed by "svcID|podID"
+	endpointsByService map[serviceKey][]EndpointObs // service-selects-pod fan-out source
+	podByID            map[string]*graph.PodNode    // client side: cluster known from metric
+	podByUID           map[string]*graph.PodNode    // server side: cluster recovered via index
+	svcCandidates      map[famSvcKey][]svcCandidate
+	connStringIDs      map[string][]string // memo: familyCluster+"|"+label → resolved IDs
+	externals          map[string]*graph.ExternalNode
+	synthPods          map[string]*graph.PodNode
+	services           map[string]*graph.ServiceNode // keyed by service id
+	svcEdges           map[string]*graph.Edge        // service-selects-pod, keyed by "svcID|podID"
+}
+
+// famSvcKey keys the D29 fan-out candidate index: the service identity a
+// "://" host classifies to, scoped by cluster family. Folding the family into
+// the key makes per-endpoint resolution a direct map hit and keeps the family
+// rule encoded in exactly one place (the index build).
+type famSvcKey struct{ family, namespace, service string }
+
+// svcCandidate is one cluster's deployment of a (namespace, service).
+type svcCandidate struct {
+	cluster string
+	obs     ServiceObs
 }
 
 func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
@@ -77,14 +92,32 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 		podByID[p.ID()] = p
 	}
 
+	// Inverted index for the D29 family fan-out: (family, namespace, service)
+	// → that family's clusters deploying the service, sorted by cluster so
+	// fan-out emission is a pure function of the data, independent of map
+	// iteration order (D6). Built once per parse; per-"://"-endpoint
+	// resolution is then a single map hit. (Filtering the sorted
+	// ClustersObserved list per endpoint would also work — the index just
+	// keeps the family rule in one place.)
+	svcCandidates := make(map[famSvcKey][]svcCandidate, len(topology.ServicesByNameNS))
+	for k, obs := range topology.ServicesByNameNS {
+		key := famSvcKey{family: clusterFamilyKey(k.cluster), namespace: k.namespace, service: k.service}
+		svcCandidates[key] = append(svcCandidates[key], svcCandidate{cluster: k.cluster, obs: obs})
+	}
+	for _, cands := range svcCandidates {
+		sort.Slice(cands, func(i, j int) bool { return cands[i].cluster < cands[j].cluster })
+	}
+
 	res := &sgResolver{
-		topology:  topology,
-		podByID:   podByID,
-		podByUID:  topology.PodsByUID,
-		externals: map[string]*graph.ExternalNode{},
-		synthPods: map[string]*graph.PodNode{},
-		services:  map[string]*graph.ServiceNode{},
-		svcEdges:  map[string]*graph.Edge{},
+		endpointsByService: topology.EndpointsByService,
+		podByID:            podByID,
+		podByUID:           topology.PodsByUID,
+		svcCandidates:      svcCandidates,
+		connStringIDs:      map[string][]string{},
+		externals:          map[string]*graph.ExternalNode{},
+		synthPods:          map[string]*graph.PodNode{},
+		services:           map[string]*graph.ServiceNode{},
+		svcEdges:           map[string]*graph.Edge{},
 	}
 
 	// Dedup pod-calls-pod by (srcID, tgtID). Multiple upstream series can
@@ -117,28 +150,59 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 
 		clientUID, serverUID = normalizeSelfLoopUIDs(clientUID, serverUID, clientLabel, serverLabel)
 
-		srcID, srcIsPod := res.resolveClient(clientLabel, traceCluster, clientUID, clientNS)
-		tgtID := res.resolveServer(serverLabel, traceCluster, serverUID, serverNS)
-
-		if srcID == "" || tgtID == "" {
+		// Drop the series BEFORE any resolution when either side is wholly
+		// empty (no UID, no label): no edge can exist, and resolving the
+		// other side anyway would leak its materialisation side effects
+		// (service / external nodes plus service-selects-pod fan-out) as an
+		// orphan subgraph — amplified by family size under the D29 fan-out.
+		if (clientUID == "" && clientLabel == "") || (serverUID == "" && serverLabel == "") {
 			continue
 		}
 
-		key := pairKey{src: srcID, tgt: tgtID}
-		if prev, dup := pairs[key]; dup {
-			// Deterministic dedupe: multiple upstream series can resolve to the
-			// same (src, tgt) pair while carrying different trace `cluster`
-			// labels (e.g. one missing → "unknown", the client pod recovered via
-			// the cluster-agnostic UID index). Keep the lexically-smaller
-			// srcCluster so the emitted edge's labels.cluster is a pure function
-			// of the data, not vector arrival order (D6). srcIsPod is identical
-			// for a given srcID, so only srcCluster needs the tie-break.
-			if traceCluster < prev.srcCluster {
-				pairs[key] = aggEdge{srcIsPod: srcIsPod, srcCluster: traceCluster}
+		// Each side resolves to a SET of node IDs: a "://" endpoint may fan out
+		// to one service node per family cluster holding the addressed
+		// (namespace, service) (D29 cluster-family fan-out); every other path
+		// yields exactly one ID, and an empty set drops the side (and with it
+		// the series — the cross product below is then empty).
+		srcIDs, srcIsPod := res.resolveClient(clientLabel, traceCluster, clientUID, clientNS)
+
+		// Family scope for the server-side "://" path prefers the
+		// UID-recovered client-pod cluster over the raw trace label: the label
+		// is frequently missing (bucketed to "unknown") or disagrees with
+		// topology (see resolveClient), and `.svc` DNS is in-cluster relative
+		// to the CALLER — whose authoritative cluster is the resolved pod's,
+		// not the label's. Falls back to the trace label when the client side
+		// is not a topology pod. Edge labels.cluster is unaffected (still the
+		// raw trace label, per D9).
+		familyCluster := traceCluster
+		if srcIsPod && len(srcIDs) == 1 {
+			if pod, ok := res.podByID[srcIDs[0]]; ok {
+				if c := pod.Labels()["cluster"]; c != "" {
+					familyCluster = c
+				}
 			}
-			continue
 		}
-		pairs[key] = aggEdge{srcIsPod: srcIsPod, srcCluster: traceCluster}
+		tgtIDs := res.resolveServer(serverLabel, familyCluster, serverUID, serverNS)
+
+		// Cross product: any resolved source × any resolved target. The two
+		// sides' ambiguities are independent — when both are "://" sets, any
+		// family deployment of the source service may call any family
+		// deployment of the target service.
+		for _, srcID := range srcIDs {
+			for _, tgtID := range tgtIDs {
+				// Deterministic dedupe: multiple upstream series can resolve to the
+				// same (src, tgt) pair while carrying different trace `cluster`
+				// labels (e.g. one missing → "unknown", the client pod recovered via
+				// the cluster-agnostic UID index). Keep the lexically-smaller
+				// srcCluster so the emitted edge's labels.cluster is a pure function
+				// of the data, not vector arrival order (D6). srcIsPod is identical
+				// for a given srcID, so only srcCluster needs the tie-break.
+				key := pairKey{src: srcID, tgt: tgtID}
+				if prev, dup := pairs[key]; !dup || traceCluster < prev.srcCluster {
+					pairs[key] = aggEdge{srcIsPod: srcIsPod, srcCluster: traceCluster}
+				}
+			}
+		}
 	}
 
 	edges := make([]*graph.Edge, 0, len(pairs)+len(res.svcEdges))
@@ -217,35 +281,39 @@ func normalizeSelfLoopUIDs(clientUID, serverUID, clientLabel, serverLabel string
 
 // resolveEmptyUID resolves an endpoint that carries no pod UID — the shared
 // prologue for both the client and server sides. Per the D29 resolution order:
-//  1. a "://" label runs connection-string resolution (Stage 0: service / external)
+//  1. a "://" label runs connection-string resolution (Stage 0: services / external)
 //  3. a non-URL label promotes to an external node (D27 fallback)
 //  4. a wholly empty endpoint drops
 //
 // (Step 2, pod-UID resolution, is the caller's responsibility and only runs
-// for non-empty UIDs.) Returns (id, isPod); isPod is always false here — a
-// no-UID endpoint resolves to a service or external node, never a pod.
-func (r *sgResolver) resolveEmptyUID(label, traceCluster string) (string, bool) {
+// for non-empty UIDs.) A no-UID endpoint resolves to service or external
+// nodes, never a pod. Only Stage 0 can yield more than one ID (one service
+// node per family cluster holding the addressed service); the D27 fallback
+// yields exactly one and a wholly empty endpoint yields nil (drop).
+func (r *sgResolver) resolveEmptyUID(label, familyCluster string) []string {
 	if isConnString(label) {
-		return r.resolveConnString(label, traceCluster), false // Stage 0 — service or external, never a pod
+		return r.resolveConnString(label, familyCluster) // Stage 0 — services or external, never a pod
 	}
 	if label != "" {
-		return r.external(label), false // D27 fallback (non-URL only)
+		return []string{r.external(label)} // D27 fallback (non-URL only)
 	}
-	return "", false // drop
+	return nil // drop
 }
 
 // resolveClient resolves the client side of a service-graph series. Returns
-// (id, isPod). isPod is true when the resolved endpoint is a pod — real or
-// synthesised from a non-empty UID. A "://" connection string resolves to a
-// service or external node (never a pod). The client side knows its cluster from
+// (ids, isPod). isPod is true when the resolved endpoint is a pod — real or
+// synthesised from a non-empty UID; a pod is always exactly one ID, so
+// srcIsPod is uniform across the returned set. A "://" connection string
+// resolves to service or external nodes (never a pod) and is the only path
+// that can return more than one ID. The client side knows its cluster from
 // the metric's `cluster` label.
-func (r *sgResolver) resolveClient(label, traceCluster, podUID, namespace string) (string, bool) {
+func (r *sgResolver) resolveClient(label, traceCluster, podUID, namespace string) ([]string, bool) {
 	if podUID == "" {
-		return r.resolveEmptyUID(label, traceCluster)
+		return r.resolveEmptyUID(label, traceCluster), false
 	}
 	id := graph.PodID(traceCluster, podUID)
 	if _, ok := r.podByID[id]; ok {
-		return id, true
+		return []string{id}, true
 	}
 	// The trace's `cluster` label is frequently missing (bucketed to "unknown")
 	// or disagrees with the client pod's real topology cluster, so the
@@ -255,62 +323,89 @@ func (r *sgResolver) resolveClient(label, traceCluster, podUID, namespace string
 	// deployment would duplicate as an "unknown/<uid>" synth node. Only
 	// synthesise when the UID is unknown to BOTH indexes.
 	if pod, ok := r.podByUID[podUID]; ok {
-		return pod.ID(), true
+		return []string{pod.ID()}, true
 	}
 	r.synthPod(id, traceCluster, namespace, podUID)
-	return id, true
+	return []string{id}, true
 }
 
 // resolveServer mirrors resolveClient. The metric does not carry server-side
 // cluster, so pod-UID resolution recovers it via the global UID index; the
-// connection-string path uses the trace-source cluster (`.svc.cluster.local`
-// is in-cluster relative to the caller).
-func (r *sgResolver) resolveServer(label, traceCluster, podUID, namespace string) string {
+// connection-string path resolves across familyCluster's family
+// (`.svc.cluster.local` names route to any family member under mesh routing).
+// familyCluster is the caller's authoritative cluster: the UID-recovered
+// client-pod cluster when the client side resolved to a topology pod, else
+// the raw trace label (bucketed to "unknown" when missing).
+func (r *sgResolver) resolveServer(label, familyCluster, podUID, namespace string) []string {
 	if podUID == "" {
-		id, _ := r.resolveEmptyUID(label, traceCluster)
-		return id
+		return r.resolveEmptyUID(label, familyCluster)
 	}
 	if pod, ok := r.podByUID[podUID]; ok {
-		return pod.ID()
+		return []string{pod.ID()}
 	}
 	r.synthPod(graph.PodID("", podUID), "", namespace, podUID) // server cluster unknown
-	return graph.PodID("", podUID)
+	return []string{graph.PodID("", podUID)}
 }
 
 // resolveConnString implements D29 Stage 0 for a label containing "://". Every
-// recognised in-cluster reference resolves to its Service node — both the
+// recognised in-cluster reference resolves to Service nodes — both the
 // <service>.<namespace> form and the headless <pod-hostname>.<service>.<namespace>
-// form resolve to the same Service, which fans out service-selects-pod edges to
-// all of its backing pods. An unparseable host, a non-2/3-label name, or a
-// service absent from the trace cluster's topology falls back to an external node.
-// The result is therefore never a pod — Stage 0 yields a service or an external node.
-func (r *sgResolver) resolveConnString(label, traceCluster string) string {
+// form resolve to the same (service, namespace), looked up across
+// familyCluster's family; each match fans out service-selects-pod edges to
+// its own cluster's backing pods. An unparseable host, a non-2/3-label name,
+// or a service absent from every family cluster's topology falls back to an
+// external node. The result is therefore never a pod — Stage 0 yields service
+// nodes or a single external node.
+//
+// Results are memoised per (familyCluster, label): the same "://" label
+// recurs across many series (connection_type / peer variants), resolution is
+// a pure function of (label, family, topology), and materialisation is
+// idempotent (services / externals / svcEdges all dedupe), so caching the
+// resolved IDs is safe.
+func (r *sgResolver) resolveConnString(label, familyCluster string) []string {
+	memoKey := familyCluster + "|" + label
+	if ids, ok := r.connStringIDs[memoKey]; ok {
+		return ids
+	}
+	ids := r.resolveConnStringUncached(label, familyCluster)
+	r.connStringIDs[memoKey] = ids
+	return ids
+}
+
+func (r *sgResolver) resolveConnStringUncached(label, familyCluster string) []string {
 	if host := connStringHost(label); host != "" {
 		if svc, ns, ok := classifyK8sDNS(host); ok {
-			if id, ok := r.resolveServiceLevel(traceCluster, ns, svc); ok {
-				return id
+			if ids := r.resolveServiceLevel(familyCluster, ns, svc); len(ids) > 0 {
+				return ids
 			}
 		}
 	}
 	// Unresolvable: not a parseable host, not a 2/3-label k8s .svc name, or the
-	// service is absent from the trace cluster's topology → external node
+	// service is absent from every family cluster's topology → external node
 	// (labels={}, verbatim label as name). Keeps truly-external URLs and unknown
 	// in-cluster names visible.
-	return r.external(label)
+	return []string{r.external(label)}
 }
 
-// resolveServiceLevel resolves a `<service>.<namespace>` record to a service
-// node (materialising its service-selects-pod edges), scoped to the
-// trace-source cluster. A service absent from that cluster's topology is
-// unresolvable (the caller falls back to an others node). The cluster is
-// always known — the reader buckets a missing trace cluster to "unknown"
-// (bucketCluster), so lookups are cluster-scoped.
-func (r *sgResolver) resolveServiceLevel(cluster, ns, svc string) (string, bool) {
-	obs, ok := r.topology.ServicesByNameNS[serviceKey{cluster, ns, svc}]
-	if !ok {
-		return "", false
+// resolveServiceLevel resolves a `<service>.<namespace>` record to service
+// nodes (materialising their service-selects-pod edges), scoped to
+// familyCluster's FAMILY: every cluster whose clusterFamilyKey equals
+// familyCluster's AND which holds the (namespace, service) materialises its
+// own service node — familyCluster itself is not special, just a family
+// member. Candidates come from the per-parse svcCandidates index (sorted by
+// cluster at build, so the result is a pure function of the data — D6
+// determinism). An empty result means the service is absent from every
+// family cluster and the caller falls back to an external node. When the
+// client side resolved to no topology pod AND the trace cluster label was
+// missing, familyCluster is the "unknown" bucket, whose digit-free family
+// key matches only literal "unknown" — zero candidates, external fallback.
+func (r *sgResolver) resolveServiceLevel(familyCluster, ns, svc string) []string {
+	cands := r.svcCandidates[famSvcKey{family: clusterFamilyKey(familyCluster), namespace: ns, service: svc}]
+	ids := make([]string, 0, len(cands))
+	for _, cand := range cands {
+		ids = append(ids, r.materializeService(cand.cluster, ns, svc, cand.obs))
 	}
-	return r.materializeService(cluster, ns, svc, obs), true
+	return ids
 }
 
 // materializeService creates (once) a ServiceNode and its service-selects-pod
@@ -330,7 +425,7 @@ func (r *sgResolver) materializeService(cluster, ns, svc string, obs ServiceObs)
 		LabelsValue:    map[string]string{"cluster": cluster, "namespace": ns},
 		IPAddressValue: ips,
 	}
-	for _, ep := range r.topology.EndpointsByService[serviceKey{cluster, ns, svc}] {
+	for _, ep := range r.endpointsByService[serviceKey{cluster, ns, svc}] {
 		r.addServiceEdge(id, ep.Pod.ID(), ns)
 	}
 	return id

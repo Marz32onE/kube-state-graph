@@ -260,10 +260,10 @@ func (s *Server) discoverClusters(ctx context.Context) ([]ClusterInfo, error) {
 //	@Description	|---|---|---|---|
 //	@Description	| `pod-mounts-pvc` | pod → pvc | yes | no |
 //	@Description	| `pod-calls-pod` | pod \| service \| external → pod \| external | yes | yes |
-//	@Description	| `pod-calls-service` | pod \| service \| external → service | yes | no |
+//	@Description	| `pod-calls-service` | pod \| service \| external → service | yes | yes |
 //	@Description	| `service-selects-pod` | service → pod | yes | no |
 //	@Description
-//	@Description	A call endpoint whose pod UID is empty and whose `client`/`server` label is a `://` connection string is resolved (detection hardcoded, no operator knob) to a `service` node (when it names an in-cluster Service — the call edge is then `pod-calls-service`) or an `external` node otherwise; a non-URL missing-UID label resolves to an `external` node. `service-selects-pod` edges are materialised on demand from `service` nodes to their backing pods.
+//	@Description	A call endpoint whose pod UID is empty and whose `client`/`server` label is a `://` connection string is resolved (detection hardcoded, no operator knob) against every loaded cluster in the caller's family (cluster names equal after normalising digit runs; anchored on the UID-recovered client-pod cluster when available, else the trace-source label): each family cluster holding the addressed Service yields a `service` node and a `pod-calls-service` edge (which may therefore cross clusters); zero family matches yield an `external` node. A non-URL missing-UID label resolves to an `external` node. `service-selects-pod` edges are materialised on demand from `service` nodes to their own cluster's backing pods.
 //	@Description
 //	@Description	</details>
 //	@Tags			discovery

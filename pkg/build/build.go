@@ -119,21 +119,10 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	// Cross-cluster status is derived from the resolved endpoint nodes'
 	// `cluster` labels, since edges only carry the trace-source cluster
 	// (Option A: the metric does not stamp server-side cluster; it is
-	// recovered via the topology pod-UID index at parse time).
-	crossCluster := 0
-	for _, e := range g.Edges {
-		if e.Type != graph.EdgeTypePodCallsPod {
-			continue
-		}
-		src, srcOK := g.NodesByID[e.Source]
-		tgt, tgtOK := g.NodesByID[e.Target]
-		if !srcOK || !tgtOK {
-			continue
-		}
-		if src.Labels()["cluster"] != tgt.Labels()["cluster"] {
-			crossCluster++
-		}
-	}
+	// recovered via the topology pod-UID index at parse time). Any edge type
+	// counts — pod-calls-service edges may cross clusters via the D29
+	// cluster-family fan-out.
+	crossCluster := g.CrossClusterEdgeCount()
 	slog.InfoContext(ctx, "graph built",
 		"clusters", topology.ClustersObserved,
 		"nodes", len(g.NodesByID),
