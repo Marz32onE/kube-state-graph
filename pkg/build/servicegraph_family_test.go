@@ -179,19 +179,297 @@ func TestParseServiceGraph_FamilyFanout_WrongClusterLabelRecoversFamilyFromClien
 	assert.Empty(t, res.ExternalNodes)
 }
 
-func TestParseServiceGraph_FamilyFanout_UnknownClusterNonPodClientFallsBackToExternal(t *testing.T) {
+func TestParseServiceGraph_FamilyFanout_UnknownClusterAmbiguousNameFallsBackToExternal(t *testing.T) {
 	// Missing cluster label AND the client side is not a pod (non-URL human
-	// label, no UID): no client cluster to recover, family("unknown") matches
-	// no real cluster → the "://" server degrades to external (D-I).
+	// label, no UID): the anchor is the "unknown" bucket, so the unknown-family
+	// fallback engages — but messaging/nats is held by TWO families (prod-0 and
+	// staging-0), so the name is ambiguous and the "://" server stays external.
 	vec := sampleVec(famSample("admin", "nats://nats.messaging.svc:4222", "", "", ""))
 	res := parseServiceGraph(vec, familyTopology())
 
-	assert.Empty(t, res.ServiceNodes)
+	assert.Empty(t, res.ServiceNodes, "cross-family-ambiguous name must not resolve")
 	extIDs := make([]string, 0, len(res.ExternalNodes))
 	for _, ext := range res.ExternalNodes {
 		extIDs = append(extIDs, ext.IDValue)
 	}
 	assert.ElementsMatch(t, []string{"external/admin", "external/nats://nats.messaging.svc:4222"}, extIDs)
+}
+
+func TestParseServiceGraph_FamilyFanout_PrunesEndpointlessSibling(t *testing.T) {
+	// The nats Service object exists in BOTH prod clusters (applied fleet-wide)
+	// but only prod-2 has backing pods — the mesh routes the DNS name there.
+	// The endpointless prod-1 candidate is pruned: no service node, no
+	// pod-calls-service edge, no fan-out.
+	topo := familyTopology()
+	delete(topo.EndpointsByService, serviceKey{"prod-1", "messaging", "nats"})
+	vec := sampleVec(famSample("checkout", "nats://nats.messaging.svc:4222", "prod-1", "abc", ""))
+	res := parseServiceGraph(vec, topo)
+
+	require.Len(t, res.ServiceNodes, 1, "endpointless prod-1 sibling must be pruned")
+	assert.Equal(t, "prod-2/messaging/nats", res.ServiceNodes[0].IDValue)
+
+	pcs := edgesByType(res, graph.EdgeTypePodCallsService)
+	require.Len(t, pcs, 1, "exactly one edge — to the endpoint-backed candidate")
+	assert.Equal(t, "prod-1/abc", pcs[0].Source)
+	assert.Equal(t, "prod-2/messaging/nats", pcs[0].Target)
+
+	ssp := edgesByType(res, graph.EdgeTypeServiceSelectsPod)
+	require.Len(t, ssp, 1)
+	assert.Equal(t, "prod-2/n2", ssp[0].Target, "fan-out only from the surviving service")
+	assert.Empty(t, res.ExternalNodes)
+}
+
+func TestParseServiceGraph_FamilyFanout_AllCandidatesEndpointlessStillMaterialise(t *testing.T) {
+	// Degenerate case: NO family candidate has backing pods (no allowlisted
+	// endpointslice join, or no ready backends anywhere). Pruning must not
+	// engage — both service nodes materialise with zero fan-out edges, exactly
+	// the pre-pruning behaviour.
+	topo := familyTopology()
+	delete(topo.EndpointsByService, serviceKey{"prod-1", "messaging", "nats"})
+	delete(topo.EndpointsByService, serviceKey{"prod-2", "messaging", "nats"})
+	vec := sampleVec(famSample("checkout", "nats://nats.messaging.svc:4222", "prod-1", "abc", ""))
+	res := parseServiceGraph(vec, topo)
+
+	require.Len(t, res.ServiceNodes, 2, "all-unbacked candidates must all materialise")
+	pcs := edgesByType(res, graph.EdgeTypePodCallsService)
+	assert.Len(t, pcs, 2)
+	assert.Empty(t, edgesByType(res, graph.EdgeTypeServiceSelectsPod), "no backing pods → no fan-out edges")
+	assert.Empty(t, res.ExternalNodes)
+}
+
+func TestParseServiceGraph_FamilyFanout_UnknownAnchorSingleFamilyFallbackResolves(t *testing.T) {
+	// Missing cluster label AND a non-pod client: the anchor is the "unknown"
+	// bucket (no loaded family), so the unknown-family fallback engages.
+	// data/cache is held ONLY by the prod-0 family → it resolves to both prod
+	// service nodes instead of degrading to external. The client side is
+	// non-pod, so the edges omit labels.cluster.
+	vec := sampleVec(famSample("admin", "redis://cache.data.svc:6379", "", "", ""))
+	res := parseServiceGraph(vec, familyTopology())
+
+	require.Len(t, res.ServiceNodes, 2, "single-family holder set must resolve via the fallback")
+	svcIDs := make([]string, 0, len(res.ServiceNodes))
+	for _, s := range res.ServiceNodes {
+		svcIDs = append(svcIDs, s.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"prod-1/data/cache", "prod-2/data/cache"}, svcIDs)
+
+	pcs := edgesByType(res, graph.EdgeTypePodCallsService)
+	require.Len(t, pcs, 2)
+	for _, e := range pcs {
+		assert.Equal(t, "external/admin", e.Source)
+		assert.NotContains(t, e.Labels, "cluster", "client side is non-pod → cluster key omitted")
+	}
+
+	extIDs := make([]string, 0, len(res.ExternalNodes))
+	for _, ext := range res.ExternalNodes {
+		extIDs = append(extIDs, ext.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"external/admin"}, extIDs, "the conn-string side must not also produce an external node")
+}
+
+func TestParseServiceGraph_FamilyFanout_BogusLabelFamilyFallbackResolves(t *testing.T) {
+	// A trace label naming a family that is not loaded at all ("legacy-7" →
+	// family "legacy-0") is just as unanchorable as the "unknown" bucket — the
+	// fallback resolves the single-family holder set.
+	vec := sampleVec(famSample("admin", "redis://cache.data.svc:6379", "legacy-7", "", ""))
+	res := parseServiceGraph(vec, familyTopology())
+
+	require.Len(t, res.ServiceNodes, 2, "bogus-label anchor must engage the fallback")
+}
+
+func TestParseServiceGraph_FamilyFanout_UnknownHolderNeitherPoisonsNorShadowsFallback(t *testing.T) {
+	// One kube_service_info series for data/cache lost its cluster label and
+	// was bucketed to the "unknown" pseudo-cluster. For an unanchorable series
+	// that duplicate must NOT (a) poison the fallback's uniqueness check
+	// ({prod-0, unknown} would read as two families → external) nor (b) shadow
+	// the identified prod deployments via a direct famSvcKey{"unknown"} hit
+	// that would fabricate an unknown/data/cache pseudo-cluster service node.
+	topo := familyTopology()
+	topo.ServicesByNameNS[serviceKey{"unknown", "data", "cache"}] = ServiceObs{ClusterIP: "10.0.0.1"}
+	vec := sampleVec(famSample("admin", "redis://cache.data.svc:6379", "", "", ""))
+	res := parseServiceGraph(vec, topo)
+
+	require.Len(t, res.ServiceNodes, 2, "identified holders must resolve despite the unlabelled duplicate")
+	svcIDs := make([]string, 0, len(res.ServiceNodes))
+	for _, s := range res.ServiceNodes {
+		svcIDs = append(svcIDs, s.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"prod-1/data/cache", "prod-2/data/cache"}, svcIDs,
+		"no unknown/data/cache pseudo-cluster node may materialise")
+}
+
+func TestParseServiceGraph_FamilyFanout_FullyUnlabelledDeploymentKeepsUnknownDirectHit(t *testing.T) {
+	// A deployment whose KSM series carry no cluster label at all: everything
+	// (pods, services, endpoints) is bucketed to "unknown". An equally
+	// unlabelled trace must still resolve — the famSvcKey{"unknown"} direct
+	// hit is the only resolution such a deployment has, and no identified
+	// holder exists to shadow it.
+	cachePod := &graph.PodNode{IDValue: "unknown/u1", NameValue: "cache-0", LabelsValue: map[string]string{"cluster": "unknown", "namespace": "data"}}
+	topo := Topology{
+		Pods:      []*graph.PodNode{cachePod},
+		PodsByUID: map[string]*graph.PodNode{"u1": cachePod},
+		ServicesByNameNS: map[serviceKey]ServiceObs{
+			{"unknown", "data", "cache"}: {ClusterIP: "10.0.0.2"},
+		},
+		EndpointsByService: map[serviceKey][]EndpointObs{
+			{"unknown", "data", "cache"}: {{Pod: cachePod}},
+		},
+	}
+	vec := sampleVec(famSample("admin", "redis://cache.data.svc:6379", "", "", ""))
+	res := parseServiceGraph(vec, topo)
+
+	require.Len(t, res.ServiceNodes, 1, "fully-unlabelled deployment must keep conn-string resolution")
+	assert.Equal(t, "unknown/data/cache", res.ServiceNodes[0].IDValue)
+	ssp := edgesByType(res, graph.EdgeTypeServiceSelectsPod)
+	require.Len(t, ssp, 1)
+	assert.Equal(t, "unknown/u1", ssp[0].Target)
+}
+
+func TestParseServiceGraph_FamilyFanout_BogusAnchorUnknownOnlyHolderStaysExternal(t *testing.T) {
+	// data/queue is known ONLY from unlabelled ("unknown"-bucketed) series. A
+	// bogus-label anchor ("legacy-7", family not loaded) must NOT resolve into
+	// the pseudo-cluster — the bucket is excluded from the fallback's holder
+	// set and the anchor's own family key ("legacy-0") cannot hit it.
+	topo := familyTopology()
+	topo.ServicesByNameNS[serviceKey{"unknown", "data", "queue"}] = ServiceObs{ClusterIP: "10.0.0.3"}
+	vec := sampleVec(famSample("admin", "amqp://queue.data.svc:5672", "legacy-7", "", ""))
+	res := parseServiceGraph(vec, topo)
+
+	assert.Empty(t, res.ServiceNodes, "an identity-less holder must not satisfy a bogus-label anchor")
+	extIDs := make([]string, 0, len(res.ExternalNodes))
+	for _, ext := range res.ExternalNodes {
+		extIDs = append(extIDs, ext.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"external/admin", "external/amqp://queue.data.svc:5672"}, extIDs)
+}
+
+func TestParseServiceGraph_FamilyFanout_PruningSparesClusterWithoutEndpointVisibility(t *testing.T) {
+	// Staged allowlist rollout: prod-1 has NO endpoint data for ANY service
+	// (its KSM lacks the kubernetes.io/service-name allowlist), prod-2 is
+	// backed. prod-1's zero is absence of evidence — its candidate must be
+	// KEPT, not pruned.
+	topo := familyTopology()
+	delete(topo.EndpointsByService, serviceKey{"prod-1", "messaging", "nats"})
+	delete(topo.EndpointsByService, serviceKey{"prod-1", "data", "cache"})
+	vec := sampleVec(famSample("checkout", "nats://nats.messaging.svc:4222", "prod-1", "abc", ""))
+	res := parseServiceGraph(vec, topo)
+
+	require.Len(t, res.ServiceNodes, 2, "a cluster without endpoint visibility must not be pruned")
+	svcIDs := make([]string, 0, len(res.ServiceNodes))
+	for _, s := range res.ServiceNodes {
+		svcIDs = append(svcIDs, s.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"prod-1/messaging/nats", "prod-2/messaging/nats"}, svcIDs)
+	assert.Len(t, edgesByType(res, graph.EdgeTypePodCallsService), 2)
+}
+
+func TestParseServiceGraph_FamilyFanout_FallbackPathAppliesPruning(t *testing.T) {
+	// Pruning must run on the fallback-resolved candidate set too: an
+	// unanchorable series resolving data/cache via the unique-family fallback
+	// still skips the endpointless (but endpoint-visible) prod-1 deployment.
+	topo := familyTopology()
+	delete(topo.EndpointsByService, serviceKey{"prod-1", "data", "cache"})
+	vec := sampleVec(famSample("admin", "redis://cache.data.svc:6379", "", "", ""))
+	res := parseServiceGraph(vec, topo)
+
+	require.Len(t, res.ServiceNodes, 1, "fallback candidates must be pruned like family candidates")
+	assert.Equal(t, "prod-2/data/cache", res.ServiceNodes[0].IDValue)
+	pcs := edgesByType(res, graph.EdgeTypePodCallsService)
+	require.Len(t, pcs, 1)
+	assert.Equal(t, "external/admin", pcs[0].Source)
+	assert.Equal(t, "prod-2/data/cache", pcs[0].Target)
+}
+
+func TestParseServiceGraph_FamilyFanout_CrossProductWithPrunedClientSide(t *testing.T) {
+	// Both sides are "://" and the CLIENT side's family set is pruned (prod-1
+	// nats is endpoint-visible but endpointless): the cross product runs over
+	// SURVIVING candidates — 1×2 edges, all sourced from the surviving
+	// prod-2 nats, and no prod-1/messaging/nats node exists.
+	topo := familyTopology()
+	delete(topo.EndpointsByService, serviceKey{"prod-1", "messaging", "nats"})
+	vec := sampleVec(famSample("nats://nats.messaging.svc:4222", "redis://cache.data.svc:6379", "prod-1", "", ""))
+	res := parseServiceGraph(vec, topo)
+
+	svcIDs := make([]string, 0, len(res.ServiceNodes))
+	for _, s := range res.ServiceNodes {
+		svcIDs = append(svcIDs, s.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"prod-2/messaging/nats", "prod-1/data/cache", "prod-2/data/cache"}, svcIDs,
+		"the pruned prod-1 nats must not materialise")
+
+	pcs := edgesByType(res, graph.EdgeTypePodCallsService)
+	require.Len(t, pcs, 2, "cross product over surviving candidates: 1×2")
+	for _, e := range pcs {
+		assert.Equal(t, "prod-2/messaging/nats", e.Source, "every edge sources from the surviving client-side service")
+		assert.NotContains(t, e.Labels, "cluster")
+	}
+}
+
+func TestParseServiceGraph_FamilyFanout_ClientSideUnknownAnchorFallbackResolves(t *testing.T) {
+	// The unknown-family fallback must work for a CLIENT-side connection
+	// string too (resolveClient's empty-UID path anchors on the raw trace
+	// label, here missing → "unknown"). data/cache is held only by the prod
+	// family → two service SOURCES, pod target via server UID, edge type
+	// pod-calls-pod (target is a pod), labels.cluster omitted (non-pod client).
+	vec := sampleVec(famSample("redis://cache.data.svc:6379", "checkout", "", "", "abc"))
+	res := parseServiceGraph(vec, familyTopology())
+
+	require.Len(t, res.ServiceNodes, 2, "client-side fallback must resolve the single-family holder set")
+	pcp := edgesByType(res, graph.EdgeTypePodCallsPod)
+	require.Len(t, pcp, 2)
+	srcs := make([]string, 0, len(pcp))
+	for _, e := range pcp {
+		assert.Equal(t, "prod-1/abc", e.Target, "server side resolves via the UID index")
+		assert.NotContains(t, e.Labels, "cluster", "client resolved to a service node → cluster key omitted")
+		srcs = append(srcs, e.Source)
+	}
+	assert.ElementsMatch(t, []string{"prod-1/data/cache", "prod-2/data/cache"}, srcs)
+	assert.Empty(t, res.ExternalNodes)
+}
+
+func TestParseServiceGraph_FamilyFanout_SameLabelDifferentAnchorsResolveIndependently(t *testing.T) {
+	// One vector resolves the SAME "://" label under two different family
+	// anchors with DIFFERENT correct answers: a prod-1 client must get the
+	// prod-0 nats deployments, a staging-1 client the staging-0 one. Pins the
+	// resolveConnString memo being keyed by (familyCluster, label) — a memo
+	// keyed by the bare label would leak whichever family resolved first into
+	// the other series (and make the output arrival-order dependent).
+	vec := sampleVec(
+		famSample("checkout", "nats://nats.messaging.svc:4222", "prod-1", "abc", ""),
+		famSample("nats-0", "nats://nats.messaging.svc:4222", "staging-1", "sn", ""),
+	)
+	res := parseServiceGraph(vec, familyTopology())
+
+	svcIDs := make([]string, 0, len(res.ServiceNodes))
+	for _, s := range res.ServiceNodes {
+		svcIDs = append(svcIDs, s.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"prod-1/messaging/nats", "prod-2/messaging/nats", "staging-1/messaging/nats"}, svcIDs)
+
+	targetsBySrc := map[string][]string{}
+	for _, e := range edgesByType(res, graph.EdgeTypePodCallsService) {
+		targetsBySrc[e.Source] = append(targetsBySrc[e.Source], e.Target)
+	}
+	assert.ElementsMatch(t, []string{"prod-1/messaging/nats", "prod-2/messaging/nats"}, targetsBySrc["prod-1/abc"],
+		"prod client resolves within its own family")
+	assert.ElementsMatch(t, []string{"staging-1/messaging/nats"}, targetsBySrc["staging-1/sn"],
+		"staging client must not inherit the prod resolution from the memo")
+}
+
+func TestParseServiceGraph_FamilyFanout_KnownFamilyMissDoesNotEscapeAcrossFamilies(t *testing.T) {
+	// The anchor names a LOADED family (staging-0) that simply does not hold
+	// data/cache. The fallback must NOT engage — a known-cluster caller never
+	// resolves against a foreign family — so the endpoint stays external even
+	// though the prod-0 family uniquely holds the service.
+	vec := sampleVec(famSample("admin", "redis://cache.data.svc:6379", "staging-1", "", ""))
+	res := parseServiceGraph(vec, familyTopology())
+
+	assert.Empty(t, res.ServiceNodes, "loaded family lacking the service must not fall back cross-family")
+	extIDs := make([]string, 0, len(res.ExternalNodes))
+	for _, ext := range res.ExternalNodes {
+		extIDs = append(extIDs, ext.IDValue)
+	}
+	assert.ElementsMatch(t, []string{"external/admin", "external/redis://cache.data.svc:6379"}, extIDs)
 }
 
 func TestParseServiceGraph_SelfLoopUID_ConnStringSide_FansOutAcrossFamily(t *testing.T) {
@@ -239,6 +517,9 @@ func TestParseServiceGraph_FamilyFanout_Deterministic(t *testing.T) {
 			famSample("checkout", "nats://nats.messaging.svc:4222", "prod-1", "abc", ""),
 			famSample("nats://nats.messaging.svc:4222", "redis://cache.data.svc:6379", "prod-2", "", ""),
 			famSample("checkout", "amqp://queue.data.svc:5672", "prod-1", "abc", ""),
+			// Unanchorable series (missing label, non-pod client) so the
+			// unknown-family fallback path is order-shuffled too.
+			famSample("admin", "redis://cache.data.svc:6379", "", "", ""),
 		}
 		rng := rand.New(rand.NewSource(seed))
 		rng.Shuffle(len(samples), func(i, j int) { samples[i], samples[j] = samples[j], samples[i] })

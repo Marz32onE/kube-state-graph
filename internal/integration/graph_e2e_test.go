@@ -511,6 +511,126 @@ traces_service_graph_request_total{client="outfam-client",server="nats://outfam-
 		"zero family matches must fall back to the external/<label> node")
 }
 
+// TestConnStringFamilyFanoutPrunesEndpointlessSibling exercises endpoint-backed
+// pruning end-to-end against a real VM: the prune-svc Service object exists in
+// BOTH family clusters (applied fleet-wide), but only prod-2 has backing pods
+// (endpointslice series) — the mesh routes the DNS name there. The endpointless
+// prod-1 candidate must be pruned: no prod-1 service node, no edge to it; the
+// single pod-calls-service edge targets the endpoint-backed prod-2 service.
+//
+// prod-1 is given endpoint VISIBILITY via an unrelated service (prune-vis with
+// a joined endpoint): the pruning evidence gate only prunes a zero-endpoint
+// candidate when its cluster provably exports endpoint data — a cluster with
+// no endpoint data at all is spared (absence of evidence), which without
+// prune-vis would be prod-1's state in this VM.
+func (s *GraphSuite) TestConnStringFamilyFanoutPrunesEndpointlessSibling() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP kube_pod_info dummy
+kube_pod_info{cluster="prod-1",namespace="shop",pod="prune-client",uid="prune-1",node="worker-0",test=%q} 1 %d
+kube_pod_info{cluster="prod-2",namespace="shop",pod="prune-nats-0",uid="prune-n2",node="worker-0",test=%q} 1 %d
+kube_node_info{cluster="prod-1",node="worker-0",test=%q} 1 %d
+kube_node_info{cluster="prod-2",node="worker-0",test=%q} 1 %d
+kube_service_info{cluster="prod-1",namespace="shop",service="prune-svc",cluster_ip="10.96.1.88",test=%q} 1 %d
+kube_service_info{cluster="prod-2",namespace="shop",service="prune-svc",cluster_ip="10.96.2.88",test=%q} 1 %d
+kube_service_info{cluster="prod-1",namespace="shop",service="prune-vis",cluster_ip="10.96.1.89",test=%q} 1 %d
+kube_endpointslice_labels{cluster="prod-1",namespace="shop",endpointslice="prune-vis-x1",label_kubernetes_io_service_name="prune-vis",test=%q} 1 %d
+kube_endpointslice_endpoints{cluster="prod-1",namespace="shop",endpointslice="prune-vis-x1",targetref_kind="Pod",targetref_name="prune-client",targetref_namespace="shop",test=%q} 1 %d
+kube_endpointslice_labels{cluster="prod-2",namespace="shop",endpointslice="prune-svc-x1",label_kubernetes_io_service_name="prune-svc",test=%q} 1 %d
+kube_endpointslice_endpoints{cluster="prod-2",namespace="shop",endpointslice="prune-svc-x1",targetref_kind="Pod",targetref_name="prune-nats-0",targetref_namespace="shop",test=%q} 1 %d
+traces_service_graph_request_total{client="prune-client",server="nats://prune-svc.shop.svc:4222",cluster="prod-1",client_k8s_pod_uid="prune-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="prune-client",server="nats://prune-svc.shop.svc:4222",cluster="prod-1",client_k8s_pod_uid="prune-1",server_k8s_pod_uid="",client_k8s_namespace_name="shop",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	// Gate every series the test's negative assertion depends on: BOTH
+	// kube_service_info rows for prune-svc (the prod-1 candidate must provably
+	// exist pre-prune — otherwise "pruned" and "never loaded" are
+	// indistinguishable), BOTH endpointslice label rows (a lagging prod-2
+	// slice would flip the set all-unbacked; a lagging prod-1 prune-vis slice
+	// would spare prod-1 via the visibility gate), and a non-zero trace rate.
+	s.Require().True(s.WaitForSeries(`count(kube_service_info{service="prune-svc",test=`+strconv.Quote(disc)+`}) == 2`, fixedNow, 30*time.Second),
+		"VM did not observe BOTH prune kube_service_info rows")
+	s.Require().True(s.WaitForSeries(`count(kube_endpointslice_labels{test=`+strconv.Quote(disc)+`}) == 2`, fixedNow, 30*time.Second),
+		"VM did not observe both prune endpointslice label rows")
+	s.Require().True(s.WaitForSeries(`rate(traces_service_graph_request_total{client="prune-client",test=`+strconv.Quote(disc)+`}[5m]) > 0`, fixedNow, 30*time.Second),
+		"VM did not observe a non-zero prune trace rate")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// Only the endpoint-backed prod-2 deployment survives.
+	s.Contains(bodyStr, `"id":"prod-2/shop/prune-svc"`,
+		"the endpoint-backed family sibling must resolve")
+	s.NotContains(bodyStr, `prod-1/shop/prune-svc`,
+		"the endpointless prod-1 sibling must be pruned — no service node, no edge")
+	s.Contains(bodyStr, `"target":"prod-2/shop/prune-svc"`)
+	s.Contains(bodyStr, `"target":"prod-2/prune-n2"`,
+		"service-selects-pod fan-out from the surviving service only")
+	s.NotContains(bodyStr, `external/nats://prune-svc.shop.svc:4222`,
+		"a pruned-but-resolved connection string must not produce an external node")
+}
+
+// TestConnStringUnknownFamilyFallbackResolves exercises the unknown-family
+// fallback end-to-end against a real VM: the service-graph series carries NO
+// cluster label (bucketed to "unknown") and its client side is a non-pod human
+// label, so no family anchor can be recovered. The addressed Service is held
+// ONLY by prod-2 (a single family), so the fallback resolves it to the prod-2
+// service node instead of degrading to external/<label>.
+//
+// The fixture uses a test-unique namespace (uffb-ns) on top of the unique
+// service name: the fallback's holder set is a property of the WHOLE shared-VM
+// state (every test's series persist; the API does not filter on the `test`
+// discriminator), so any other fixture ingesting the same (namespace, service)
+// in a non-prod-family cluster would silently flip the uniqueness check to
+// ambiguous. The unique namespace shrinks that blast radius to this test.
+func (s *GraphSuite) TestConnStringUnknownFamilyFallbackResolves() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	t0 := fixedNow.Add(-time.Minute).Unix() * 1000
+	extra := fmt.Sprintf(`# HELP kube_pod_info dummy
+kube_pod_info{cluster="prod-2",namespace="uffb-ns",pod="uffb-nats-0",uid="uffb-n2",node="worker-0",test=%q} 1 %d
+kube_node_info{cluster="prod-2",node="worker-0",test=%q} 1 %d
+kube_service_info{cluster="prod-2",namespace="uffb-ns",service="uffb-svc",cluster_ip="10.96.3.88",test=%q} 1 %d
+kube_endpointslice_labels{cluster="prod-2",namespace="uffb-ns",endpointslice="uffb-svc-x1",label_kubernetes_io_service_name="uffb-svc",test=%q} 1 %d
+kube_endpointslice_endpoints{cluster="prod-2",namespace="uffb-ns",endpointslice="uffb-svc-x1",targetref_kind="Pod",targetref_name="uffb-nats-0",targetref_namespace="uffb-ns",test=%q} 1 %d
+traces_service_graph_request_total{client="uffb-admin",server="nats://uffb-svc.uffb-ns.svc:4222",client_k8s_pod_uid="",server_k8s_pod_uid="",client_k8s_namespace_name="",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 0 %d
+traces_service_graph_request_total{client="uffb-admin",server="nats://uffb-svc.uffb-ns.svc:4222",client_k8s_pod_uid="",server_k8s_pod_uid="",client_k8s_namespace_name="",server_k8s_namespace_name="",connection_type="virtual_node",test=%q} 120 %d
+`, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1, disc, t0, disc, t1)
+	s.IngestExpFmt(extra)
+	// Gate every series the assertions depend on, not just kube_service_info:
+	// the fan-out assertion needs the endpointslice join and the edge needs a
+	// non-zero trace rate.
+	s.Require().True(s.WaitForSeries(`kube_service_info{service="uffb-svc",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested uffb kube_service_info")
+	s.Require().True(s.WaitForSeries(`kube_endpointslice_labels{endpointslice="uffb-svc-x1",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe the uffb endpointslice labels")
+	s.Require().True(s.WaitForSeries(`rate(traces_service_graph_request_total{client="uffb-admin",test=`+strconv.Quote(disc)+`}[5m]) > 0`, fixedNow, 30*time.Second),
+		"VM did not observe a non-zero uffb trace rate")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// The unanchorable series still resolves: single family holds the name.
+	s.Contains(bodyStr, `"id":"prod-2/uffb-ns/uffb-svc"`,
+		"unknown-family fallback must resolve a single-family-held service")
+	s.Contains(bodyStr, `"target":"prod-2/uffb-ns/uffb-svc"`)
+	s.Contains(bodyStr, `"source":"external/uffb-admin"`,
+		"the non-pod client side stays an external node")
+	s.NotContains(bodyStr, `external/nats://uffb-svc.uffb-ns.svc:4222`,
+		"the fallback-resolved connection string must not degrade to external")
+	s.Contains(bodyStr, `"target":"prod-2/uffb-n2"`,
+		"service-selects-pod fan-out from the fallback-resolved service")
+}
+
 // TestSentinelPeersExcludedAtQueryLayer exercises design.md D30 end-to-end
 // against a real VM: the servicegraph connector's virtual peers (client="user",
 // server="unknown") are dropped by the anchored selector matchers

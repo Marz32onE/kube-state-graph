@@ -134,25 +134,46 @@ live under `openspec/specs/`.
     resolved to a topology pod (the trace `cluster` label is frequently
     missing or wrong), falling back to the raw trace label otherwise; edge
     `labels.cluster` always stays the raw trace label (D9). The anchor cluster
-    is not special — just a family member. **Each** family cluster holding the
-    service materialises its own `type="service"` node
+    is not special — just a family member. **Unknown-family fallback**: when
+    the anchor's family is not the family of ANY loaded cluster (the
+    `"unknown"` missing-label bucket, or a bogus trace label — the bucket
+    never counts as a loaded cluster), the `(namespace, service)` is looked up
+    across the LOADED clusters (`"unknown"`-bucketed service entries are NOT
+    holders — one unlabelled duplicate must neither flip a uniquely-held name
+    to ambiguous nor resolve a bogus anchor into the pseudo-cluster) and
+    resolves iff exactly ONE family holds it, REPLACING any primary-lookup hit
+    on `"unknown"`-bucketed entries (multi-family names are ambiguous →
+    external); when NO loaded cluster holds the name, an `"unknown"` anchor
+    keeps its primary hit on `"unknown"`-bucketed entries — a fully-unlabelled
+    deployment retains resolution within its own pseudo-cluster; a LOADED
+    family that merely lacks the service never escapes cross-family.
+    **Endpoint-backed pruning** is then applied to the chosen candidates:
+    candidates PROVABLY without backing pods — zero endpoints while their own
+    cluster has endpoint data for some service (a cluster with zero endpoint
+    data anywhere is spared: allowlist gaps are absence of evidence, not
+    evidence of absence) — are skipped (no service node, no edge, no fan-out)
+    whenever at least one candidate is endpoint-backed; when NO candidate is
+    backed, all materialise unpruned — so a known service with zero backing
+    endpoints anywhere still materialises its service node(s) with no fan-out
+    edges, and deployments without the endpointslice allowlist keep full
+    resolution. **Each surviving** family cluster materialises its
+    own `type="service"` node
     (`id="<cluster>/<namespace>/<service>"`, `labels={cluster,namespace}`,
     `ipaddress=[cluster_ip]` unless headless `cluster_ip="None"`) plus on-demand
     `service-selects-pod` edges (service → pod, always intra-cluster within the
     resolved service's own cluster) fanning out to each backing pod, and yields
     one `pod-calls-service` edge per match (one series → N edges; such edges
-    MAY be cross-cluster). Candidate clusters are iterated in sorted order
-    (determinism). The family rule (`build.clusterFamilyKey`) is a hardcoded
-    pure string function — no knob, no PromQL change (filtering is in-memory
-    at resolution, preserving "no filters pushed to PromQL"). The 3-label form
-    drops the leading pod-hostname and resolves as its parent service. A known
-    service with zero backing endpoints still materialises the service node,
-    with no fan-out edges. When BOTH sides of a series are `"://"` labels
+    MAY be cross-cluster). Candidate clusters are iterated in sorted order;
+    pruning is a deterministic filter and the fallback's uniqueness check is
+    order-free (determinism). The family rule (`build.clusterFamilyKey`), the
+    fallback, and the pruning are hardcoded pure functions — no knob, no PromQL
+    change (filtering is in-memory at resolution, preserving "no filters pushed
+    to PromQL"). The 3-label form drops the leading pod-hostname and resolves
+    as its parent service. When BOTH sides of a series are `"://"` labels
     resolving to service sets, the cross product of edges is emitted.
-  - **unresolvable** (host not a 2/3-label `.svc` name, or service absent from
-    **every family cluster's** topology — incl. a missing trace `cluster` label
-    bucketed to `"unknown"` when the client side is also non-pod, whose
-    digit-free family matches no real cluster) → an `external` node
+  - **unresolvable** (host not a 2/3-label `.svc` name, or zero candidates
+    survive — the anchor's loaded family lacks the service, or an unanchorable
+    series' name is held by zero or by two-plus families) → an `external` node
     (`id="external/<label>"`, `labels={}`) with the verbatim label as `name`.
   - A series with a **wholly empty side** (no UID, no label) is dropped before
     any resolution — the other side's `"://"` label must not leak service /
@@ -165,9 +186,10 @@ live under `openspec/specs/`.
   that endpoint is promoted to `external/<label>` (no cluster prefix; `labels={}`)
   instead of dropping the edge. Per-endpoint resolution order:
   (1) connection-string resolution (`"://"` in the label, empty UID) →
-  one `service` node per family cluster holding it (+ each cluster's own
-  `service-selects-pod` fan-out) or `external` on zero family matches, per the
-  D29 cluster-family rule above (never a pod);
+  one `service` node per surviving candidate cluster (+ each cluster's own
+  `service-selects-pod` fan-out) or `external` on zero surviving candidates,
+  per the D29 cluster-family rule above incl. its unknown-family fallback and
+  endpoint-backed pruning (never a pod);
   (2) UID-based pod resolution / synth-pod fallback (only when UID is non-empty);
   (3) missing-UID human-label fallback (this rule) → external with `labels={}`
   (**only for non-`"://"` labels**);
