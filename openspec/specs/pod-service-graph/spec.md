@@ -124,10 +124,12 @@ Connection-string resolution proceeds as follows:
    - 2 labels — `<service>.<namespace>` — the addressed service (regular ClusterIP service, or a headless service's service-level name).
    - 3 labels — `<pod-hostname>.<service>.<namespace>` — a headless per-pod DNS name; the reader SHALL DROP the leading `<pod-hostname>` and resolve the remaining `<service>.<namespace>`. A headless per-pod address and the bare service address resolve identically — there is NO per-pod resolution.
    - any other label count — **unresolvable**.
-3. Resolve `(cluster, namespace, service)` against the topology index `ServicesByNameNS` (built from `kube_service_info`). On a **hit**, the endpoint resolves to a **service** node: `id="<cluster>/<namespace>/<service>"`, `type="service"`, `labels={ cluster, namespace }`, `ipaddress=[cluster_ip]` when `cluster_ip != "None"` (omitted for headless services where `cluster_ip="None"`). The reader SHALL ALSO materialize, on demand and deduplicated, one `service-selects-pod` edge from this service node to EACH backing pod found in the topology index `EndpointsByService` (built from `kube_endpointslice_endpoints` joined to topology pods by `(namespace, targetref_name) → pod UID`). A known service with zero backing endpoints still materializes the service node, with no fan-out edges. On a **miss** (the service is not in topology), the label is **unresolvable**.
-4. **Cluster determination**: the topology lookup is scoped to the trace-source `cluster` label (the client-side cluster), because `.svc.cluster.local` is in-cluster DNS — the target is in the same Kubernetes cluster as the caller. A missing `cluster` label is bucketed to `"unknown"`, so the lookup is always cluster-scoped; a connection string whose service is absent from that cluster's topology is **unresolvable**.
+3. Resolve the addressed `(namespace, service)` against the topology index `ServicesByNameNS` (built from `kube_service_info`) **once per candidate cluster** in the caller's family (step 4), iterating candidates in lexicographically sorted order. For EACH candidate cluster `c` where `ServicesByNameNS` holds `(c, namespace, service)`, the reader SHALL materialise that cluster's **service** node: `id="<c>/<namespace>/<service>"`, `type="service"`, `labels={ cluster, namespace }`, `ipaddress=[cluster_ip]` when `cluster_ip != "None"` (omitted for headless services where `cluster_ip="None"`). For each materialised service node the reader SHALL ALSO materialise, on demand and deduplicated, one `service-selects-pod` edge from that service node to EACH backing pod found in that SAME cluster's `EndpointsByService` entry (built from `kube_endpointslice_endpoints` joined to topology pods by `(namespace, targetref_name) → pod UID`) — the fan-out is always **intra-cluster** within the resolved service's own cluster `c` (a service and its backing pods share a cluster). A known service with zero backing endpoints still materialises the service node, with no fan-out edges. The endpoint resolves to the **SET** of all matched service-node IDs; when NO candidate cluster holds the `(namespace, service)`, the label is **unresolvable**.
+4. **Cluster-family fan-out** (replaces the former trace-cluster-only scoping): the **cluster-family key** of a cluster name SHALL be computed by replacing every maximal run of ASCII digits (`[0-9]+`) in the name with a single `0` sentinel character. Two clusters are in the same **family** if and only if their family keys are byte-equal. Examples: `prod-03` and `prod-12` both normalise to `prod-0` and are in the same family; `staging-1` (key `staging-0`) is NOT in `prod-1`'s family (key `prod-0`); clusters named bare digit runs such as `1` and `2` all normalise to `0` and form one family; a digit-free name normalises to itself, so its family contains only identically-named clusters. The sentinel SHALL be a digit so the mapping is collision-free without escaping: every `0` in a key originates from a digit run, and a non-digit byte can never equal the sentinel (a non-digit sentinel would collide with cluster names literally containing it). The key function SHALL be a hardcoded pure string function: there is NO configuration surface (flag / env var / config field) to alter it. The **family anchor** for a lookup SHALL be the client side's authoritative cluster: the UID-recovered client-pod cluster when the series' client side resolved to a topology pod (the trace `cluster` label is frequently missing or disagrees with topology), and otherwise the series' trace-source `cluster` label (bucketed to `"unknown"` when missing). The edge `labels.cluster` value is NOT affected by anchor recovery — it stays the raw trace label per the edge-cluster-label requirement. The **candidate clusters** SHALL be all clusters loaded in the build's topology whose family key equals the anchor's family key, iterated in sorted order. The anchor cluster is NOT special — it participates only as an ordinary family member. When the client side is non-pod AND the `cluster` label is missing, the anchor is the `"unknown"` bucket, whose family matches only loaded clusters whose own family key equals `unknown` — in practice zero clusters, so the lookup yields zero matches and the endpoint falls back to `external/<label>`. Family filtering SHALL happen in-memory at the resolution layer: there is NO PromQL query change and NO new flag or environment knob (the "no filters pushed to PromQL" contract is preserved).
 
-When the `"://"` label is **unresolvable** — the host is not a parseable Kubernetes `.svc` name, OR the referenced service / pod is absent from the trace cluster's topology — the reader SHALL fall back to an **external** node:
+The reader SHALL emit one `pod-calls-service` edge per `(resolved source node, matched service-node ID)` pair — a single upstream series MAY therefore yield multiple edges. When BOTH sides of a series are `"://"` labels resolving to sets of service nodes, the reader SHALL emit the **cross product** of edges (each resolved source × each resolved target). A non-`"://"` side resolves to a single node ID exactly as before. Because a matched service node MAY live in a different (family) cluster than the caller, `pod-calls-service` edges MAY be cross-cluster; `service-selects-pod` fan-out edges remain strictly intra-cluster. Determinism SHALL be preserved: candidate clusters are iterated in sorted order, the existing `(source, target)` edge dedupe applies to each emitted edge, edge IDs remain deterministic UUIDv5 values over `<type>|<source>|<target>`, and the response body stays byte-identical for identical upstream data.
+
+When the `"://"` label is **unresolvable** — the host is not a parseable Kubernetes `.svc` name, OR NO cluster in the caller's family holds the addressed `(namespace, service)` — the reader SHALL fall back to an **external** node:
 
 - `id`     = `external/<label_value>`
 - `name`   = `<label_value>` (verbatim — no normalisation, no trimming)
@@ -136,7 +138,7 @@ When the `"://"` label is **unresolvable** — the host is not a parseable Kuber
 
 This keeps truly-external URLs (e.g. `https://payments.partner.example/api`) and unknown in-cluster names visible. All non-pod, non-service endpoints use the `external` node type — whether they arise from an unresolvable `"://"` connection string or from the missing pod-UID human-label fallback.
 
-The decision is per endpoint: a single edge MAY have a pod source and a service or external target, an external source and a pod target, two pods, or any mix. The edge `type` is `pod-calls-service` when the target resolves to a service node, otherwise `pod-calls-pod`. The edge `labels.cluster` rule for the client side applies: present when the client side resolves to a pod (from a non-empty pod UID), omitted when the client side resolves to a service or external node — including ANY `"://"` connection string, which never resolves to a pod.
+The decision is per endpoint: a single series MAY produce edges with a pod source and service or external targets, an external source and a pod target, two pods, or any mix. The edge `type` is `pod-calls-service` when the target resolves to a service node, otherwise `pod-calls-pod`; `pod-calls-service` edges MAY be cross-cluster (cross-cluster status is derived by comparing the resolved source and target node `labels.cluster` values). The edge `labels.cluster` rule for the client side applies: present when the client side resolves to a pod (from a non-empty pod UID), omitted when the client side resolves to a service or external node — including ANY `"://"` connection string, which never resolves to a pod.
 
 #### Scenario: Headless connection string resolves to its service node and fans out to backing pods
 
@@ -156,7 +158,37 @@ The decision is per endpoint: a single edge MAY have a pod source and a service 
 #### Scenario: "://" label with empty UID is always handled by connection-string resolution
 
 - **WHEN** a series has an endpoint whose pod UID is empty and whose `client` / `server` label contains `"://"` (whether or not it resolves)
-- **THEN** that endpoint is resolved by connection-string resolution (a service node or — on miss — an `external/<label>` node) and the missing pod-UID human-label fallback is NEVER consulted for it
+- **THEN** that endpoint is resolved by connection-string resolution (one service node per family cluster holding the addressed service, or — when no family cluster holds it — an `external/<label>` node) and the missing pod-UID human-label fallback is NEVER consulted for it
+
+#### Scenario: Service deployed in two family clusters resolves to both service nodes
+
+- **WHEN** clusters `prod-1` and `prod-2` are loaded (both family key `prod-0`), EACH holds a `payments` service in namespace `payments-ns` with its own backing pods, and the upstream contains a series with `cluster="prod-1"`, `client_k8s_pod_uid="abc"` (resolving to a pod in `prod-1`), `server="http://payments.payments-ns.svc.cluster.local"`, `server_k8s_pod_uid=""`
+- **THEN** the reader emits TWO `pod-calls-service` edges — `prod-1/abc → prod-1/payments-ns/payments` and `prod-1/abc → prod-2/payments-ns/payments` — and materialises BOTH service nodes; each service node carries its own intra-cluster `service-selects-pod` fan-out to its OWN cluster's backing pods only (the `prod-2` fan-out edges target only `prod-2` pods); both `pod-calls-service` edges carry `labels.cluster: "prod-1"` (the client side is a pod); the edge to `prod-2/payments-ns/payments` is cross-cluster, detectable by comparing source (`labels.cluster="prod-1"`) and target (`labels.cluster="prod-2"`) node labels
+
+#### Scenario: Same service in an out-of-family cluster is not resolved
+
+- **WHEN** clusters `prod-1` (family key `prod-0`) and `staging-1` (family key `staging-0`) are loaded, BOTH hold a `payments` service in namespace `payments-ns`, and a series has `cluster="prod-1"`, `client_k8s_pod_uid="abc"` (a `prod-1` pod), `server="http://payments.payments-ns.svc"`, `server_k8s_pod_uid=""`
+- **THEN** only `prod-1` is a candidate cluster (`staging-0` ≠ `prod-0`); exactly ONE `pod-calls-service` edge is emitted, targeting `prod-1/payments-ns/payments`; no edge targets and no on-demand service node is materialised for `staging-1/payments-ns/payments` by this resolution
+
+#### Scenario: No family cluster holds the service — external fallback
+
+- **WHEN** clusters `prod-1` and `prod-2` are loaded (family `prod-0`), NEITHER holds a `my-nats` service in namespace `messaging` (an out-of-family cluster MAY hold it), and a series has `cluster="prod-1"`, `client_k8s_pod_uid="abc"` (a `prod-1` pod), `server="nats://my-nats.messaging.svc:4222"`, `server_k8s_pod_uid=""`
+- **THEN** zero candidate clusters match and the endpoint falls back to an external node exactly as today: the edge has `type: "pod-calls-pod"`, `target: "external/nats://my-nats.messaging.svc:4222"`; the target node has `type: "external"`, `labels={}`; and the edge has `labels.cluster: "prod-1"` (the client side is a pod)
+
+#### Scenario: Both sides are "://" labels — cross product of edges
+
+- **WHEN** a series has `client="http://frontend.web.svc"` and `server="http://payments.payments-ns.svc"`, BOTH pod UIDs empty, `cluster="prod-1"`, and both `(web, frontend)` and `(payments-ns, payments)` exist in BOTH family clusters `prod-1` and `prod-2`
+- **THEN** the client side resolves to the set `{prod-1/web/frontend, prod-2/web/frontend}` and the server side to `{prod-1/payments-ns/payments, prod-2/payments-ns/payments}`; the reader emits the cross product of FOUR `pod-calls-service` edges (each resolved source × each resolved target); every edge `labels` map contains no `cluster` key (the client side resolved to a non-pod node)
+
+#### Scenario: Missing cluster label recovers the family from the UID-resolved client pod
+
+- **WHEN** a series missing its `cluster` external label (bucketed to `cluster="unknown"`) has `client_k8s_pod_uid="abc"` resolving via the global UID index to a topology pod in `prod-1`, `server="http://payments.payments-ns.svc.cluster.local"`, `server_k8s_pod_uid=""`, and the `payments` service exists in family clusters `prod-1` and `prod-2`
+- **THEN** the family anchor is the recovered client-pod cluster `prod-1` (NOT the `"unknown"` bucket); the fan-out emits `pod-calls-service` edges to BOTH `prod-1/payments-ns/payments` and `prod-2/payments-ns/payments`; each emitted edge's `labels.cluster` is `"unknown"` (the raw trace label, unaffected by anchor recovery)
+
+#### Scenario: Missing cluster label with a non-pod client yields zero family matches
+
+- **WHEN** a series missing its `cluster` external label is bucketed to `cluster="unknown"`, its client side does NOT resolve to a topology pod (e.g. `client="admin"` with an empty client UID), it has `server="http://payments.payments-ns.svc.cluster.local"`, `server_k8s_pod_uid=""`, and no loaded cluster's family key equals the family key of `unknown` (no cluster is literally named `unknown`)
+- **THEN** the family anchor is the `"unknown"` bucket, the candidate-cluster set is empty, the lookup yields zero family matches, and the server endpoint falls back to `external/http://payments.payments-ns.svc.cluster.local` (`type="external"`, `labels={}`) — the standard unresolvable fallback
 
 ### Requirement: Missing pod-UID human-label fallback
 
@@ -179,10 +211,12 @@ When BOTH the pod UID AND the human label are empty for an endpoint, the reader 
 
 The per-endpoint resolution order is:
 
-1. Connection-string resolution (hardcoded `"://"` check; only when UID is empty AND label contains `"://"`) → service node (plus on-demand `service-selects-pod` edges; edge type `pod-calls-service`) or — on miss — `external/<label>` node with `labels={}` (edge type `pod-calls-pod`). Never a pod.
+1. Connection-string resolution (hardcoded `"://"` check; only when UID is empty AND label contains `"://"`) → one service node PER cluster in the caller's family (anchored on the UID-recovered client-pod cluster when available, else the trace label) holding the addressed `(namespace, service)` (each with on-demand `service-selects-pod` fan-out; one `pod-calls-service` edge per matched service node, which MAY be cross-cluster) or — when zero family clusters match — `external/<label>` node with `labels={}` (edge type `pod-calls-pod`). Never a pod.
 2. Pod-UID resolution against topology / synth-pod fallback (only when UID is non-empty).
 3. Missing-UID human-label fallback (this requirement; only when UID is empty AND label is non-empty AND label does NOT contain `"://"`).
 4. Drop (both UID and label empty).
+
+A series with a **wholly empty side** (its pod UID AND its human label both empty) SHALL be dropped BEFORE any resolution runs for EITHER side: no edge is emitted and no node (service, external, or synthesised pod) is materialised for either endpoint — the other side's `"://"` label must not leak an orphan service/external subgraph for an edge that cannot exist.
 
 #### Scenario: Client UID missing, client label promoted to external
 
@@ -203,6 +237,11 @@ The per-endpoint resolution order is:
 
 - **WHEN** a series has `client_k8s_pod_uid=""` AND `client=""` (or symmetrically empty server pair)
 - **THEN** no edge is emitted for that series and no node is synthesised for that endpoint
+
+#### Scenario: Wholly empty side drops the series before the other side materialises
+
+- **WHEN** a series has `client=""` AND `client_k8s_pod_uid=""` while `server="nats://nats.messaging.svc:4222"` with `server_k8s_pod_uid=""` (or the symmetric server-empty case with a `"://"` client)
+- **THEN** the series is dropped before resolution: no edge is emitted AND no service node, no `service-selects-pod` fan-out edge, and no external node is materialised from the non-empty side's label
 
 #### Scenario: Connection-string resolution wins over missing-UID fallback
 

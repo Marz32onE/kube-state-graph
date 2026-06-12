@@ -130,12 +130,12 @@ Implementations SHALL NOT encode booleans or numbers as strings inside `labels`.
 
 The `name` parameter SHALL match `n.Name()` by exact string equality across **every** node type (`PodNode`, `K8sNode`, `PVCNode`, `ServiceNode`, `ExternalNode`) — a single `?name=` value matches a pod, a K8s node, a PVC, a service, or an external node with the same name. Names are not globally unique (pods and K8s nodes can share a name; PVCs and services can repeat across namespaces); all matches SHALL be returned.
 
-**Edge retention rule (unified across all filters).** An edge SHALL be retained when at least one resolved endpoint is in scope after node filtering. When exactly one endpoint is in scope, the missing endpoint SHALL be re-added from the freshly built graph's node index provided it passes the non-cluster filters (namespace check; types without a namespace label pass through). This single rule covers (a) anchoring on a named node and visualising its incident edges with their partner endpoints, and (b) cross-cluster `pod-calls-pod` edges where only `cluster` narrows scope and the partner pod lives outside the in-scope cluster set.
+**Edge retention rule (unified across all filters).** An edge SHALL be retained when at least one resolved endpoint is in scope after node filtering. When exactly one endpoint is in scope, the missing endpoint SHALL be re-added from the freshly built graph's node index provided it passes the non-cluster filters (namespace check; types without a namespace label pass through). This single rule is edge-type-agnostic and covers (a) anchoring on a named node and visualising its incident edges with their partner endpoints, and (b) cross-cluster `pod-calls-pod` and `pod-calls-service` edges where only `cluster` narrows scope and the partner endpoint — a pod, or a service node resolved via cluster-family fan-out — lives outside the in-scope cluster set.
 
 #### Scenario: Cluster filter narrows result
 
 - **WHEN** the freshly built graph contains pods in `cluster-alpha` and `cluster-beta` and a client sends `?cluster=cluster-alpha`
-- **THEN** the response contains pod nodes only for `cluster-alpha`, plus any cross-cluster edge endpoints in `cluster-beta` that participate in an edge to `cluster-alpha`
+- **THEN** the response contains pod nodes only for `cluster-alpha`, plus any cross-cluster edge endpoints (pod or service nodes) in `cluster-beta` that participate in an edge to `cluster-alpha`
 
 #### Scenario: Namespace filter combined with cluster
 
@@ -237,7 +237,7 @@ The server SHALL expose `GET /v1/edge-types` that returns the static catalogue o
 #### Scenario: pod-calls-service catalogue entry
 
 - **WHEN** a client inspects the catalogue entry for `pod-calls-service`
-- **THEN** its `directed` field is `true`, its `may_cross_cluster` field is `false`, its `source_type` is an array containing `"pod"` and `"external"`, its `target_type` is `"service"` (or `["service"]`), and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (omitted when the client side is non-pod)
+- **THEN** its `directed` field is `true`, its `may_cross_cluster` field is `true` (cross-cluster service resolution via cluster-family fan-out may resolve a `"://"` endpoint to a service node in a different cluster of the caller's family), its `source_type` is an array containing `"pod"` and `"external"`, its `target_type` is `"service"` (or `["service"]`), and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (omitted when the client side is non-pod)
 
 #### Scenario: service-selects-pod catalogue entry
 
@@ -246,7 +246,7 @@ The server SHALL expose `GET /v1/edge-types` that returns the static catalogue o
 
 ### Requirement: Cross-cluster edge representation
 
-When the freshly built graph contains a `pod-calls-pod` edge whose source-node cluster differs from its target-node cluster, the API SHALL emit it as a single edge carrying `labels.cluster` (the trace source / client-side cluster) and SHALL include both endpoint nodes in the response `elements.nodes` whenever the projection scope includes either endpoint's cluster. Consumers detect cross-cluster status by comparing the `labels.cluster` of the edge's resolved source and target nodes — not from edge labels.
+When the freshly built graph contains a `pod-calls-pod` or `pod-calls-service` edge whose source-node cluster differs from its target-node cluster, the API SHALL emit it as a single edge carrying `labels.cluster` (the trace source / client-side cluster, present iff the client side resolved to a pod) and SHALL include both endpoint nodes in the response `elements.nodes` whenever the projection scope includes either endpoint's cluster. Consumers detect cross-cluster status by comparing the `labels.cluster` of the edge's resolved source and target nodes — not from edge labels. These rules apply identically to `pod-calls-pod` edges (server-side pod resolved via the global pod-UID index) and `pod-calls-service` edges (target service node resolved via cluster-family fan-out in connection-string resolution).
 
 #### Scenario: Cross-cluster edge with both clusters in scope
 
@@ -257,6 +257,11 @@ When the freshly built graph contains a `pod-calls-pod` edge whose source-node c
 
 - **WHEN** a client requests `?cluster=cluster-alpha` and a cross-cluster edge exists from a pod in `cluster-alpha` to a pod in `cluster-beta`
 - **THEN** the response contains the `cluster-alpha` endpoint, the `cluster-beta` endpoint (so the edge resolves), and the edge with `labels.cluster: "cluster-alpha"`; the cross-cluster status is detected by comparing the two endpoint nodes' `labels.cluster` values
+
+#### Scenario: Cross-cluster pod-calls-service edge from cluster-family fan-out
+
+- **WHEN** a pod in cluster `prod-1` emits a `"://"` connection-string endpoint whose `(service, namespace)` is held ONLY by cluster `prod-2` within the `prod-#` family (absent from `prod-1` and every other family member), so cluster-family fan-out resolves it to exactly the `prod-2` service node, and a client requests a projection scope that includes `prod-1` or `prod-2` (or both)
+- **THEN** the response contains exactly one `pod-calls-service` edge from the `prod-1` pod node to the `prod-2/<namespace>/<service>` service node, both endpoint nodes are present in `elements.nodes`, the edge carries `labels.cluster: "prod-1"` (the client side is a pod), and cross-cluster status is derived by comparing the source node's `labels.cluster` (`"prod-1"`) with the target node's `labels.cluster` (`"prod-2"`) — not from any edge label
 
 ### Requirement: Deterministic response body
 
