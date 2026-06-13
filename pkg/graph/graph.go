@@ -96,37 +96,41 @@ func (g *Graph) NodeCountByKind() map[[2]string]int {
 	return out
 }
 
+// neverCrossCluster is derived from the EdgeTypes registry at init: edge
+// types declared MayCrossCluster=false are intra-cluster by construction, so
+// the per-edge node lookups in isCrossCluster can be skipped for them.
+// Registry-driven (not type literals) so a future may-cross type can never be
+// silently mis-bucketed by a stale gate; unregistered types are NOT in the
+// set and are still evaluated.
+var neverCrossCluster = func() map[EdgeType]struct{} {
+	out := make(map[EdgeType]struct{}, len(EdgeTypes))
+	for _, def := range EdgeTypes {
+		if !def.MayCrossCluster {
+			out[def.Type] = struct{}{}
+		}
+	}
+	return out
+}()
+
 // EdgeCountByType returns counts grouped by edge type and a "true"|"false"
-// cross-cluster bucket. Cross-cluster status is derived for EVERY edge by
-// comparing the resolved source-node and target-node `cluster` labels (the
-// edge itself only carries the trace-source / client-side cluster) — this
-// covers both pod-calls-pod (server pod recovered via the UID index) and
-// pod-calls-service (service resolved via the D29 cluster-family fan-out).
-// Always-intra-cluster types bucket as "false" by construction; edges whose
-// endpoints are missing or external are bucketed as "false".
+// cross-cluster bucket. Cross-cluster status is derived by comparing the
+// resolved source-node and target-node `cluster` labels (the edge itself only
+// carries the trace-source / client-side cluster) — this covers both
+// pod-calls-pod (server pod recovered via the UID index) and pod-calls-service
+// (service resolved via the D29 cluster-family fan-out). Types the registry
+// declares always-intra-cluster bucket as "false" without the per-edge node
+// lookups; edges whose endpoints are missing or external are bucketed as
+// "false".
 func (g *Graph) EdgeCountByType() map[[2]string]int {
 	out := map[[2]string]int{}
 	for _, e := range g.Edges {
 		cross := "false"
-		if g.isCrossCluster(e) {
+		if _, never := neverCrossCluster[e.Type]; !never && g.isCrossCluster(e) {
 			cross = "true"
 		}
 		out[[2]string{string(e.Type), cross}]++
 	}
 	return out
-}
-
-// CrossClusterEdgeCount returns the number of edges whose resolved endpoint
-// nodes live in different clusters — any edge type, same derivation as
-// EdgeCountByType's "true" bucket.
-func (g *Graph) CrossClusterEdgeCount() int {
-	n := 0
-	for _, e := range g.Edges {
-		if g.isCrossCluster(e) {
-			n++
-		}
-	}
-	return n
 }
 
 // isCrossCluster returns true when both endpoints of the edge are non-external

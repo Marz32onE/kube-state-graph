@@ -66,18 +66,10 @@ func ParseValues(v url.Values) (start, end time.Time, scope graph.Scope, err err
 		return start, end, scope, &ParseError{"depth_too_large", "depth exceeds maximum"}
 	}
 
-	for _, et := range v["edge_type"] {
-		if et == "" {
-			continue // graph.NewScope drops empty values; keep `?edge_type=` a no-op
-		}
-		if !graph.ValidEdgeType(graph.EdgeType(et)) {
-			// Validate against the single in-code registry (graph.EdgeTypes) so a
-			// typo like "pod-calls-pods" is a 400, not a 200 with every edge
-			// silently filtered out. /v1/edge-types serves the same registry.
-			return start, end, scope, &ParseError{"invalid_scope", fmt.Sprintf("unknown edge_type %q", et)}
-		}
-	}
-
+	// Unknown ?edge_type= values are rejected by graph.NewScope itself
+	// (validated against the registry /v1/edge-types serves), so D32 embedders
+	// constructing scopes directly get the same 400-not-silent-empty guard;
+	// the error surfaces below as the usual invalid_scope ParseError.
 	scope, serr := graph.NewScope(
 		v["cluster"],
 		v["namespace"],

@@ -40,5 +40,13 @@ func TestEdgeCountByType_CrossClusterBuckets(t *testing.T) {
 	assert.Equal(t, 1, counts[[2]string{string(EdgeTypePodCallsService), "false"}])
 	assert.Equal(t, 1, counts[[2]string{string(EdgeTypeServiceSelectsPod), "false"}])
 
-	assert.Equal(t, 2, g.CrossClusterEdgeCount(), "one cross-cluster pod edge + one cross-cluster service edge")
+	// The cross-cluster total is the sum of the "true" buckets — the single
+	// EdgeCountByType scan is the one source for both metrics and the log line.
+	cross := 0
+	for k, n := range counts {
+		if k[1] == "true" {
+			cross += n
+		}
+	}
+	assert.Equal(t, 2, cross, "one cross-cluster pod edge + one cross-cluster service edge")
 }

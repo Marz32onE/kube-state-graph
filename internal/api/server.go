@@ -149,21 +149,20 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 			if path == "" {
 				path = unmatchedPath
 			}
+			// Count every request exactly once, before the quiet-path branch —
+			// one Inc site, not a copy per branch.
+			s.metrics.HTTPRequests.WithLabelValues(path, statusClass(status)).Inc()
 			if _, quiet := quietLogPaths[path]; quiet && status < 400 {
-				s.metrics.HTTPRequests.WithLabelValues(path, statusClass(status)).Inc()
 				return
 			}
-			clusters := c.Request.URL.Query()["cluster"]
-
 			s.logger.InfoContext(c.Request.Context(), "http",
 				"method", c.Request.Method,
 				"path", path,
 				"status", status,
 				"duration_ms", duration.Milliseconds(),
 				"request_id", c.GetString("request_id"),
-				"clusters", clusters,
+				"clusters", c.Request.URL.Query()["cluster"],
 			)
-			s.metrics.HTTPRequests.WithLabelValues(path, statusClass(status)).Inc()
 		}()
 		c.Next()
 	}
