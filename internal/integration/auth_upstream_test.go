@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"testing"
 	"time"
@@ -50,29 +49,13 @@ kube_node_info{cluster="cluster-auth",node="worker-0"} 1 ` + strconv.FormatInt(t
 		"VM did not observe ingested kube_pod_info")
 }
 
-func (s *UpstreamAuthSuite) graphURL(srv string) string {
-	q := url.Values{}
-	q.Set("start", strconv.FormatInt(fixedNow.Add(-5*time.Minute).Unix(), 10))
-	q.Set("end", strconv.FormatInt(fixedNow.Unix(), 10))
-	return srv + "/v1/graph?" + q.Encode()
-}
-
-func (s *UpstreamAuthSuite) httpGet(rawURL string) *http.Response {
-	s.T().Helper()
-	req, err := http.NewRequestWithContext(s.T().Context(), http.MethodGet, rawURL, nil)
-	s.Require().NoError(err)
-	resp, err := http.DefaultClient.Do(req)
-	s.Require().NoError(err)
-	return resp
-}
-
 // Credentialed build succeeds end-to-end against the auth-enabled upstream.
 func (s *UpstreamAuthSuite) TestCredentialedBuildSucceeds() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
 		cfg.PromUsername = vmAuthUser
 		cfg.PromPassword = vmAuthPass
 	})
-	resp := s.httpGet(s.graphURL(srv.URL))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
 
@@ -98,7 +81,7 @@ func (s *UpstreamAuthSuite) TestCredentialedBuildSucceeds() {
 // The response must never leak the container's credentials.
 func (s *UpstreamAuthSuite) TestUnauthenticatedBuildFails() {
 	srv := s.StartAPIServer(nil) // no PromUsername/PromPassword
-	resp := s.httpGet(s.graphURL(srv.URL))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusBadGateway, resp.StatusCode)
 

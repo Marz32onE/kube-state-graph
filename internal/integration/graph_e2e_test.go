@@ -84,25 +84,6 @@ traces_service_graph_request_total{client="https://payments.partner.example/api"
 		"VM did not observe non-zero service-graph rate")
 }
 
-func (s *GraphSuite) graphURL(srv string, configureQuery func(url.Values)) string {
-	q := url.Values{}
-	q.Set("start", strconv.FormatInt(fixedNow.Add(-5*time.Minute).Unix(), 10))
-	q.Set("end", strconv.FormatInt(fixedNow.Unix(), 10))
-	if configureQuery != nil {
-		configureQuery(q)
-	}
-	return srv + "/v1/graph?" + q.Encode()
-}
-
-func (s *GraphSuite) httpGet(rawURL string) *http.Response {
-	s.T().Helper()
-	req, err := http.NewRequestWithContext(s.T().Context(), http.MethodGet, rawURL, nil)
-	s.Require().NoError(err)
-	resp, err := http.DefaultClient.Do(req)
-	s.Require().NoError(err)
-	return resp
-}
-
 func (s *GraphSuite) TestSingleClusterGraph() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {
 

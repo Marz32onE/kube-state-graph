@@ -1,46 +1,18 @@
 package graph
 
 import (
-	"bytes"
-	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/marz32one/kube-state-graph/pkg/internal/testlog"
 )
 
-// syncBuffer is a goroutine-safe writer for capturing log output.
-// (Local copy of the pkg/build test helper — it lives in another package.)
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// captureLogs swaps the default slog logger for the test's duration and
-// returns the buffer collecting its output.
-func captureLogs(t *testing.T) *syncBuffer {
-	t.Helper()
-	buf := &syncBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf
-}
+// captureLogs is the shared slog-capture helper (pkg/internal/testlog).
+func captureLogs(t *testing.T) *testlog.Buffer { return testlog.Capture(t) }
 
 // A Service and a PVC sharing (cluster, namespace, name) mint byte-identical
 // IDs (ServiceID mirrors PVCID keying). NewGraph must keep the FIRST node for

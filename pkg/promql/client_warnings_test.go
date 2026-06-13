@@ -1,10 +1,7 @@
 package promql
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,36 +9,12 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/marz32one/kube-state-graph/pkg/internal/testlog"
 )
 
-// logBuffer is a goroutine-safe writer for capturing slog output.
-type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *logBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// captureClientLogs swaps the default slog logger for the test's duration and
-// returns the buffer collecting its output.
-func captureClientLogs(t *testing.T) *logBuffer {
-	t.Helper()
-	buf := &logBuffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf
-}
+// captureClientLogs is the shared slog-capture helper (pkg/internal/testlog).
+func captureClientLogs(t *testing.T) *testlog.Buffer { return testlog.Capture(t) }
 
 // fakeAPI is an in-package stub for the upstream v1.API: only Query is
 // implemented; the embedded interface panics on anything else, which is
