@@ -183,6 +183,21 @@ func TestValidate_PromBasicAuth_HalfConfiguredRejected(t *testing.T) {
 	}
 }
 
+// RFC 7617 forbids ':' in basic-auth user-ids — SetBasicAuth would silently
+// shift everything after the colon into the password, turning a typo into a
+// permanent upstream 401. Validation fails fast without echoing the value.
+func TestValidate_PromBasicAuth_ColonInUsernameRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.PromUsername = "team:reader"
+	cfg.PromPassword = "s3cret-value"
+
+	err := cfg.Validate()
+	require.Error(t, err, "username containing ':' must be rejected")
+	assert.Contains(t, err.Error(), "KSG_PROM_USERNAME")
+	assert.NotContains(t, err.Error(), "team:reader", "error must not echo the username")
+	assert.NotContains(t, err.Error(), "s3cret-value", "error must not echo the password")
+}
+
 // Credentials are deliberately env-only: no --prom-username / --prom-password
 // flags exist, so flag parsing must reject them as unknown (D-A1).
 func TestParse_PromBasicAuth_NoFlagsRegistered(t *testing.T) {

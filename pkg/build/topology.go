@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -140,9 +141,24 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 	g, ctx := errgroup.WithContext(ctx)
 
 	// fetch issues one query and stores its result into dst. It captures the
-	// errgroup-derived ctx so a failing leg cancels the rest.
+	// errgroup-derived ctx so a failing leg cancels the rest. The closure
+	// recovers its own panics: errgroup (x/sync, post-#53757-revert) does NOT
+	// propagate goroutine panics to Wait, so an unrecovered panic here would
+	// kill the whole process — the HTTP recovery middleware only covers the
+	// handler goroutine. Converting to an error keeps the standard
+	// build-failure path (sanitised 500, full detail in server logs).
 	fetch := func(name promql.Query, dst *model.Vector) func() error {
-		return func() error {
+		return func() (err error) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.ErrorContext(ctx, "panic in topology query",
+						"query", string(name),
+						"panic", fmt.Sprint(rec),
+						"stack", string(debug.Stack()),
+					)
+					err = fmt.Errorf("panic in %s query: %v", name, rec)
+				}
+			}()
 			out, err := q.Instant(ctx, string(name), r.Render(name, window), end)
 			*dst = out
 			return err
@@ -566,9 +582,11 @@ type ownerRef struct{ kind, name string }
 // surfaced verbatim. Pods with no controller owner are simply absent from the
 // returned map (the caller omits the labels rather than emitting empty strings).
 //
-// Pure function of the two input vectors — no ordering dependence: when a pod
-// reports multiple controller owners, the lexically-smallest (kind, name) wins
-// so the emitted entity is stable across rebuilds (D6 determinism).
+// The returned map is a deterministic function of the two input vectors — no
+// ordering dependence: when a pod reports multiple controller owners, the
+// lexically-smallest (kind, name) wins so the emitted entity is stable across
+// rebuilds (D6 determinism). The only side effect is tallying missing-cluster
+// samples into the caller's mc accumulator.
 func resolvePodOwners(ownerVec, rsOwnerVec model.Vector, mc missingClusterCounts) map[podNameKey]ownerRef {
 	// ReplicaSet → owning Deployment, keyed by (cluster, namespace, replicaset).
 	// Only Deployment owners are retained; a ReplicaSet owned by anything else
@@ -630,9 +648,11 @@ type pvcKey struct{ cluster, namespace, claim string }
 // materialises a PVC on its own.
 //
 // OPTIONAL: an absent or empty vector yields an empty map and PVCs carry no
-// StorageClass (graceful degradation). Pure function of the input vector — on a
-// duplicate (cluster, namespace, claim) the lexically-smallest storageclass
-// wins, so the emitted grouping is stable across rebuilds (D6 determinism).
+// StorageClass (graceful degradation). The returned map is a deterministic
+// function of the input vector — on a duplicate (cluster, namespace, claim)
+// the lexically-smallest storageclass wins, so the emitted grouping is stable
+// across rebuilds (D6 determinism). The only side effect is tallying
+// missing-cluster samples into the caller's mc accumulator.
 func resolvePVCStorageClass(vec model.Vector, mc missingClusterCounts) map[pvcKey]string {
 	out := make(map[pvcKey]string, len(vec))
 	for _, s := range vec {

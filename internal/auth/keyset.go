@@ -61,16 +61,47 @@ func (ks *KeySet) LoadFile(path string) error {
 // is returned — an empty/comment-only/truncated file observed mid-rotation
 // must not silently disable authentication on a live server. Replacing an
 // empty set with an empty set is not an error.
-func (ks *KeySet) ReloadFile(path string) error {
+//
+// The returned changed flag reports whether the new SET of keys differs from
+// the previous one (order-insensitive — a reorder-only rewrite is not a
+// change). Count comparison is not enough: the common rotation shape swaps N
+// old keys for N new ones, and the caller's "keys reloaded" log must fire for
+// it. Key values never leave this package.
+func (ks *KeySet) ReloadFile(path string) (changed bool, err error) {
 	keys, err := readKeyFile(path)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if active := ks.Snapshot(); len(keys) == 0 && active > 0 {
-		return fmt.Errorf("refusing to replace %d active keys with an empty key set from %s", active, path)
+	old := ks.keys.Load()
+	if len(keys) == 0 && old != nil && len(*old) > 0 {
+		return false, fmt.Errorf("refusing to replace %d active keys with an empty key set from %s", len(*old), path)
 	}
 	ks.keys.Store(&keys)
-	return nil
+	return !sameKeySet(old, keys), nil
+}
+
+// sameKeySet reports whether old (nillable snapshot) and next hold the same
+// keys as sets. Both slices are already deduplicated by their loaders, so a
+// length check plus one-way membership suffices. Not constant-time — both
+// operands are server-held, never attacker input.
+func sameKeySet(old *[]string, next []string) bool {
+	var prev []string
+	if old != nil {
+		prev = *old
+	}
+	if len(prev) != len(next) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(prev))
+	for _, k := range prev {
+		seen[k] = struct{}{}
+	}
+	for _, k := range next {
+		if _, ok := seen[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadCSV parses comma-separated keys (whitespace trimmed; blanks dropped)

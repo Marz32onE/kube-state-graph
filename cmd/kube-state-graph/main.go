@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -129,13 +130,10 @@ func run() error {
 		return err
 	}
 
-	// Size the drain window from config so it covers the slowest legitimate
-	// in-flight request: WriteTimeout is BuildTimeout+5s, so match it (with a
-	// 10s floor for very short build timeouts).
-	shutdownTimeout := cfg.BuildTimeout + 5*time.Second
-	if shutdownTimeout < 10*time.Second {
-		shutdownTimeout = 10 * time.Second
-	}
+	// The drain window must cover the slowest legitimate in-flight request, so
+	// derive it from the server's own WriteTimeout (with a 10s floor for very
+	// short build timeouts) instead of re-deriving the formula.
+	shutdownTimeout := max(httpSrv.WriteTimeout, 10*time.Second)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
@@ -146,7 +144,13 @@ func run() error {
 		logger.Error("http server shutdown failed", "err", err)
 		errs = append(errs, fmt.Errorf("shutdown: %w", err))
 	}
-	if err := telemetryProviders.Shutdown(shutdownCtx); err != nil {
+	// The telemetry flush gets its OWN budget: a timed-out drain has exhausted
+	// shutdownCtx, and the OTel SDK Shutdowns bail immediately on an expired
+	// context — exporting nothing in exactly the abnormal-shutdown case whose
+	// spans/logs matter most (including the drain-failure record just emitted).
+	telCtx, telCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer telCancel()
+	if err := telemetryProviders.Shutdown(telCtx); err != nil {
 		// Bypass the slog OTLP bridge — providers are tearing down.
 		fmt.Fprintf(os.Stderr, "otlp shutdown timed out: %v\n", err)
 		errs = append(errs, fmt.Errorf("otlp shutdown: %w", err))
@@ -190,17 +194,34 @@ func reloadAPIKeys(ctx context.Context, ks *auth.KeySet, path string, interval t
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			before := ks.Snapshot()
-			// ReloadFile fails closed: an empty/comment-only/truncated file
-			// cannot wipe a non-empty active set — the error below then
-			// surfaces every interval until the file is fixed.
-			if err := ks.ReloadFile(path); err != nil {
-				logger.Error("api keys reload failed", "path", path, "err", err)
-				continue
-			}
-			if after := ks.Snapshot(); after != before {
-				logger.Info("api keys reloaded", "path", path, "keys", after)
-			}
+			reloadAPIKeysOnce(ks, path, logger)
 		}
+	}
+}
+
+// reloadAPIKeysOnce performs one reload tick. It runs on a bare goroutine
+// with no recover above it, so a panic here would kill the whole process —
+// recover, log, and let the next tick retry instead.
+func reloadAPIKeysOnce(ks *auth.KeySet, path string, logger *slog.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("api keys reload panicked",
+				"path", path,
+				"panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	// ReloadFile fails closed: an empty/comment-only/truncated file cannot
+	// wipe a non-empty active set — the error below then surfaces every
+	// interval until the file is fixed. The changed flag is set-based, so the
+	// common same-count rotation (N old keys → N new keys) still logs.
+	changed, err := ks.ReloadFile(path)
+	if err != nil {
+		logger.Error("api keys reload failed", "path", path, "err", err)
+		return
+	}
+	if changed {
+		logger.Info("api keys reloaded", "path", path, "keys", ks.Snapshot())
 	}
 }

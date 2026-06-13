@@ -72,6 +72,55 @@ func TestClustersEndpoint_Upstream502_SanitisedMessage(t *testing.T) {
 	assertNoUpstreamLeak(t, body.Error.Message)
 }
 
+// upstreamTimeoutErr mimics the promql wrap of net/http's *url.Error when the
+// request deadline fires mid-flight: the text embeds the internal upstream
+// URL while errors.Is(err, context.DeadlineExceeded) is true through the
+// chain — the realistic shape a 504 path must redact (a bare ctx.Err() mock
+// could never catch the leak).
+func upstreamTimeoutErr() error {
+	return fmt.Errorf(`prom query kube_pod_info: Post "http://vm.internal:8428/api/v1/query": %w`, context.DeadlineExceeded)
+}
+
+// TestGraphEndpoint_Timeout504_SanitisedMessage asserts the 504 envelope for a
+// timed-out /v1/graph build carries the static build-authored message, not the
+// wrapped cause chain embedding the internal VictoriaMetrics URL.
+func TestGraphEndpoint_Timeout504_SanitisedMessage(t *testing.T) {
+	s := newServerWithMocks(t, newErrQuerier(t, upstreamTimeoutErr()), nil)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/v1/graph?start=2026-05-01T12:00:00Z&end=2026-05-01T12:05:00Z")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusGatewayTimeout, resp.StatusCode)
+
+	var body errReason
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "timeout", body.Error.Reason, "reason string is a contract and must not change")
+	assert.Equal(t, "build timeout", body.Error.Message)
+	assertNoUpstreamLeak(t, body.Error.Message)
+}
+
+// TestClustersEndpoint_Timeout504_SanitisedMessage asserts /v1/clusters'
+// timeout path is redacted like every other error branch — the deadline error
+// arrives wrapped in the url.Error that embeds the internal upstream URL.
+func TestClustersEndpoint_Timeout504_SanitisedMessage(t *testing.T) {
+	s := newServerWithMocks(t, newErrQuerier(t, upstreamTimeoutErr()), nil)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/v1/clusters")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusGatewayTimeout, resp.StatusCode)
+
+	var body errReason
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "timeout", body.Error.Reason, "reason string is a contract and must not change")
+	assert.Equal(t, "cluster discovery timed out", body.Error.Message)
+	assertNoUpstreamLeak(t, body.Error.Message)
+}
+
 // TestClustersEndpoint_ClientCanceled_Returns499 asserts a client disconnect
 // during /v1/clusters maps to the same 499 "canceled" envelope /v1/graph
 // returns (mapBuildError's ReasonCanceled path) instead of a misleading 502

@@ -59,10 +59,9 @@ type sgResolver struct {
 	podByID            map[string]*graph.PodNode    // client side: cluster known from metric
 	podByUID           map[string]*graph.PodNode    // server side: cluster recovered via index
 	svcCandidates      map[famSvcKey][]svcCandidate
-	svcGlobal          map[nsSvcKey][]svcCandidate // unknown-family fallback: LOADED holders of (ns, svc) — "unknown"-bucketed entries excluded
-	knownFamilies      map[string]struct{}         // family keys of every loaded cluster (excl. "unknown")
-	epVisibleClusters  map[string]struct{}         // clusters with ANY endpoint data — pruning evidence gate
-	connStringIDs      map[string][]string         // memo: familyCluster+"|"+label → resolved IDs
+	svcHolderFamilies  map[nsSvcKey]holderFamily // unknown-family fallback: which LOADED family/families hold (ns, svc) — "unknown"-bucketed entries excluded
+	knownFamilies      map[string]struct{}       // family keys of every loaded cluster (excl. "unknown")
+	epVisibleClusters  map[string]struct{}       // clusters with ANY endpoint data — pruning evidence gate
 	externals          map[string]*graph.ExternalNode
 	synthPods          map[string]*graph.PodNode
 	services           map[string]*graph.ServiceNode // keyed by service id
@@ -78,6 +77,17 @@ type famSvcKey struct{ family, namespace, service string }
 // nsSvcKey keys the unknown-family fallback index: the service identity a
 // "://" host classifies to, across ALL loaded clusters regardless of family.
 type nsSvcKey struct{ namespace, service string }
+
+// holderFamily records which loaded family holds a (namespace, service): the
+// single family key, or multi=true when two-plus families hold it (ambiguous
+// for the unknown-family fallback). The candidates themselves are NOT
+// duplicated here — a unique holder family's candidate slice is exactly
+// svcCandidates[famSvcKey{family, ns, svc}] (a loaded family key can never be
+// "unknown", so that bucket contains no pseudo-cluster entries).
+type holderFamily struct {
+	family string
+	multi  bool
+}
 
 // svcCandidate is one cluster's deployment of a (namespace, service).
 type svcCandidate struct {
@@ -106,32 +116,35 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	// resolution is then a single map hit. (Filtering the sorted
 	// ClustersObserved list per endpoint would also work — the index just
 	// keeps the family rule in one place.)
-	// svcGlobal is the candidate set keyed by bare (namespace, service): the
-	// unknown-family fallback consults it when the anchor names no loaded
-	// family (missing "unknown"-bucketed label, or a bogus trace label).
-	// "unknown"-bucketed service entries are EXCLUDED here — the bucket is an
-	// absence of identity, so it must neither count as a holder family in the
-	// uniqueness check (one unlabelled duplicate of a prod service would flip
-	// {prod-0} to {prod-0, unknown} = ambiguous, silently disabling the
-	// fallback) nor let a bogus-label anchor resolve into the pseudo-cluster.
-	// They DO stay in svcCandidates: an "unknown" anchor's direct family hit
-	// is the only resolution a fully-unlabelled deployment has (see
-	// resolveServiceLevel for the precedence between the two).
+	// svcHolderFamilies records, per bare (namespace, service), which loaded
+	// family/families hold it: the unknown-family fallback consults it when
+	// the anchor names no loaded family (missing "unknown"-bucketed label, or
+	// a bogus trace label). "unknown"-bucketed service entries are EXCLUDED
+	// here — the bucket is an absence of identity, so it must neither count as
+	// a holder family in the uniqueness check (one unlabelled duplicate of a
+	// prod service would flip {prod-0} to {prod-0, unknown} = ambiguous,
+	// silently disabling the fallback) nor let a bogus-label anchor resolve
+	// into the pseudo-cluster. They DO stay in svcCandidates: an "unknown"
+	// anchor's direct family hit is the only resolution a fully-unlabelled
+	// deployment has (see resolveServiceLevel for the precedence between the
+	// two). Candidates are not duplicated: a unique holder family resolves
+	// back through svcCandidates.
 	svcCandidates := make(map[famSvcKey][]svcCandidate, len(topology.ServicesByNameNS))
-	svcGlobal := make(map[nsSvcKey][]svcCandidate, len(topology.ServicesByNameNS))
+	svcHolderFamilies := make(map[nsSvcKey]holderFamily, len(topology.ServicesByNameNS))
 	for k, obs := range topology.ServicesByNameNS {
-		cand := svcCandidate{cluster: k.cluster, obs: obs}
-		key := famSvcKey{family: clusterFamilyKey(k.cluster), namespace: k.namespace, service: k.service}
-		svcCandidates[key] = append(svcCandidates[key], cand)
+		family := clusterFamilyKey(k.cluster)
+		key := famSvcKey{family: family, namespace: k.namespace, service: k.service}
+		svcCandidates[key] = append(svcCandidates[key], svcCandidate{cluster: k.cluster, obs: obs})
 		if k.cluster != "unknown" {
 			gk := nsSvcKey{namespace: k.namespace, service: k.service}
-			svcGlobal[gk] = append(svcGlobal[gk], cand)
+			if hf, seen := svcHolderFamilies[gk]; !seen {
+				svcHolderFamilies[gk] = holderFamily{family: family}
+			} else if !hf.multi && hf.family != family {
+				svcHolderFamilies[gk] = holderFamily{family: hf.family, multi: true}
+			}
 		}
 	}
 	for _, cands := range svcCandidates {
-		sort.Slice(cands, func(i, j int) bool { return cands[i].cluster < cands[j].cluster })
-	}
-	for _, cands := range svcGlobal {
 		sort.Slice(cands, func(i, j int) bool { return cands[i].cluster < cands[j].cluster })
 	}
 
@@ -174,10 +187,9 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 		podByID:            podByID,
 		podByUID:           topology.PodsByUID,
 		svcCandidates:      svcCandidates,
-		svcGlobal:          svcGlobal,
+		svcHolderFamilies:  svcHolderFamilies,
 		knownFamilies:      knownFamilies,
 		epVisibleClusters:  epVisibleClusters,
-		connStringIDs:      map[string][]string{},
 		externals:          map[string]*graph.ExternalNode{},
 		synthPods:          map[string]*graph.PodNode{},
 		services:           map[string]*graph.ServiceNode{},
@@ -257,12 +269,13 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 				// Deterministic dedupe: multiple upstream series can resolve to the
 				// same (src, tgt) pair while carrying different trace `cluster`
 				// labels (e.g. one missing → "unknown", the client pod recovered via
-				// the cluster-agnostic UID index). Keep the lexically-smaller
-				// srcCluster so the emitted edge's labels.cluster is a pure function
-				// of the data, not vector arrival order (D6). srcIsPod is identical
-				// for a given srcID, so only srcCluster needs the tie-break.
+				// the cluster-agnostic UID index). betterSrcCluster picks the most
+				// informative label deterministically so the emitted edge's
+				// labels.cluster is a pure function of the data, not vector arrival
+				// order (D6). srcIsPod is identical for a given srcID, so only
+				// srcCluster needs the tie-break.
 				key := pairKey{src: srcID, tgt: tgtID}
-				if prev, dup := pairs[key]; !dup || traceCluster < prev.srcCluster {
+				if prev, dup := pairs[key]; !dup || betterSrcCluster(traceCluster, prev.srcCluster) {
 					pairs[key] = aggEdge{srcIsPod: srcIsPod, srcCluster: traceCluster}
 				}
 			}
@@ -311,6 +324,27 @@ func parseServiceGraph(vec model.Vector, topology Topology) ServiceGraphResult {
 	mc.warn()
 
 	return out
+}
+
+// betterSrcCluster reports whether next should replace prev as a duplicate
+// (src, tgt) pair's edge labels.cluster. An identified cluster always beats
+// the "unknown" missing-label bucket — a sibling series that carried the real
+// trace-source cluster is strictly more informative, and plain lexical order
+// would let "unknown" win against any real name sorting after it ("us-east-1",
+// "v…", …). Among real names (or two "unknown"s) the lexically-smaller wins.
+// Pure and order-free, so the pick stays a deterministic function of the data
+// (D6) regardless of vector arrival order.
+func betterSrcCluster(next, prev string) bool {
+	if next == prev {
+		return false
+	}
+	if prev == "unknown" {
+		return true
+	}
+	if next == "unknown" {
+		return false
+	}
+	return next < prev
 }
 
 // isConnString reports whether a client/server label is a "://" connection
@@ -422,22 +456,12 @@ func (r *sgResolver) resolveServer(label, familyCluster, podUID, namespace strin
 // back to an external node. The result is therefore never a pod — Stage 0
 // yields service nodes or a single external node.
 //
-// Results are memoised per (familyCluster, label): the same "://" label
-// recurs across many series (connection_type / peer variants), resolution is
-// a pure function of (label, family, topology), and materialisation is
-// idempotent (services / externals / svcEdges all dedupe), so caching the
-// resolved IDs is safe.
+// Deliberately NOT memoised: resolution is a url.Parse plus a couple of map
+// hits (µs-scale, dwarfed by the upstream fetch), materialisation is
+// idempotent (services / externals / svcEdges all dedupe), and a cache keyed
+// on (familyCluster, label) is exactly the kind of collision-prone state a
+// pure per-parse function does not need.
 func (r *sgResolver) resolveConnString(label, familyCluster string) []string {
-	memoKey := familyCluster + "|" + label
-	if ids, ok := r.connStringIDs[memoKey]; ok {
-		return ids
-	}
-	ids := r.resolveConnStringUncached(label, familyCluster)
-	r.connStringIDs[memoKey] = ids
-	return ids
-}
-
-func (r *sgResolver) resolveConnStringUncached(label, familyCluster string) []string {
 	if host := connStringHost(label); host != "" {
 		if svc, ns, ok := classifyK8sDNS(host); ok {
 			if ids := r.resolveServiceLevel(familyCluster, ns, svc); len(ids) > 0 {
@@ -502,24 +526,23 @@ func (r *sgResolver) resolveServiceLevel(familyCluster, ns, svc string) []string
 
 // loadedUniqueFamilyHolders implements the unknown-family fallback lookup:
 // the LOADED clusters holding (namespace, service) — "unknown"-bucketed
-// entries are excluded at svcGlobal build time. anyLoaded reports whether any
-// loaded cluster holds the name at all; holders is non-nil ONLY when they all
-// belong to a single family (two-plus families is ambiguous — no anchor
-// exists to disambiguate — and resolves to nil → external). Holders come from
-// the per-parse svcGlobal index (sorted by cluster at build); the uniqueness
-// check is an order-free set property (D6).
+// entries are excluded at svcHolderFamilies build time. anyLoaded reports
+// whether any loaded cluster holds the name at all; holders is non-nil ONLY
+// when they all belong to a single family (two-plus families is ambiguous —
+// no anchor exists to disambiguate — and resolves to nil → external). A
+// unique holder family's candidates are exactly its svcCandidates bucket
+// (already sorted at build; a loaded family key is never "unknown", so the
+// bucket holds no pseudo-cluster entries) — the uniqueness check is an
+// order-free set property (D6).
 func (r *sgResolver) loadedUniqueFamilyHolders(ns, svc string) ([]svcCandidate, bool) {
-	holders := r.svcGlobal[nsSvcKey{namespace: ns, service: svc}]
-	if len(holders) == 0 {
+	hf, ok := r.svcHolderFamilies[nsSvcKey{namespace: ns, service: svc}]
+	if !ok {
 		return nil, false
 	}
-	family := clusterFamilyKey(holders[0].cluster)
-	for _, h := range holders[1:] {
-		if clusterFamilyKey(h.cluster) != family {
-			return nil, true // held by ≥2 families: ambiguous
-		}
+	if hf.multi {
+		return nil, true // held by ≥2 families: ambiguous
 	}
-	return holders, true
+	return r.svcCandidates[famSvcKey{family: hf.family, namespace: ns, service: svc}], true
 }
 
 // endpointBacked applies endpoint-backed pruning: when at least one candidate
@@ -645,14 +668,18 @@ func connStringHost(label string) string {
 // part is not 2 or 3 dotted labels.
 func classifyK8sDNS(host string) (service, namespace string, ok bool) {
 	rel := host
-	// The cluster-domain suffix is the LAST ".svc." occurrence: "svc" is a
-	// legal DNS-1123 label, so a namespace or service literally named "svc"
-	// (e.g. "myservice.svc.svc.cluster.local") would be truncated too early by
-	// a first-occurrence strings.Index and fall back to an external node.
-	if i := strings.LastIndex(host, ".svc."); i >= 0 {
-		rel = host[:i]
-	} else if strings.HasSuffix(host, ".svc") {
+	// "svc" is a legal DNS-1123 label, so a namespace or service literally
+	// named "svc" must not confuse the suffix strip. The bare-suffix check
+	// runs FIRST: an FQDN never ends in ".svc", but a bare form like
+	// "myservice.svc.svc" (service in a namespace named "svc") contains an
+	// interior ".svc." that would otherwise truncate the name too early. For
+	// FQDNs the cluster-domain suffix is then the LAST ".svc." occurrence
+	// (e.g. "myservice.svc.svc.cluster.local") — a first-occurrence
+	// strings.Index would truncate those too early as well.
+	if strings.HasSuffix(host, ".svc") {
 		rel = strings.TrimSuffix(host, ".svc")
+	} else if i := strings.LastIndex(host, ".svc."); i >= 0 {
+		rel = host[:i]
 	}
 	parts := strings.Split(rel, ".")
 	switch len(parts) {

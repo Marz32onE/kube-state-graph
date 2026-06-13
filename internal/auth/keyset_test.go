@@ -89,8 +89,9 @@ func TestKeySet_ReloadFile_RefusesEmptyOverActive(t *testing.T) {
 	// Simulate a truncated / comment-only file mid-rotation.
 	require.NoError(t, os.WriteFile(path, []byte("# rotated, keys not yet written\n"), 0o600))
 
-	err := ks.ReloadFile(path)
+	changed, err := ks.ReloadFile(path)
 	require.Error(t, err, "reload must refuse to fail open")
+	assert.False(t, changed)
 	assert.Contains(t, err.Error(), "refusing to replace")
 
 	// Old keys MUST still be active — auth was not silently disabled.
@@ -106,7 +107,9 @@ func TestKeySet_ReloadFile_EmptyOverEmptyIsFine(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("# no keys\n"), 0o600))
 
 	ks := NewKeySet()
-	require.NoError(t, ks.ReloadFile(path), "empty over empty must not error")
+	changed, err := ks.ReloadFile(path)
+	require.NoError(t, err, "empty over empty must not error")
+	assert.False(t, changed, "empty over empty is not a change")
 	assert.True(t, ks.Empty())
 	assert.Equal(t, 0, ks.Snapshot())
 }
@@ -121,11 +124,62 @@ func TestKeySet_ReloadFile_SwapsNonEmpty(t *testing.T) {
 	assert.True(t, ks.Validate("k1"))
 
 	require.NoError(t, os.WriteFile(path, []byte("k2\nk3\n"), 0o600))
-	require.NoError(t, ks.ReloadFile(path))
+	changed, err := ks.ReloadFile(path)
+	require.NoError(t, err)
+	assert.True(t, changed)
 	assert.False(t, ks.Validate("k1"), "old key revoked after reload")
 	assert.True(t, ks.Validate("k2"))
 	assert.True(t, ks.Validate("k3"))
 	assert.Equal(t, 2, ks.Snapshot())
+}
+
+// The common rotation shape replaces N keys with N different ones — the count
+// stays constant, so the changed flag must come from set comparison, not
+// Snapshot() counts.
+func TestKeySet_ReloadFile_SameCountRotationIsChanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keys")
+	require.NoError(t, os.WriteFile(path, []byte("k1\nk2\n"), 0o600))
+
+	ks := NewKeySet()
+	require.NoError(t, ks.LoadFile(path))
+
+	require.NoError(t, os.WriteFile(path, []byte("k3\nk4\n"), 0o600))
+	changed, err := ks.ReloadFile(path)
+	require.NoError(t, err)
+	assert.True(t, changed, "N→N rotation must report changed")
+	assert.False(t, ks.Validate("k1"))
+	assert.True(t, ks.Validate("k3"))
+	assert.True(t, ks.Validate("k4"))
+}
+
+func TestKeySet_ReloadFile_IdenticalContentNotChanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keys")
+	require.NoError(t, os.WriteFile(path, []byte("k1\nk2\n"), 0o600))
+
+	ks := NewKeySet()
+	require.NoError(t, ks.LoadFile(path))
+
+	changed, err := ks.ReloadFile(path)
+	require.NoError(t, err)
+	assert.False(t, changed, "identical content must not report changed")
+}
+
+func TestKeySet_ReloadFile_ReorderOnlyNotChanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "keys")
+	require.NoError(t, os.WriteFile(path, []byte("k1\nk2\n"), 0o600))
+
+	ks := NewKeySet()
+	require.NoError(t, ks.LoadFile(path))
+
+	require.NoError(t, os.WriteFile(path, []byte("k2\nk1\n"), 0o600))
+	changed, err := ks.ReloadFile(path)
+	require.NoError(t, err)
+	assert.False(t, changed, "set semantics: reorder-only rewrite is not a change")
+	assert.True(t, ks.Validate("k1"))
+	assert.True(t, ks.Validate("k2"))
 }
 
 func TestKeySet_ReloadFile_ReadErrorKeepsActiveKeys(t *testing.T) {
@@ -136,6 +190,8 @@ func TestKeySet_ReloadFile_ReadErrorKeepsActiveKeys(t *testing.T) {
 	ks := NewKeySet()
 	require.NoError(t, ks.LoadFile(path))
 
-	require.Error(t, ks.ReloadFile(filepath.Join(dir, "missing")))
+	changed, err := ks.ReloadFile(filepath.Join(dir, "missing"))
+	require.Error(t, err)
+	assert.False(t, changed)
 	assert.True(t, ks.Validate("k1"), "active keys retained on read failure")
 }

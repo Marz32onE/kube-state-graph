@@ -35,7 +35,7 @@ import (
 //	@Description
 //	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `external`, plus the presentation-only `cluster` and `storageclass` compound group nodes synthesised by the Cytoscape serialiser (`cluster > node > pod`, `cluster > storageclass > pvc`). **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`.
 //	@Description
-//	@Description	**Endpoint resolution**: for a call endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): both a `<service>.<namespace>` host and a headless `<pod>.<service>.<namespace>` host resolve to the same `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to each backing pod — the call edge is then typed `pod-calls-service`; an unresolvable host yields an `external` node (`external/<value>`). A non-URL missing-UID label also yields an `external` node. Calls whose target is not a service stay typed `pod-calls-pod`.
+//	@Description	**Endpoint resolution**: for a call endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): both a `<service>.<namespace>` host and a headless `<pod>.<service>.<namespace>` host resolve to the addressed `(namespace, service)`, looked up across every loaded cluster in the caller's family (cluster names equal after normalising digit runs; anchored on the UID-recovered client-pod cluster when available, else the trace-source label). Each surviving family cluster materialises its own `service` node (`<cluster>/<ns>/<service>`) plus on-demand `service-selects-pod` edges to its own cluster's backing pods, and yields one `pod-calls-service` edge per match — such edges MAY cross clusters. Candidates provably without backing pods (zero endpoints in an endpoint-visible cluster) are pruned when an endpoint-backed sibling exists; an anchor naming no loaded family falls back to the single loaded family holding the service (multi-family names are ambiguous and stay external). Zero surviving candidates yield an `external` node (`external/<value>`). A non-URL missing-UID label also yields an `external` node. Calls whose target is not a service stay typed `pod-calls-pod`. See `/v1/edge-types` for the authoritative per-type catalogue.
 //	@Description
 //	@Description	Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
 //	@Description
@@ -198,22 +198,21 @@ func (s *Server) handleClusters(c *gin.Context) {
 
 	clusters, err := s.discoverClusters(ctx)
 	if err != nil {
+		// Classify into the typed build.Reason and delegate, so the
+		// status/reason/redaction contract lives in exactly one switch
+		// (mapBuildError): canceled → 499, deadline → 504 with the static
+		// build-authored message, anything else → sanitised 502 — the raw
+		// error embeds the internal VictoriaMetrics URL/host/IP and is kept
+		// server-side only.
 		switch {
 		case errors.Is(err, context.Canceled):
-			// Client disconnect, not an upstream fault — same 499 "canceled"
-			// envelope mapBuildError returns for /v1/graph (no 5xx metric /
-			// span-error pollution; see build.ReasonCanceled).
-			writeError(c, statusClientClosedRequest, "canceled", "request canceled")
+			err = build.NewError(build.ReasonCanceled, "request canceled", err)
 		case errors.Is(err, context.DeadlineExceeded):
-			writeError(c, http.StatusGatewayTimeout, "timeout", err.Error())
+			err = build.NewError(build.ReasonTimeout, "cluster discovery timed out", err)
 		default:
-			// The raw error embeds the internal VictoriaMetrics URL/host/IP —
-			// keep the detail server-side, return a static message (same
-			// redaction as mapBuildError's ReasonUpstream and handleReadyz).
-			s.logger.ErrorContext(c.Request.Context(), "cluster discovery upstream query failed",
-				"err", err, "request_id", c.GetString("request_id"))
-			writeError(c, http.StatusBadGateway, "upstream", "upstream query failed")
+			err = build.NewError(build.ReasonUpstream, "cluster discovery failed", err)
 		}
+		s.mapBuildError(c, err)
 		return
 	}
 	body := clustersBody{

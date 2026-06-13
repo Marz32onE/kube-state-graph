@@ -25,39 +25,52 @@ func (f *fakeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}, nil
 }
 
-func TestBasicAuthTransport_SetsHeader(t *testing.T) {
-	inner := &fakeRoundTripper{}
-	rt := &basicAuthTransport{inner: inner, username: "ksg", password: "s3cret"}
-
-	req, err := http.NewRequest(http.MethodGet, "http://upstream.invalid/api/v1/query", nil)
+// roundTrip drives rt with a GET to rawURL and returns the request the fake
+// inner transport received.
+func roundTrip(t *testing.T, rt http.RoundTripper, inner *fakeRoundTripper, rawURL string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	require.NoError(t, err)
-
 	resp, err := rt.RoundTrip(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-
 	require.NotNil(t, inner.got, "inner transport not invoked")
-	user, pass, ok := inner.got.BasicAuth()
-	require.True(t, ok, "Authorization: Basic header missing on forwarded request")
-	assert.Equal(t, "ksg", user)
-	assert.Equal(t, "s3cret", pass)
 
 	// RoundTrippers must not mutate the caller's request (D-A4).
 	assert.Empty(t, req.Header.Get("Authorization"), "original request mutated")
+	return inner.got
 }
 
-func TestNew_WithoutBasicAuth_NoAuthTransport(t *testing.T) {
+func TestNewTransport_WithBasicAuth_SetsHeader(t *testing.T) {
 	inner := &fakeRoundTripper{}
+	rt := newTransport(clientOptions{username: "ksg", password: "s3cret"}, "upstream.invalid", inner)
 
-	// Exercise the option plumbing: no WithBasicAuth → no Authorization header
-	// anywhere in the chain. Drive the bare transport directly since New wires
-	// otelhttp around a concrete http.Transport.
-	req, err := http.NewRequest(http.MethodGet, "http://upstream.invalid/api/v1/query", nil)
-	require.NoError(t, err)
-	resp, err := inner.RoundTrip(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Empty(t, inner.got.Header.Get("Authorization"))
+	got := roundTrip(t, rt, inner, "http://upstream.invalid/api/v1/query")
+	user, pass, ok := got.BasicAuth()
+	require.True(t, ok, "Authorization: Basic header missing on forwarded request")
+	assert.Equal(t, "ksg", user)
+	assert.Equal(t, "s3cret", pass)
+}
+
+func TestNewTransport_WithoutBasicAuth_NoAuthHeader(t *testing.T) {
+	// The real chain New assembles, minus only the concrete base transport: no
+	// WithBasicAuth options → no Authorization header reaches the wire.
+	inner := &fakeRoundTripper{}
+	rt := newTransport(clientOptions{}, "upstream.invalid", inner)
+
+	got := roundTrip(t, rt, inner, "http://upstream.invalid/api/v1/query")
+	assert.Empty(t, got.Header.Get("Authorization"))
+}
+
+func TestNewTransport_BasicAuth_NotSentCrossHost(t *testing.T) {
+	// A redirect hop to a foreign host re-enters the transport below net/http's
+	// sensitive-header stripping; the transport itself must withhold the
+	// credentials for any host other than the configured upstream.
+	inner := &fakeRoundTripper{}
+	rt := newTransport(clientOptions{username: "ksg", password: "s3cret"}, "upstream.invalid", inner)
+
+	got := roundTrip(t, rt, inner, "http://evil.invalid/api/v1/query")
+	assert.Empty(t, got.Header.Get("Authorization"), "credentials leaked to a foreign host")
 }
 
 func TestNew_OptionVariants(t *testing.T) {

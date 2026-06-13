@@ -13,10 +13,12 @@ import (
 
 // Regression tests for reviewed service-graph findings:
 //  1. NaN-valued rate samples must be dropped like zero-rate samples.
-//  2. classifyK8sDNS must strip the cluster-domain suffix at the LAST ".svc."
-//     occurrence so namespaces / services literally named "svc" resolve.
+//  2. classifyK8sDNS must strip the bare ".svc" suffix before the
+//     cluster-domain ".svc." strip (which takes the LAST occurrence) so
+//     namespaces / services literally named "svc" resolve in both forms.
 //  3. pod-calls-* pair dedupe must be order-independent (D6): on a duplicate
-//     (src, tgt) pair the lexically-smaller srcCluster wins.
+//     (src, tgt) pair an identified srcCluster beats "unknown", then the
+//     lexically-smaller name wins.
 
 // svcNamedTopology is a D29 topology where "svc" is used as a literal
 // namespace name and as a literal service name (both legal DNS-1123 labels):
@@ -172,6 +174,11 @@ func TestClassifyK8sDNS_SvcLiteralLabels(t *testing.T) {
 		{"normal service form", "myservice.myns.svc.cluster.local", "myservice", "myns", true},
 		{"normal headless form", "pod-0.myservice.myns.svc.cluster.local", "myservice", "myns", true},
 		{"bare .svc suffix", "myservice.myns.svc", "myservice", "myns", true},
+		// Bare-suffix forms with a namespace literally named "svc": the bare
+		// check must run before the ".svc." cluster-domain strip, or the
+		// interior ".svc." truncates the name too early.
+		{"bare suffix, namespace named svc", "myservice.svc.svc", "myservice", "svc", true},
+		{"bare headless, namespace named svc", "pod-0.myservice.svc.svc", "myservice", "svc", true},
 		{"one label is not a k8s name", "localhost", "", "", false},
 	}
 	for _, tc := range tests {
@@ -187,8 +194,8 @@ func TestClassifyK8sDNS_SvcLiteralLabels(t *testing.T) {
 // Finding 3: two series resolving to the same (src, tgt) pair but carrying
 // different trace `cluster` labels (one missing → "unknown", the client pod
 // recovered via the cluster-agnostic UID index) must yield the same
-// labels.cluster regardless of vector arrival order (D6) — the
-// lexically-smaller srcCluster wins.
+// labels.cluster regardless of vector arrival order (D6) — an identified
+// cluster beats "unknown", then the lexically-smaller name wins.
 func TestParseServiceGraph_DupPairClusterTieBreak_OrderIndependent(t *testing.T) {
 	withCluster := model.Sample{
 		Metric: model.Metric{
@@ -225,7 +232,62 @@ func TestParseServiceGraph_DupPairClusterTieBreak_OrderIndependent(t *testing.T)
 			assert.Equal(t, "cluster-alpha/abc", e.Source)
 			assert.Equal(t, "cluster-beta/def", e.Target)
 			assert.Equal(t, "cluster-alpha", e.Labels["cluster"],
-				"labels.cluster must be the lexically-smaller srcCluster in every arrival order")
+				"labels.cluster must be the identified srcCluster in every arrival order")
+		})
+	}
+}
+
+// The identified cluster must win the duplicate-pair tie-break even when its
+// name sorts lexically AFTER "unknown" (AWS-style "us-*" names): a plain
+// lexical pick would deterministically degrade labels.cluster to the
+// missing-label bucket whenever an unlabelled sibling series exists.
+func TestParseServiceGraph_DupPairClusterTieBreak_UnknownNeverBeatsRealCluster(t *testing.T) {
+	clientPod := &graph.PodNode{
+		IDValue:     "us-east-1/abc",
+		NameValue:   "checkout",
+		LabelsValue: map[string]string{"cluster": "us-east-1", "namespace": "shop"},
+	}
+	serverPod := &graph.PodNode{
+		IDValue:     "us-west-2/def",
+		NameValue:   "payments",
+		LabelsValue: map[string]string{"cluster": "us-west-2", "namespace": "billing"},
+	}
+	topo := Topology{
+		Pods:      []*graph.PodNode{clientPod, serverPod},
+		PodsByUID: map[string]*graph.PodNode{"abc": clientPod, "def": serverPod},
+	}
+
+	withCluster := model.Sample{
+		Metric: model.Metric{
+			"client":             "checkout",
+			"server":             "payments",
+			"cluster":            "us-east-1",
+			"client_k8s_pod_uid": "abc",
+			"server_k8s_pod_uid": "def",
+		},
+		Value: 5,
+	}
+	noCluster := model.Sample{
+		Metric: model.Metric{
+			"client":             "checkout",
+			"server":             "payments",
+			"client_k8s_pod_uid": "abc",
+			"server_k8s_pod_uid": "def",
+		},
+		Value: 5,
+	}
+
+	orders := map[string]model.Vector{
+		"with-cluster-first": sampleVec(withCluster, noCluster),
+		"no-cluster-first":   sampleVec(noCluster, withCluster),
+	}
+	for name, vec := range orders {
+		t.Run(name, func(t *testing.T) {
+			res := parseServiceGraph(vec, topo)
+			require.Len(t, res.Edges, 1)
+			e := res.Edges[0]
+			assert.Equal(t, "us-east-1", e.Labels["cluster"],
+				`"unknown" must never beat an identified srcCluster, whatever the lexical order`)
 		})
 	}
 }

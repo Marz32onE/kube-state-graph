@@ -55,17 +55,21 @@ func writeError(c *gin.Context, status int, reason, message string) {
 // cancellation maps to 499 (no 5xx pollution); span status/error recording is
 // handled uniformly by writeError + spanEnrichMiddleware.
 //
-// The `reason` strings and status codes are contracts. The upstream and
-// default branches return static human messages: the wrapped promql error
-// embeds the internal VictoriaMetrics URL/host/IP (`Post "http://...": dial
-// tcp ...`), which must never reach a response body — the same redaction
-// handleReadyz applies. The full error is logged server-side so operators
-// keep the detail. The timeout / outside_retention messages are
-// build-generated diagnostics and stay verbatim.
+// The `reason` strings and status codes are contracts. The timeout, upstream,
+// and default branches return static / build-authored messages: the wrapped
+// promql error embeds the internal VictoriaMetrics URL/host/IP (`Post
+// "http://...": dial tcp ...` — and build.Error.Error() stringifies the cause
+// chain whenever a cause is attached), which must never reach a response body
+// — the same redaction handleReadyz applies. The full error is logged
+// server-side so operators keep the detail. Only outside_retention stays
+// verbatim: it is constructed with a nil cause and a URL-free diagnostic
+// message.
 func (s *Server) mapBuildError(c *gin.Context, err error) {
 	switch build.AsReason(err) {
 	case build.ReasonTimeout:
-		writeError(c, http.StatusGatewayTimeout, "timeout", err.Error())
+		s.logger.ErrorContext(c.Request.Context(), "upstream query timed out",
+			"err", err, "request_id", c.GetString("request_id"))
+		writeError(c, http.StatusGatewayTimeout, "timeout", timeoutMessage(err))
 	case build.ReasonOutsideRetention:
 		writeError(c, http.StatusBadRequest, "outside_retention", err.Error())
 	case build.ReasonUpstream:
@@ -79,4 +83,15 @@ func (s *Server) mapBuildError(c *gin.Context, err error) {
 			"err", err, "request_id", c.GetString("request_id"))
 		writeError(c, http.StatusInternalServerError, "internal", "internal error")
 	}
+}
+
+// timeoutMessage returns the build-authored static Message of a timeout error
+// ("build timeout", "cluster discovery timed out", …) — never the cause
+// chain, whose url.Error text embeds the internal upstream URL.
+func timeoutMessage(err error) string {
+	var be *build.Error
+	if errors.As(err, &be) && be.Message != "" {
+		return be.Message
+	}
+	return "request timed out"
 }

@@ -144,6 +144,13 @@ func (c Config) Validate() error {
 	if (c.PromUsername == "") != (c.PromPassword == "") {
 		return errors.New("KSG_PROM_USERNAME and KSG_PROM_PASSWORD must be set together (or both left unset)")
 	}
+	// RFC 7617 forbids ':' in basic-auth user-ids: SetBasicAuth encodes
+	// user+":"+pass, so a colon silently shifts everything after it into the
+	// password and every upstream request 401s with no client-visible hint
+	// (the raw 401 detail is redacted to server logs). Fail fast at startup.
+	if strings.Contains(c.PromUsername, ":") {
+		return errors.New("KSG_PROM_USERNAME must not contain ':' (RFC 7617 basic-auth user-id)")
+	}
 	if c.ListenAddr == "" {
 		return errors.New("listen-addr is required")
 	}

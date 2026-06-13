@@ -8,11 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// recoveryMiddleware converts a panic anywhere downstream (handlers or inner
-// middleware) into the standard 500 JSON envelope instead of a TCP connection
-// reset. It is registered innermost of the global chain (after requestID +
-// logging) so the deferred access-log / HTTP-metric bookkeeping in
-// loggingMiddleware still observes the written 500 status.
+// recoveryMiddleware converts a panic on the handler goroutine (handlers or
+// inner middleware) into the standard 500 JSON envelope instead of a TCP
+// connection reset. It is registered innermost of the global chain (after
+// requestID + logging) so the deferred access-log / HTTP-metric bookkeeping
+// in loggingMiddleware still observes the written 500 status. Panics on
+// goroutines the request path spawns are out of reach by Go semantics — the
+// build fan-out recovers those at source (pkg/build ReadTopology's fetch
+// closures).
 //
 // The panic value and stack are logged server-side only; the response body
 // carries a static message (no internal detail, consistent with
@@ -24,6 +27,16 @@ func (s *Server) recoveryMiddleware() gin.HandlerFunc {
 			rec := recover()
 			if rec == nil {
 				return
+			}
+			// http.ErrAbortHandler is net/http's sanctioned "abort this
+			// response silently" sentinel (httputil.ReverseProxy and streaming
+			// handlers panic with it on client disconnect). Re-panic so
+			// conn.serve applies its documented quiet teardown — recovering it
+			// here would turn deliberate aborts into ERROR logs with stacks
+			// and a 500 written to a dead connection. Compared by value, as
+			// net/http's own conn.serve does.
+			if err, ok := rec.(error); ok && err == http.ErrAbortHandler { //nolint:errorlint // sentinel identity, mirrors net/http
+				panic(rec)
 			}
 			s.logger.ErrorContext(c.Request.Context(), "panic recovered",
 				"panic", fmt.Sprint(rec),
