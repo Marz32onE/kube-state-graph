@@ -32,6 +32,18 @@ type GraphNode interface {
 	// owning Deployment (see build/topology). All other node kinds, and pods
 	// with no controller owner, return nil.
 	Owner() *Owner
+	// Application is the pod's ArgoCD Application name, resolved from the
+	// argocd_tracking_id label on kube_pod_owner (the segment before the first
+	// ":"). Surfaced as a top-level attribute, never inside Labels. Only pods
+	// carry one; every other node kind, and a pod with no ArgoCD Application,
+	// returns "".
+	Application() string
+	// Containers is the pod's container list ({name, image}), resolved from
+	// kube_pod_container_info and ordered by (name, image). Surfaced as a
+	// top-level attribute, never inside Labels. Only pods carry containers;
+	// every other node kind, and a pod with no observed container info, returns
+	// nil.
+	Containers() []Container
 	// StorageClass is a PVC's resolved StorageClass name. It is NOT serialised
 	// as a node attribute and NOT a label — the Cytoscape serialiser consumes
 	// it only to compute the PVC's compound parent (cluster > storageclass >
@@ -51,14 +63,24 @@ type Owner struct {
 	Name string `json:"name"`
 }
 
+// Container is one container of a pod — its name and image, resolved from
+// kube_pod_container_info. Emitted as an element of a pod's `containers` array
+// on its Cytoscape data; only pods carry containers.
+type Container struct {
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
 // PodNode represents a Kubernetes pod entity (or a synthesised pod when the
 // service-graph reader observes a pod UID with no topology).
 type PodNode struct {
-	IDValue        string
-	NameValue      string
-	LabelsValue    map[string]string
-	IPAddressValue []string
-	OwnerValue     *Owner
+	IDValue          string
+	NameValue        string
+	LabelsValue      map[string]string
+	IPAddressValue   []string
+	OwnerValue       *Owner
+	ApplicationValue string
+	ContainersValue  []Container
 }
 
 func (p *PodNode) ID() string                { return p.IDValue }
@@ -67,6 +89,8 @@ func (p *PodNode) Type() NodeType            { return NodeTypePod }
 func (p *PodNode) Labels() map[string]string { return p.LabelsValue }
 func (p *PodNode) IPAddress() []string       { return p.IPAddressValue }
 func (p *PodNode) Owner() *Owner             { return p.OwnerValue }
+func (p *PodNode) Application() string       { return p.ApplicationValue }
+func (p *PodNode) Containers() []Container   { return p.ContainersValue }
 func (p *PodNode) StorageClass() string      { return "" }
 func (p *PodNode) isGraphNode()              {}
 
@@ -84,6 +108,8 @@ func (n *K8sNode) Type() NodeType            { return NodeTypeK8sNode }
 func (n *K8sNode) Labels() map[string]string { return n.LabelsValue }
 func (n *K8sNode) IPAddress() []string       { return n.IPAddressValue }
 func (n *K8sNode) Owner() *Owner             { return nil }
+func (n *K8sNode) Application() string       { return "" }
+func (n *K8sNode) Containers() []Container   { return nil }
 func (n *K8sNode) StorageClass() string      { return "" }
 func (n *K8sNode) isGraphNode()              {}
 
@@ -104,6 +130,8 @@ func (p *PVCNode) Type() NodeType            { return NodeTypePVC }
 func (p *PVCNode) Labels() map[string]string { return p.LabelsValue }
 func (p *PVCNode) IPAddress() []string       { return nil }
 func (p *PVCNode) Owner() *Owner             { return nil }
+func (p *PVCNode) Application() string       { return "" }
+func (p *PVCNode) Containers() []Container   { return nil }
 func (p *PVCNode) StorageClass() string      { return p.StorageClassValue }
 func (p *PVCNode) isGraphNode()              {}
 
@@ -126,6 +154,8 @@ func (s *ServiceNode) Type() NodeType            { return NodeTypeService }
 func (s *ServiceNode) Labels() map[string]string { return s.LabelsValue }
 func (s *ServiceNode) IPAddress() []string       { return s.IPAddressValue }
 func (s *ServiceNode) Owner() *Owner             { return nil }
+func (s *ServiceNode) Application() string       { return "" }
+func (s *ServiceNode) Containers() []Container   { return nil }
 func (s *ServiceNode) StorageClass() string      { return "" }
 func (s *ServiceNode) isGraphNode()              {}
 
@@ -145,6 +175,8 @@ func (e *ExternalNode) Type() NodeType            { return NodeTypeExternal }
 func (e *ExternalNode) Labels() map[string]string { return e.LabelsValue }
 func (e *ExternalNode) IPAddress() []string       { return nil }
 func (e *ExternalNode) Owner() *Owner             { return nil }
+func (e *ExternalNode) Application() string       { return "" }
+func (e *ExternalNode) Containers() []Container   { return nil }
 func (e *ExternalNode) StorageClass() string      { return "" }
 func (e *ExternalNode) isGraphNode()              {}
 

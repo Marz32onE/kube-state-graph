@@ -23,7 +23,7 @@ cluster N: kube-state-metrics ──┤
 - Join 成多叢集圖，節點鍵為帶叢集範圍的 pod UID 與 node 名稱。
 - 回傳 Cytoscape.js JSON（`/v1/graph`）。
 - 提供叢集探索（`/v1/clusters`）與靜態邊類型目錄（`/v1/edge-types`）。
-- 每次請求都重新建圖——v1 **不附帶 in-process result cache、singleflight，也不發 HTTP cache validator**（無 `ETag` / `If-None-Match` / `304`）。後續分散式部署的水平擴展 cache 機制留待另案。`start` / `end` 接受 RFC 3339 或 Unix 秒，server 僅強制 `end > start`，其後原樣 pass through 給上游 PromQL——**不做** bucketing、alignment、視窗上限或未來時間擋板；bounded query cost 交由 VictoriaMetrics 搜尋限制負責。序列化輸出為確定性 body，僅含 `apiVersion`、`clusters`、`elements`；pod／node／service 的 IP 在頂層 `ipaddress`，不在 `labels`。
+- 每次請求都重新建圖——v1 **不附帶 in-process result cache、singleflight，也不發 HTTP cache validator**（無 `ETag` / `If-None-Match` / `304`）。後續分散式部署的水平擴展 cache 機制留待另案。`start` / `end` 接受 RFC 3339 或 Unix 秒，server 僅強制 `end > start`，其後原樣 pass through 給上游 PromQL——**不做** bucketing、alignment、視窗上限或未來時間擋板；bounded query cost 交由 VictoriaMetrics 搜尋限制負責。序列化輸出為確定性 body，僅含 `apiVersion`、`clusters`、`elements`；pod／node／service 的 IP 在頂層 `ipaddress`，不在 `labels`。Pod 另帶具型別的 `data` 屬性——`owner`（`{kind, name}`）、`application`（ArgoCD 應用）、`containers`（`[{name, image}]`）——皆 `omitempty` 且絕不在 `labels`。
 
 ## 快速開始
 
@@ -56,8 +56,12 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}" | jq '.elements'
 | `kube_node_status_addresses{type="ExternalIP"}` | Node 外部 IP（→ `data.ipaddress`） | `cluster`, `node`, `address` | 選填 |
 | `kube_node_labels` | 傳遞 node 標籤（`kubernetes.io/*` 等） | `cluster`, `node`, `label_*` | 選填 |
 | `kube_pod_spec_volumes_persistentvolumeclaims_info` | PVC 節點、`pod-mounts-pvc` 邊 | `cluster`, `namespace`, `pod`, `persistentvolumeclaim`, `volume` | 選填（無 PVC 則無相關節點／邊） |
+| `kube_pod_owner` | Pod controller-owner `data.owner` = `{kind, name}`（ReplicaSet 上溯至 Deployment；無 controller 則省略）；並經 `argocd_tracking_id` 標籤產生 `data.application`（取首個 `:` 前的片段） | `cluster`, `namespace`, `pod`, `owner_kind`, `owner_name`, `owner_is_controller`, `argocd_tracking_id` | 選填（缺則無 `data.owner`）。`argocd_tracking_id` 為**營運者提供**（如 `--metric-labels-allowlist`／relabel），非 KSM 預設；缺則無 `data.application` |
+| `kube_pod_container_info` | Pod 容器清單 `data.containers` = `[{name, image}]`，依 `(name, image)` 排序；視窗內換 image 時每容器取最新觀測到的 image | `cluster`, `namespace`, `pod`, `container`, `image` | 選填（缺則無 `data.containers`）；屬 KSM 預設 |
 
-各指標以 `last_over_time(<metric>[<window>]) @ <end>` 包裝，反映請求視窗 `[start, end]` 內最後觀測值。
+各指標以 `last_over_time(<metric>[<window>]) @ <end>` 包裝，反映請求視窗 `[start, end]` 內最後觀測值——惟 `kube_pod_container_info` 改用 `tlast_over_time(...)`，使每條 per-image series 帶其最後 sample 時間戳,供解析器挑出每容器最新的 image（近期視窗準確；遠期視窗的限制見 `design.md` D-A4）。
+
+> 註：上表為精簡版,尚缺數個既有指標列（`kube_replicaset_owner`、`kube_persistentvolumeclaim_info`、`kube_service_info`、`kube_endpointslice_*`）——完整清單以英文 [README.md](README.md) 為準。
 
 ### Service graph 指標 — 由 [Tempo](https://grafana.com/docs/tempo/latest/metrics-generator/service_graphs/) 或相容產生器產出
 

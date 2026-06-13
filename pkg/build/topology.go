@@ -121,6 +121,8 @@ type topologyVectors struct {
 	ReplicaSetOwner model.Vector
 	// PVC StorageClass resolution.
 	PVCInfo model.Vector
+	// Pod container list resolution (name/image per container).
+	PodContainerInfo model.Vector
 }
 
 // ReadTopology runs the topology queries in parallel and assembles the
@@ -176,6 +178,7 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 	g.Go(fetch(promql.QPodOwner, &v.PodOwner))
 	g.Go(fetch(promql.QReplicaSetOwner, &v.ReplicaSetOwner))
 	g.Go(fetch(promql.QPVCInfo, &v.PVCInfo))
+	g.Go(fetch(promql.QPodContainerInfo, &v.PodContainerInfo))
 	if err := g.Wait(); err != nil {
 		return Topology{}, fmt.Errorf("topology fan-out: %w", err)
 	}
@@ -193,6 +196,7 @@ func ReadTopology(ctx context.Context, q promql.Querier, r promql.Renderer, wind
 		string(promql.QPodOwner):               len(v.PodOwner),
 		string(promql.QReplicaSetOwner):        len(v.ReplicaSetOwner),
 		string(promql.QPVCInfo):                len(v.PVCInfo),
+		string(promql.QPodContainerInfo):       len(v.PodContainerInfo),
 	}
 	return t, nil
 }
@@ -227,6 +231,13 @@ func parseTopology(v topologyVectors) Topology {
 	// can set each PVC's StorageClass (consumed by the Cytoscape serialiser for
 	// compound grouping — never a label, never serialised).
 	pvcStorageClass := resolvePVCStorageClass(v.PVCInfo, mc)
+
+	// Pod container list + ArgoCD Application resolution. Both feed typed pod
+	// attributes (never labels) set during the per-pod assembly below. The
+	// Application is read from the SAME kube_pod_owner vector as the controller
+	// owner but independently of the controller pick (it is a pod-level fact).
+	podContainers := resolvePodContainers(v.PodContainerInfo, mc)
+	podApplications := resolvePodApplications(v.PodOwner)
 
 	// Node IP map: (cluster, node-name) -> {ExternalIP, InternalIP}.
 	// ExternalIP is preferred at assembly; InternalIP is the fallback for
@@ -410,21 +421,25 @@ func parseTopology(v topologyVectors) Topology {
 		}
 		// Resolve the controller owner (ReplicaSet skipped to its Deployment)
 		// onto the typed Owner attribute — never into labels. nil when the pod
-		// has no controller owner.
+		// has no controller owner. nk is the pod's (cluster, namespace, name) key
+		// shared by the owner / application / container indexes.
+		nk := podNameKey(k)
 		var owner *graph.Owner
-		if o, ok := podOwners[podNameKey(k)]; ok {
+		if o, ok := podOwners[nk]; ok {
 			owner = &graph.Owner{Kind: o.kind, Name: o.name}
 		}
 		canonicalPod := &graph.PodNode{
-			IDValue:        graph.PodID(k.cluster, canonical.uid),
-			NameValue:      k.pod,
-			LabelsValue:    merged[canonical.uid],
-			IPAddressValue: ips,
-			OwnerValue:     owner,
+			IDValue:          graph.PodID(k.cluster, canonical.uid),
+			NameValue:        k.pod,
+			LabelsValue:      merged[canonical.uid],
+			IPAddressValue:   ips,
+			OwnerValue:       owner,
+			ApplicationValue: podApplications[nk],
+			ContainersValue:  podContainers[nk],
 		}
 		pods = append(pods, canonicalPod)
 		addPodToIndex(canonical.uid, canonicalPod)
-		podsByNameNS[podNameKey(k)] = canonicalPod
+		podsByNameNS[nk] = canonicalPod
 	}
 
 	// PVCs + pod-PVC bindings.
@@ -634,6 +649,130 @@ func resolvePodOwners(ownerVec, rsOwnerVec model.Vector, mc missingClusterCounts
 		owners[key] = ownerRef{kind, name}
 	}
 	return owners
+}
+
+// resolvePodContainers builds the (cluster, namespace, pod) → sorted container
+// list index from kube_pod_container_info. Each series contributes one
+// {name=container, image=image} element, deduped per (pod, container-name).
+//
+// The query is `tlast_over_time(kube_pod_container_info[w])`, so each series'
+// VALUE (`s.Value`) is its last-sample timestamp (unix seconds). When a container
+// changed image in the window — each image being a DISTINCT series (image is a
+// label) — the image SEEN LATEST wins (the current one). Exact-timestamp ties
+// (co-scraped images) break by lexically-smallest image so the body stays
+// byte-identical across rebuilds (D6). Empty images are skipped so a transient
+// image-less series never masks (or, by a later timestamp, beats) a populated
+// sibling. The per-pod list is sorted by (name, image).
+//
+// CAVEAT (documented in design.md D-A4): for query windows far from the real wall
+// clock, VictoriaMetrics returns only ONE image-variant series per container
+// (dropping the rest) — true for last_over_time, tlast_over_time, AND
+// query_range alike. So "latest" is only meaningful for near-now windows (the
+// dominant case); for far-past windows the resolver simply surfaces whatever
+// single variant VM returns. The pick is never worse than a lexically-smallest
+// fallback would be, and degrades gracefully if the query is ever reverted to
+// last_over_time (all values equal → the lexical tie-break decides).
+//
+// OPTIONAL: an absent or empty vector yields an empty map and pods carry no
+// containers (graceful degradation). The returned map is a deterministic
+// function of the input vector. The only side effect is tallying
+// missing-cluster samples into the caller's mc accumulator.
+func resolvePodContainers(vec model.Vector, mc missingClusterCounts) map[podNameKey][]graph.Container {
+	type containerKey struct {
+		pod  podNameKey
+		name string
+	}
+	type pick struct {
+		image    string
+		lastSeen model.SampleValue
+	}
+	// (pod, container-name) → the image last seen latest (greatest tlast_over_time
+	// value), lexically-smallest image breaking exact-timestamp ties.
+	best := make(map[containerKey]pick, len(vec))
+	for _, s := range vec {
+		cluster := mc.bucket(promql.QPodContainerInfo, string(s.Metric["cluster"]))
+		ns := string(s.Metric["namespace"])
+		pod := string(s.Metric["pod"])
+		name := string(s.Metric["container"])
+		image := string(s.Metric["image"])
+		if pod == "" || name == "" || image == "" {
+			continue
+		}
+		key := containerKey{podNameKey{cluster, ns, pod}, name}
+		if cur, ok := best[key]; ok {
+			if s.Value < cur.lastSeen || (s.Value == cur.lastSeen && image >= cur.image) {
+				continue
+			}
+		}
+		best[key] = pick{image: image, lastSeen: s.Value}
+	}
+
+	out := map[podNameKey][]graph.Container{}
+	for key, p := range best {
+		out[key.pod] = append(out[key.pod], graph.Container{Name: key.name, Image: p.image})
+	}
+	for pod := range out {
+		list := out[pod]
+		sort.SliceStable(list, func(i, j int) bool {
+			if list[i].Name != list[j].Name {
+				return list[i].Name < list[j].Name
+			}
+			return list[i].Image < list[j].Image
+		})
+	}
+	return out
+}
+
+// resolvePodApplications builds the (cluster, namespace, pod) → ArgoCD
+// Application index from the argocd_tracking_id label on kube_pod_owner. The
+// Application is the segment of the tracking-id value before the first ":"
+// (ArgoCD annotation-based form <app>:<group>/<kind>:<ns>/<name>); a value with
+// no ":" is surfaced verbatim. The label is read independently of the
+// controller-owner pick — it is a pod-level fact that must survive even when no
+// kube_pod_owner row is a controller.
+//
+// OPTIONAL: pods with no non-empty argocd_tracking_id label are absent from the
+// returned map (the caller omits the attribute rather than emitting ""). The
+// returned map is a deterministic function of the input vector — on a per-pod
+// collision the lexically-smallest non-empty tracking-id wins. It uses the pure
+// bucketCluster helper (NOT mc.bucket): resolvePodOwners already tallies this
+// vector's missing-cluster samples for its controller rows, so using mc.bucket
+// here would double-count those. (A tracking-id carried only on a non-controller
+// row with a missing cluster label is therefore bucketed silently — an
+// acceptable diagnostic gap, not a wrong-output one.)
+func resolvePodApplications(ownerVec model.Vector) map[podNameKey]string {
+	// Accumulate the lexically-smallest non-empty tracking-id per pod
+	// (deterministic), then derive each Application in place — the tie-break is on
+	// the raw value, so one map suffices (mirrors resolvePVCStorageClass).
+	out := make(map[podNameKey]string, len(ownerVec))
+	for _, s := range ownerVec {
+		raw := string(s.Metric["argocd_tracking_id"])
+		pod := string(s.Metric["pod"])
+		if raw == "" || pod == "" {
+			continue
+		}
+		key := podNameKey{bucketCluster(string(s.Metric["cluster"])), string(s.Metric["namespace"]), pod}
+		if cur, ok := out[key]; !ok || raw < cur {
+			out[key] = raw
+		}
+	}
+
+	// Application is the segment before the first ":" (ArgoCD
+	// <app>:<group>/<kind>:<ns>/<name> form); a value with no ":" stays verbatim.
+	// A value whose segment is empty (e.g. ":apps/...") yields no Application — drop
+	// the key so the map stays "absent when empty" (never present-but-"").
+	for key, raw := range out {
+		app := raw
+		if i := strings.IndexByte(raw, ':'); i >= 0 {
+			app = raw[:i]
+		}
+		if app == "" {
+			delete(out, key)
+			continue
+		}
+		out[key] = app
+	}
+	return out
 }
 
 // pvcKey identifies a PVC by its cluster-scoped namespace/name for the

@@ -33,7 +33,12 @@ const (
 	// Pod controller-owner resolution (D34). KSM-shaped, so prefix-aware via
 	// Renderer. kube_pod_owner gives a pod's owner refs; kube_replicaset_owner
 	// resolves a ReplicaSet owner up to its owning Deployment (the ReplicaSet is
-	// skipped). Both are KSM defaults (no --metric-labels-allowlist required).
+	// skipped). The owner_kind/owner_name/owner_is_controller labels are KSM
+	// defaults (no --metric-labels-allowlist required). NOTE: the optional
+	// `argocd_tracking_id` label the application resolver reads off kube_pod_owner
+	// (resolvePodApplications) is NOT a KSM default — it is operator-provided
+	// (e.g. via --metric-labels-allowlist or a relabel); absence degrades
+	// gracefully to no `application` attribute. See design.md D-A4.
 	QPodOwner        Query = "kube_pod_owner"
 	QReplicaSetOwner Query = "kube_replicaset_owner"
 
@@ -44,6 +49,14 @@ const (
 	// (never to materialise new ones). OPTIONAL — a KSM default, no
 	// --metric-labels-allowlist required.
 	QPVCInfo Query = "kube_persistentvolumeclaim_info"
+
+	// Pod container list resolution. KSM-shaped, so prefix-aware via Renderer.
+	// kube_pod_container_info emits one series per container carrying the
+	// `container` (name) and `image` labels; joined on (cluster, namespace, pod)
+	// to enrich existing pod nodes with their typed `containers` attribute
+	// (never new nodes). OPTIONAL — a KSM default, no --metric-labels-allowlist
+	// required.
+	QPodContainerInfo Query = "kube_pod_container_info"
 )
 
 // ClusterDiscoveryLookback is the fixed lookback used by /v1/clusters
@@ -119,6 +132,13 @@ func (r Renderer) Render(q Query, window time.Duration) string {
 		return fmt.Sprintf(`last_over_time(%skube_replicaset_owner[%s])`, r.Prefix, w)
 	case QPVCInfo:
 		return fmt.Sprintf(`last_over_time(%skube_persistentvolumeclaim_info[%s])`, r.Prefix, w)
+	case QPodContainerInfo:
+		// tlast_over_time (MetricsQL) — value is each series' last-sample timestamp
+		// (unix seconds). A container that changed image in the window has one
+		// series per image (image is a label); the resolver picks the image with
+		// the greatest last-sample timestamp (the current one). last_over_time
+		// would stamp every series at the eval instant, flattening recency.
+		return fmt.Sprintf(`tlast_over_time(%skube_pod_container_info[%s])`, r.Prefix, w)
 	case QServiceGraphTotal:
 		// Service-graph metrics come from Alloy/Tempo, not kube-state-metrics;
 		// the configurable prefix deliberately does NOT apply here. The metric

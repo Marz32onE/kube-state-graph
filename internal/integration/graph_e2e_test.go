@@ -258,6 +258,86 @@ kube_replicaset_owner{cluster="cluster-alpha",namespace="shop",replicaset="check
 	s.Nil(cart.Owner, "pod with no owner series must omit data.owner")
 }
 
+// TestPodApplicationAndContainersAttributes — ingest kube_pod_container_info
+// (two containers) and a kube_pod_owner carrying an argocd_tracking_id for a
+// dedicated pod; assert /v1/graph sets the pod node's typed data.application
+// (segment before the first ":") and ordered data.containers, neither leaking
+// into labels, while a sibling pod with no such series omits both. The pods
+// live in a dedicated namespace ("appcat") so the owner/container series cannot
+// collide with the shared `checkout`/`cart` fixtures other tests assert on.
+//
+// COVERAGE NOTE: this exercises one image per container, so it does NOT cover the
+// tlast_over_time argmax-by-recency "latest image wins" path — at the suite's
+// fixedNow (~6 weeks before the container's real clock) VM returns only one
+// image-variant per container regardless of rollup, so the multi-image case is
+// unverifiable here (see design.md D-A4). The recency/argmax logic is covered by
+// TestParseTopology_PodContainersLatestImageWins / _TieIsDeterministic (unit,
+// deterministic vectors); that tlast_over_time stamps s.Value with the
+// last-sample timestamp was verified by manual probe against VM v1.107.0.
+func (s *GraphSuite) TestPodApplicationAndContainersAttributes() {
+	disc := s.T().Name()
+	t1 := fixedNow.Unix() * 1000
+	s.IngestExpFmt(fmt.Sprintf(`# HELP kube_pod_info dummy
+kube_pod_info{cluster="cluster-alpha",namespace="appcat",pod="ksg-enriched",uid="alpha-app-1",node="worker-0",test=%q} 1 %d
+kube_pod_info{cluster="cluster-alpha",namespace="appcat",pod="ksg-bare",uid="alpha-app-2",node="worker-0",test=%q} 1 %d
+kube_pod_owner{cluster="cluster-alpha",namespace="appcat",pod="ksg-enriched",owner_kind="DaemonSet",owner_name="ksg-ds",owner_is_controller="true",argocd_tracking_id="storefront:apps/Deployment:appcat/ksg",test=%q} 1 %d
+kube_pod_container_info{cluster="cluster-alpha",namespace="appcat",pod="ksg-enriched",container="app",image="reg/ksg:1.4",test=%q} 1 %d
+kube_pod_container_info{cluster="cluster-alpha",namespace="appcat",pod="ksg-enriched",container="istio-proxy",image="reg/proxy:0.9",test=%q} 1 %d
+`, disc, t1, disc, t1, disc, t1, disc, t1, disc, t1))
+	s.Require().True(s.WaitForSeries(`kube_pod_container_info{test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
+		"VM did not observe ingested kube_pod_container_info")
+
+	srv := s.StartAPIServer(func(cfg *config.Config) {})
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = resp.Body.Close() }()
+	s.Require().Equal(http.StatusOK, resp.StatusCode)
+
+	type container struct {
+		Name  string `json:"name"`
+		Image string `json:"image"`
+	}
+	type podData struct {
+		Name        string            `json:"name"`
+		Type        string            `json:"type"`
+		Application string            `json:"application"`
+		Containers  []container       `json:"containers"`
+		Labels      map[string]string `json:"labels"`
+	}
+	var body struct {
+		Elements struct {
+			Nodes []struct {
+				Data podData `json:"data"`
+			} `json:"nodes"`
+		} `json:"elements"`
+	}
+	s.Require().NoError(json.NewDecoder(resp.Body).Decode(&body))
+
+	podByName := func(name string) (podData, bool) {
+		for _, n := range body.Elements.Nodes {
+			if n.Data.Type == "pod" && n.Data.Name == name {
+				return n.Data, true
+			}
+		}
+		return podData{}, false
+	}
+
+	enriched, ok := podByName("ksg-enriched")
+	s.Require().True(ok, "enriched pod node must be present")
+	s.Equal("storefront", enriched.Application, "data.application = segment before the first ':'")
+	s.Equal([]container{
+		{Name: "app", Image: "reg/ksg:1.4"},
+		{Name: "istio-proxy", Image: "reg/proxy:0.9"},
+	}, enriched.Containers, "data.containers ordered by (name, image)")
+	_, appInLabels := enriched.Labels["application"]
+	_, trackInLabels := enriched.Labels["argocd_tracking_id"]
+	s.False(appInLabels || trackInLabels, "application must NOT appear inside labels")
+
+	bare, ok := podByName("ksg-bare")
+	s.Require().True(ok, "bare pod node must be present")
+	s.Empty(bare.Application, "pod with no argocd label omits data.application")
+	s.Nil(bare.Containers, "pod with no container series omits data.containers")
+}
+
 func (s *GraphSuite) TestConnStringUnresolvableProducesExternalNode() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
 	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))

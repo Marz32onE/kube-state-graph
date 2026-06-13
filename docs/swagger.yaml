@@ -52,6 +52,13 @@ components:
       type: object
     github_com_marz32one_kube-state-graph_pkg_cytoscape.NodeData:
       properties:
+        application:
+          type: string
+        containers:
+          items:
+            $ref: '#/components/schemas/github_com_marz32one_kube-state-graph_pkg_graph.Container'
+          type: array
+          uniqueItems: false
         id:
           type: string
         ipaddress:
@@ -70,6 +77,13 @@ components:
         parent:
           type: string
         type:
+          type: string
+      type: object
+    github_com_marz32one_kube-state-graph_pkg_graph.Container:
+      properties:
+        image:
+          type: string
+        name:
           type: string
       type: object
     github_com_marz32one_kube-state-graph_pkg_graph.EdgeType:
@@ -391,7 +405,7 @@ paths:
         "clusters": ["prod-eu", "prod-us"],
         "elements": {
         "nodes": [
-        { "data": { "id": "prod-eu/8f8d4f1a-...-89ab", "type": "pod",  "name": "checkout-7d9f6c8b8-abcde", "owner": { "kind": "Deployment", "name": "checkout" }, "labels": { "cluster": "prod-eu", "namespace": "payments" } } },
+        { "data": { "id": "prod-eu/8f8d4f1a-...-89ab", "type": "pod",  "name": "checkout-7d9f6c8b8-abcde", "owner": { "kind": "Deployment", "name": "checkout" }, "application": "checkout", "containers": [ { "name": "app", "image": "reg.example/checkout:1.4" }, { "name": "istio-proxy", "image": "reg.example/proxy:0.9" } ], "labels": { "cluster": "prod-eu", "namespace": "payments" } } },
         { "data": { "id": "prod-eu/ip-10-0-1-23",     "type": "node", "name": "ip-10-0-1-23.ec2.internal", "labels": { "cluster": "prod-eu" } } }
         ],
         "edges": [
