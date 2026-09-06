@@ -36,6 +36,7 @@
           "name": "idle",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -49,6 +50,7 @@
           "name": "idle-data",
           "type": "pvc",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -62,6 +64,7 @@
           "name": "worker-1",
           "type": "node",
           "parent": "cluster/cluster-alpha",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -74,6 +77,7 @@
           "type": "node",
           "parent": "cluster/cluster-alpha",
           "ready_status": "NotReady",
+          "status": "critical",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -85,6 +89,7 @@
           "name": "aggr2",
           "type": "netapp-aggr",
           "parent": "netapp/ontap-prod/ontap-prod-02",
+          "status": "normal",
           "labels": {
             "node": "ontap-prod-02",
             "ontap_cluster": "ontap-prod"
@@ -97,6 +102,7 @@
           "name": "ontap-prod-02",
           "type": "netapp-node",
           "parent": "storage-cluster/ontap-prod",
+          "status": "normal",
           "labels": {
             "ontap_cluster": "ontap-prod"
           }

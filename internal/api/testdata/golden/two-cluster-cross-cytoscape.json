@@ -46,6 +46,7 @@
           "name": "checkout",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -58,6 +59,7 @@
           "name": "payments",
           "type": "pod",
           "parent": "cluster-beta/namespace/billing",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-beta",
             "namespace": "billing"

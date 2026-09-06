@@ -55,6 +55,7 @@
           "name": "checkout",
           "type": "pod",
           "parent": "prod-1/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "prod-1",
             "namespace": "shop"
@@ -97,6 +98,7 @@
           "name": "nats-0",
           "type": "pod",
           "parent": "prod-1/namespace/messaging",
+          "status": "normal",
           "labels": {
             "cluster": "prod-1",
             "namespace": "messaging"
@@ -109,6 +111,7 @@
           "name": "nats-0",
           "type": "pod",
           "parent": "prod-2/namespace/messaging",
+          "status": "normal",
           "labels": {
             "cluster": "prod-2",
             "namespace": "messaging"

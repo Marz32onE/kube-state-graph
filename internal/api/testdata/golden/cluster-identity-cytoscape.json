@@ -64,6 +64,7 @@
           "name": "checkout",
           "type": "pod",
           "parent": "us-dev-c1/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "us-dev-c1",
             "namespace": "shop",
@@ -77,6 +78,7 @@
           "name": "worker-0",
           "type": "node",
           "parent": "cluster/us-dev-c1",
+          "status": "normal",
           "labels": {
             "cluster": "us-dev-c1"
           }
@@ -88,6 +90,7 @@
           "name": "checkout-data",
           "type": "pvc",
           "parent": "us-dev-c1/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "us-dev-c1",
             "namespace": "shop"
@@ -112,6 +115,7 @@
           "name": "payments",
           "type": "pod",
           "parent": "eu-prod-c1/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "eu-prod-c1",
             "namespace": "shop"
@@ -124,6 +128,7 @@
           "name": "ledger",
           "type": "pod",
           "parent": "cluster-beta/namespace/billing",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-beta",
             "namespace": "billing"
