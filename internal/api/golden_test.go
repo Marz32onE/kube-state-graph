@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -49,6 +51,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 
 	for name, view := range scenarios {
 		t.Run(name+"-cytoscape", func(t *testing.T) {
+			stampFixtureStatuses(view.Nodes)
 			g := &graph.Graph{
 				BuiltAt:           time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),
 				NodesByID:         map[string]graph.GraphNode{},
@@ -65,6 +68,7 @@ func TestGolden_GraphResponses(t *testing.T) {
 
 func TestGolden_StorageGraphResponses(t *testing.T) {
 	g := buildStorageGraphEstate()
+	stampFixtureStatuses(slices.Collect(maps.Values(g.NodesByID)))
 	aggrScope, err := graph.NewStorageScope(nil, nil, nil, nil, []string{"aggr1"}, nil, nil)
 	require.NoError(t, err)
 	podScope, err := graph.NewStorageScope(nil, nil, nil, nil, nil, nil, []string{"shop/web-0"})
@@ -79,6 +83,27 @@ func TestGolden_StorageGraphResponses(t *testing.T) {
 			body := cytoscape.Serialise(g, view)
 			compareGolden(t, name+"-cytoscape.json", body)
 		})
+	}
+}
+
+// Golden estates are hand-built GraphNodes and deliberately bypass Builder's
+// bake-before-freeze pipeline. Stamp the same pure verdict here so snapshots
+// represent endpoint output rather than zero-value fixture internals.
+func stampFixtureStatuses(nodes []graph.GraphNode) {
+	for _, n := range nodes {
+		status := graph.FoldStatus(n.Alerts(), n.Health(), n.ReadyStatus())
+		switch node := n.(type) {
+		case *graph.PodNode:
+			node.StatusValue = status
+		case *graph.K8sNode:
+			node.StatusValue = status
+		case *graph.PVCNode:
+			node.StatusValue = status
+		case *graph.NetAppNode:
+			node.StatusValue = status
+		case *graph.NetAppAggrNode:
+			node.StatusValue = status
+		}
 	}
 }
 

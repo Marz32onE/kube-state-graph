@@ -84,7 +84,7 @@ context.WithTimeout(ctx, --build-timeout)   ── graph endpoints only; deadlin
    └─ Builder.Build(ctx, window, end, sel)
          ├─ ReadTopology  (errgroup of 37 PromQL queries in parallel — KSM topology incl. node ready_status + 3 D29 service/endpointslice + 2 D34 owner + PVC-info + container-info + 6 controller-annotation families + kube_job_owner + 12 Harvest + 2 kubelet + ALERTS; 20 fetch + 17 fetchOptional — kube_replicaset_annotations and kube_job_annotations degrade with Harvest/kubelet/ALERTS — plus a SECOND WAVE of the 6 Harvest QoS workload legs, gated on kube_persistentvolumeclaim_info + volume_labels and scoped to the FlexVol names the loaded claims matched, so a build where none matched issues 37 queries and one where some did issues 43)
          ├─ ReadServiceGraph (errgroup of 3 PromQL queries in parallel: the required request total + 2 OPTIONAL RED — failed total + server-seconds histogram; `user`/`unknown` peers excluded at selector — D30; joined with topology)
-         └─ assemble + graph.NewGraph → *Graph (immutable, with adjacency)
+         └─ assemble → attachAlerts → attachStatus → graph.NewGraph (immutable)
    (no in-process concurrency cap; HPA + Pod resource limits handle load shedding)
    ▼
 graph.Project(g, scope)            ── projection-level filters (cluster/namespace again, edge_type, prune)
@@ -98,7 +98,7 @@ kubegraph.ParseStorageValues  ── StorageRequest{Start, End, Scope, Selector}
                                   az/env required and single-valued (missing_az / missing_env / invalid_scope)
    ▼
 Builder.BuildStorage          ── ReadTopology (same fan-out), skips ReadServiceGraph,
-                                  assembleStorageFlow, attachAlerts, no up{} probe
+                                  assembleStorageFlow, attachAlerts, attachStatus, no up{} probe
    ▼
 graph.ProjectStorage          ── reachability over storage-flow units + root-always
    ▼
@@ -804,7 +804,7 @@ live under `openspec/specs/`.
   Validation is constant-time and iterates the whole set —
   do NOT add early-return optimisations to `auth.KeySet.Validate`. Logs must
   never include the presented key value.
-- **Deterministic response body.** The serialiser produces byte-identical output for the same `(window, filters, upstream-data)`, and every rendered upstream selector is a pure function of the sorted, de-duplicated parameter values (so `?az=b&az=a` and `?az=a&az=b` issue identical queries): node/edge slices MUST go through `graph.SortNodes`/`SortEdges`, `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Optional edge `data.metrics` (when present) is part of that contract — contributions are summed in ascending order and rounded to 6 significant digits so the wire form is order-independent. Don't add timestamps, random IDs, or unsorted map iteration to the response — golden tests will break.
+- **Deterministic response body.** The serialiser produces byte-identical output for the same `(window, filters, upstream-data)`, and every rendered upstream selector is a pure function of the sorted, de-duplicated parameter values (so `?az=b&az=a` and `?az=a&az=b` issue identical queries): node/edge slices MUST go through `graph.SortNodes`/`SortEdges`, `Graph.ClusterNames()` MUST sort, and the response body MUST NOT carry time-of-build or echo-of-input fields. Body shape is fixed at `{apiVersion, clusters, elements}`. Optional edge `data.metrics` (when present) is part of that contract — contributions are summed in ascending order and rounded to 6 significant digits so the wire form is order-independent. Every golden carrying a pod / K8s node / PVC / NetApp controller / aggregate intentionally carries an explicit `data.status`; hand-built golden fixtures must stamp the same `FoldStatus` result the builder bakes before `graph.NewGraph`. Don't add timestamps, random IDs, or unsorted map iteration to the response — golden tests will break.
 - **IP addresses live on the typed `ipaddress` attribute, never in `labels`.** `PodNode.IPAddress()` carries `[pod_ip]` from `kube_pod_info` (when present). `K8sNode.IPAddress()` carries `[external_ip]` from `kube_node_status_addresses{type="ExternalIP"}` when present, falling back to `[internal_ip]` from `kube_node_status_addresses{type="InternalIP"}` when the node has no ExternalIP row (ExternalIP always wins over InternalIP regardless of upstream sample order; within each type a duplicate `(cluster, node)` sample resolves to the lexically-smallest address; address types other than `ExternalIP`/`InternalIP` are ignored); omitted only when neither type is present. The selector is the anchored alternation `kube_node_status_addresses{type=~"ExternalIP|InternalIP"}` — a fixed, request-invariant metric-selection contract, not a caller filter. `ServiceNode.IPAddress()` carries `[cluster_ip]` from `kube_service_info` (when present, omitted for headless `cluster_ip="None"`). `PVCNode`, `ExternalNode`, `NetAppAggrNode`, and `NetAppNode` always return nil. `host_ip` from `kube_pod_info` is intentionally dropped — it is the node's IP, surfaced via the node entry instead. The serialiser emits `data.ipaddress` (with `omitempty`); `labels.pod_ip`, `labels.host_ip`, `labels.external_ip`, `labels.internal_ip`, and `labels.cluster_ip` MUST NOT appear.
 - **Cytoscape compound nodes are presentation-only — workload hierarchy plus storage chain.** `pkg/cytoscape` synthesises `type="cluster"` / `type="storage-cluster"` / `type="namespace"` / `type="application"` / `type="controller"` groups (all `labels={}`, no `ipaddress`, emitted in that tier order each sorted by id, before real nodes) and sets `data.parent` (`omitempty`) for `cluster > namespace > application > controller > pod` with **skip-absent-levels**, plus `cluster > namespace > [application >] {service, pvc}`, `cluster > node`, and `storage-cluster > netapp-node > netapp-aggr` and `storage-cluster > netapp-svm`. The **real** `type="netapp-node"` is the compound parent of its aggregates (via `labels.node`) — the one scoped exception to "relationships are edges, groups are synthesised". An SVM nests under its storage-cluster, never under a controller. `external` nodes get no parent. Group ids are **path-encoded**. **NetApp types** (`NodeTypeNetAppAggr` id `netapp/<oc>/aggr/<aggr>`, `NodeTypeNetAppNode` id `netapp/<oc>/<node>`, `NodeTypeNetAppSVM` id `netapp/<oc>/svm/<svm>`) belong to no Kubernetes cluster (`labels` carry `ontap_cluster`, never `cluster`) so they stay out of `clusters[]` and `?cluster=`. The SVM is emitted only by `/v1/storage-graph`. The PVC→aggregate relationship is the `pvc-to-netapp-aggr` edge (Harvest `volume_labels`, matching a token derived from the PV name against the stock `volume` label); the pod→node relationship is `pod-to-node`. The `storageclass` node type and `pvc-to-storageclass` edge are **removed**; the claim's StorageClass name survives as `PVCNode.StorageClass()` / `data.storageclass`. Infra admission (D6, now transitive for NetApp): a K8s `node` is retained iff a pod is scheduled on it; a `netapp-aggr` iff an admitted PVC has a `pvc-to-netapp-aggr` edge to it; a `netapp-node` iff an admitted aggregate names it. `?name=` surfaces either NetApp type directly and an admitted aggregate always pulls its owning controller. See `pkg/build/netapp.go` and `docs/netapp-harvest-preconditions.md`.
 - **OTLP tracing/logging is config'd by OTel env vars only** (`OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`). No bespoke `--otlp-*` flags. Telemetry defaults to no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset (zero export overhead, no background goroutines). Tracing MUST NOT alter response bodies — resource attrs and span IDs live on spans, never in JSON. `otelgin` is mounted on `/v1/*` only; `/livez`, `/readyz`, `/metrics`, and `/docs/*` are deliberately untraced. The auth middleware MUST NEVER log or attribute the presented `X-API-Key` value via either the local handler or the OTLP slog bridge.
@@ -917,6 +917,20 @@ live under `openspec/specs/`.
   ABSENCE of any `lun` matcher),
   `internal/api/testdata/golden/with-netapp-storage-cytoscape.json`,
   `internal/integration` (`TestPVCNetAppHarvestJoin`).
+- **Node `status` attribute.** `PodNode`, `K8sNode`, `PVCNode`,
+  `NetAppNode`, and `NetAppAggrNode` always carry one of `"normal"`,
+  `"warning"`, or `"critical"` in `data.status`; services, externals, SVMs,
+  and synthesised compound groups omit it. `attachStatus` runs immediately
+  after `attachAlerts` on both build paths and stores the pure
+  `graph.FoldStatus` result before `graph.NewGraph`: alert severity is compared
+  case-insensitively (`critical` → critical; `warning`, empty, or unrecognised
+  → warning; `info` / `none` → no effect), `health="degraded"` and
+  `ready_status="NotReady"` → critical, and `ready_status="Unknown"` →
+  warning; worst wins, else normal. `data.perf` is deliberately not read —
+  thresholds belong in alert rules. `"normal"` means no negative signal was
+  observed, NOT that every optional signal source was present. Status never
+  propagates to a parent or neighbour; consumer-side group roll-up remains a
+  view concern.
 - **K8s node `ready_status` attribute.** Each `type="node"` node may carry a typed, nullable `ready_status` attribute — `data.ready_status` (a string), serialised with `omitempty` and **never inside `labels`** — same precedent as `ipaddress` / `owner`. The value is one of `"Ready"`, `"NotReady"`, `"Unknown"`, derived from `kube_node_status_condition{condition="Ready"}` (a new topology query in the `ReadTopology` errgroup; the `condition="Ready"` selector is a fixed, **request-invariant metric-selection contract** — same class as the node-address `type` selector and the D30 sentinel — NOT a caller filter, and it is rendered ahead of any request-scoped matcher). The reader reads the `status` label of the **active** row (sample value `1`), matched **case-insensitively**: `true`→`Ready`, `false`→`NotReady`, `unknown`→`Unknown`. Status-label casing is NOT pinned by the KSM-shaped contract — stock kube-state-metrics lowercases it (`addConditionMetrics`→`strings.ToLower`), but an exporter that re-publishes the raw Kubernetes `v1.ConditionStatus` enum verbatim emits `True`/`False`/`Unknown`; both resolve (the reader canonicalises to lowercase at the read site). **Absence is distinct from `"Unknown"`**: `data.ready_status` is omitted entirely when the metric is absent, the node has no `condition="Ready"` series, or no row is active — `"Unknown"` is reserved for the genuine Kubernetes state where the kubelet has stopped reporting; the two MUST NOT be conflated (no defaulting missing data to `"Unknown"`). Surfaced via `graph.GraphNode.ReadyStatus() string` (`""` for non-nodes and nodes with no Ready data), resolved in `pkg/build/topology.go` (`resolveNodeReadyStatus`, keyed `(cluster, node)` like the IP/label joins); on the defensive multi-active tie the lexically-smallest `status` wins (determinism). The metric is a KSM default and OPTIONAL (absence degrades gracefully, no build failure). No new node/edge type.
 - **Upstream backend routing (`add-multi-backend-query-routing`).** Every upstream call is dispatched through a `*promql.Router` over a validated, immutable `promql.Table` of named backends (URL + `families` + `zones` + resolved credentials). Full operator reference: `docs/upstream-backend-routing.md`.
   - **The seam is an OPTIONAL upgrade interface, not a widened one** (D1). `Querier.Instant` carries the query name but not the `Selector`, and the selector's `az` is what picks a backend — so `promql.QuerierSource` (`QuerierFor(sel) Querier`) was added alongside `Querier`, and `build.New` type-asserts its argument for it. `*Router` satisfies BOTH. Nothing in `pkg/promql`, `pkg/build`, or `pkg/kubegraph` changed signature, so a plain `Querier` (a `*Client`, a mock, `graph-api-gateway`) behaves exactly as before. Same shape as `build.BuildScopedRouteResolver`.
@@ -973,7 +987,7 @@ types: `PodNode`, `K8sNode`, `PVCNode`, `ServiceNode`, `ExternalNode`,
 `NetAppAggrNode`, `NetAppNode`, `NetAppSVMNode`. All
 expose `ID()`, `Name()`, `Type()`, `Labels()`, `IPAddress()`, `Owner()`,
 `Application()`, `Containers()`, `ReadyStatus()`, `Health()`, `Usage()`,
-`StorageClass()`, `Hardware()`, `Perf()`, `Alerts()`. Serialisation
+`StorageClass()`, `Hardware()`, `Perf()`, `Alerts()`, `Status()`. Serialisation
 goes through these methods — never through type switches in the serialiser.
 `IPAddress()` returns nil for `PVCNode` / `ExternalNode`; `PodNode` returns
 `[pod_ip]` when known;
@@ -995,7 +1009,9 @@ attribute. `""` (omitted) is distinct from `"Unknown"` (kubelet lost contact).
 `Health() string` returns `"online"` / `"degraded"` for NetApp types (`""` otherwise;
 absence ≠ degraded). `Usage() *UsageBytes` returns kubelet/Harvest used+capacity
 bytes for PVC and aggregate nodes. `StorageClass() string` is the PVC's own
-policy name (`data.storageclass`).
+policy name (`data.storageclass`). `Status() string` returns the baked
+`"normal"` / `"warning"` / `"critical"` verdict for pods, K8s nodes, PVCs,
+NetApp controllers, and aggregates, and `""` for services, externals, and SVMs.
 
 ### Test stack layers
 

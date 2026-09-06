@@ -61,6 +61,7 @@ type NodeData struct {
 	Hardware     *HardwareDTO      `json:"hardware,omitempty"`
 	Perf         *PerfDTO          `json:"perf,omitempty"`
 	Alerts       []AlertDTO        `json:"alerts,omitempty"`
+	Status       string            `json:"status,omitempty"`
 	Labels       map[string]string `json:"labels"`
 }
 
@@ -440,6 +441,7 @@ func Serialise(g *graph.Graph, view graph.View) Body {
 				Hardware:     hardwareDTO(n.Hardware()),
 				Perf:         perfDTO(n.Perf()),
 				Alerts:       alertsDTO(n.Alerts()),
+				Status:       n.Status(),
 				Labels:       n.Labels(),
 			},
 		})

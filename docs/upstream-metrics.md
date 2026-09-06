@@ -315,6 +315,19 @@ empty alert vector is the healthy estate.
 |---|---|---|
 | `ALERTS` | `data.alerts` `[{name, state, severity}]` on pod / K8s node / PVC / netapp-node / netapp-aggr. Sorted by `(name, severity)`, omitted when empty | Attribute omitted; build succeeds |
 
+`severity` is compared case-insensitively when the builder folds
+`data.status`: `critical` → `critical`; `warning`, an empty value, or any
+unrecognised value → `warning`; `info` and `none` have no effect. The same fold
+treats NetApp `health="degraded"` and Kubernetes `ready_status="NotReady"` as
+critical, and `ready_status="Unknown"` as warning. Worst wins; raw `data.perf`
+never participates because performance thresholds belong in alert rules.
+
+Eligible node kinds (`pod`, `node`, `pvc`, `netapp-node`, `netapp-aggr`) always
+carry one of `normal`, `warning`, or `critical`. `normal` means only **no
+negative signal was observed**; it is not proof that the `alerts` family or
+every optional health series was available. Services, externals, SVMs, and
+synthesised compound groups carry no `status` key.
+
 ## Probe (1)
 
 | Metric | When issued | Role |

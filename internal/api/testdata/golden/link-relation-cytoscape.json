@@ -37,6 +37,7 @@
           "name": "producer",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -49,6 +50,7 @@
           "name": "consumer",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -76,6 +78,7 @@
           "name": "nats-0",
           "type": "pod",
           "parent": "cluster-alpha/namespace/messaging",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "messaging"

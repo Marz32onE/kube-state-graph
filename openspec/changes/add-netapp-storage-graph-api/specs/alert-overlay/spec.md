@@ -116,7 +116,7 @@ When the alert carries a non-empty `cluster` label: for kinds 1–2 it SHALL be 
 
 ### Requirement: Node `alerts` attribute
 
-Every node that matched at least one alert SHALL carry a typed `data.alerts` array of `{ name, state, severity }` objects — `name` the `alertname` label, `state` the `alertstate` label (`"firing"`), `severity` the `severity` label, omitted when empty — never inside `labels`. The array SHALL be de-duplicated on `(name, severity)` and sorted by `name` then `severity`, and SHALL be omitted entirely (never empty) from nodes with no matched alert, so an unalerted estate serialises byte-identically to one built before this capability existed. The attribute SHALL be resolved at build time onto the graph, so it is present on `GET /v1/graph`, `GET /v1/storage-graph`, and every in-process engine call alike.
+Every node that matched at least one alert SHALL carry a typed `data.alerts` array of `{ name, state, severity }` objects — `name` the `alertname` label, `state` the `alertstate` label (`"firing"`), `severity` the `severity` label, omitted when empty — never inside `labels`. The array SHALL be de-duplicated on `(name, severity)` and sorted by `name` then `severity`, and SHALL be omitted entirely (never empty) from nodes with no matched alert (such a node's `data.status` — graph-api "Node `status` attribute" — is then folded from its other signals alone). The entry's `severity` is the ONLY alert field that feeds `status`; `name` and `state` do not. The attribute SHALL be resolved at build time onto the graph, so it is present on `GET /v1/graph`, `GET /v1/storage-graph`, and every in-process engine call alike.
 
 #### Scenario: Attribute shape
 

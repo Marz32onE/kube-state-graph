@@ -28,6 +28,7 @@
           "name": "worker-0",
           "type": "node",
           "parent": "cluster/cluster-alpha",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -39,6 +40,7 @@
           "name": "checkout",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",

@@ -43,6 +43,7 @@
               "severity": "warning"
             }
           ],
+          "status": "warning",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "db"
@@ -62,6 +63,7 @@
               "severity": "critical"
             }
           ],
+          "status": "critical",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -81,6 +83,7 @@
               "severity": "warning"
             }
           ],
+          "status": "warning",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "db",
@@ -96,6 +99,7 @@
           "name": "scratch",
           "type": "pvc",
           "parent": "cluster-alpha/namespace/db",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "db"
@@ -120,6 +124,7 @@
               "severity": "warning"
             }
           ],
+          "status": "warning",
           "labels": {
             "node": "ontap-prod-01",
             "ontap_cluster": "ontap-prod"
@@ -152,6 +157,7 @@
               "severity": "critical"
             }
           ],
+          "status": "critical",
           "labels": {
             "ontap_cluster": "ontap-prod"
           }

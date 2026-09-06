@@ -30,11 +30,12 @@ volume_labels{cluster="ontap-prod",node="ontap-prod-02",aggr="aggr2",svm="svm_ot
 qos_read_ops{cluster="ontap-prod",svm="svm_shop",volume="trident_pvc_shared",test=%[1]q} 300 %[2]d
 volume_labels{cluster="ontap-prod",node="ontap-prod-02",aggr="aggr9",svm="svm_idle",volume="vol_unclaimed",test=%[1]q} 1 %[2]d
 aggr_new_status{cluster="ontap-prod",node="ontap-prod-02",aggr="aggr9",test=%[1]q} 1 %[2]d
-node_new_status{cluster="ontap-prod",node="ontap-prod-01",test=%[1]q} 1 %[2]d
+node_new_status{cluster="ontap-prod",node="ontap-prod-01",test=%[1]q} 0 %[2]d
 node_labels{cluster="ontap-prod",node="ontap-prod-01",model="AFF-A400",version="9.14.1",vendor="NetApp",test=%[1]q} 1 %[2]d
 node_cpu_busy{cluster="ontap-prod",node="ontap-prod-01",test=%[1]q} 72.5 %[2]d
 node_total_ops{cluster="ontap-prod",node="ontap-prod-01",test=%[1]q} 18500 %[2]d
-ALERTS{alertname="KubePodCrashLooping",alertstate="firing",severity="warning",cluster="c1",namespace="shop",pod="rwx-0",az="zone-a",env="prod",test=%[1]q} 1 %[2]d
+ALERTS{alertname="KubePodObserved",alertstate="firing",severity="info",cluster="c1",namespace="shop",pod="rwx-0",az="zone-a",env="prod",test=%[1]q} 1 %[2]d
+ALERTS{alertname="NetAppAggregateFilling",alertstate="firing",severity="critical",cluster="ontap-prod",aggr="aggr1",az="zone-a",env="prod",test=%[1]q} 1 %[2]d
 `, disc, t1))
 	s.Require().True(
 		s.WaitForSeries(`volume_labels{volume="trident_pvc_shared",test=`+strconv.Quote(disc)+`}`, fixedNow, 30*time.Second),
@@ -55,12 +56,28 @@ ALERTS{alertname="KubePodCrashLooping",alertstate="firing",severity="warning",cl
 	ctrl := byID["netapp/ontap-prod/ontap-prod-01"]
 	s.Require().NotNil(ctrl.Hardware)
 	s.Equal("AFF-A400", ctrl.Hardware.Model)
+	s.Equal("critical", ctrl.Status, "node_new_status=0 must fold to critical")
 	s.Require().NotNil(ctrl.Perf)
 	s.Require().NotNil(ctrl.Perf.CPUBusyPct)
 	s.InDelta(72.5, *ctrl.Perf.CPUBusyPct, 1e-9)
 	pod := byID[ident+"/uid-rwx-0"]
 	s.Require().NotEmpty(pod.Alerts)
-	s.Equal("KubePodCrashLooping", pod.Alerts[0].Name)
+	s.Equal("KubePodObserved", pod.Alerts[0].Name)
+	s.Equal("normal", pod.Status, "info alerts do not tint")
+	s.Equal("critical", byID["netapp/ontap-prod/aggr/aggr1"].Status,
+		"the aggregate's firing critical alert must fold to critical")
+	for _, id := range []string{
+		ident + "/uid-rwx-1",
+		ident + "/worker-1",
+		ident + "/shop/shared-data",
+	} {
+		s.Equal("normal", byID[id].Status, "%s has no negative signal", id)
+	}
+	svm := byID["netapp/ontap-prod/svm/svm_shop"]
+	s.Empty(svm.Status, "SVMs do not carry status")
+	rawSVM, err := json.Marshal(svm)
+	s.Require().NoError(err)
+	s.NotContains(string(rawSVM), `"status"`, "SVM status key must be absent")
 
 	podBody := s.fetchStorageGraph(srv.URL, func(q url.Values) { q.Set("pod", "shop/rwx-0") })
 	s.assertStorageConservation(podBody)

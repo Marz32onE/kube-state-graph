@@ -1,6 +1,9 @@
 package graph
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // NodeType is the canonical type field on every graph node.
 type NodeType string
@@ -100,6 +103,11 @@ type GraphNode interface {
 	// serialiser omits the attribute, so an unalerted estate serialises
 	// byte-identically to one built before the overlay existed).
 	Alerts() []Alert
+	// Status is the build-time worst-wins verdict folded from this node's
+	// alerts, health and Ready status. Pods, K8s nodes, PVCs, NetApp controllers
+	// and aggregates return one of StatusNormal, StatusWarning or
+	// StatusCritical. Services, externals and SVMs return "".
+	Status() string
 
 	isGraphNode()
 }
@@ -194,6 +202,39 @@ type Alert struct {
 // is excluded upstream by the query's fixed selector.
 const AlertStateFiring = "firing"
 
+// Status values are the complete node-verdict vocabulary. StatusNormal means
+// no negative signal was observed; it is not proof that every signal source
+// was configured or available.
+const (
+	StatusNormal   = "normal"
+	StatusWarning  = "warning"
+	StatusCritical = "critical"
+)
+
+// FoldStatus returns the worst verdict carried by the node's own signals.
+// Performance counters deliberately do not participate: thresholds belong in
+// alert rules, whose severities reach this fold through alerts.
+func FoldStatus(alerts []Alert, health, readyStatus string) string {
+	status := StatusNormal
+	for _, alert := range alerts {
+		switch strings.ToLower(alert.Severity) {
+		case "critical":
+			return StatusCritical
+		case "info", "none":
+			continue
+		default:
+			status = StatusWarning
+		}
+	}
+	if health == HealthDegraded || readyStatus == ReadyStatusNotReady {
+		return StatusCritical
+	}
+	if readyStatus == ReadyStatusUnknown {
+		status = StatusWarning
+	}
+	return status
+}
+
 // SortAlerts orders alerts by (Name, Severity) and removes duplicates on that
 // pair, in place semantics aside — it returns the normalised slice. Callers
 // attach the RESULT; the ordering is what makes the serialised attribute a
@@ -251,6 +292,7 @@ type PodNode struct {
 	ApplicationValue string
 	ContainersValue  []Container
 	AlertsValue      []Alert
+	StatusValue      string
 }
 
 func (p *PodNode) ID() string                { return p.IDValue }
@@ -268,6 +310,7 @@ func (p *PodNode) StorageClass() string      { return "" }
 func (p *PodNode) Hardware() *Hardware       { return nil }
 func (p *PodNode) Perf() *NodePerf           { return nil }
 func (p *PodNode) Alerts() []Alert           { return p.AlertsValue }
+func (p *PodNode) Status() string            { return p.StatusValue }
 func (p *PodNode) isGraphNode()              {}
 
 // K8sNode represents a Kubernetes node entity. ReadyStatusValue carries the
@@ -281,6 +324,7 @@ type K8sNode struct {
 	IPAddressValue   []string
 	ReadyStatusValue string
 	AlertsValue      []Alert
+	StatusValue      string
 }
 
 func (n *K8sNode) ID() string                { return n.IDValue }
@@ -298,6 +342,7 @@ func (n *K8sNode) StorageClass() string      { return "" }
 func (n *K8sNode) Hardware() *Hardware       { return nil }
 func (n *K8sNode) Perf() *NodePerf           { return nil }
 func (n *K8sNode) Alerts() []Alert           { return n.AlertsValue }
+func (n *K8sNode) Status() string            { return n.StatusValue }
 func (n *K8sNode) isGraphNode()              {}
 
 // PVCNode represents a PersistentVolumeClaim entity. StorageClassValue is the
@@ -312,6 +357,7 @@ type PVCNode struct {
 	ApplicationValue  string
 	UsageValue        *UsageBytes
 	AlertsValue       []Alert
+	StatusValue       string
 }
 
 func (p *PVCNode) ID() string                { return p.IDValue }
@@ -329,6 +375,7 @@ func (p *PVCNode) StorageClass() string      { return p.StorageClassValue }
 func (p *PVCNode) Hardware() *Hardware       { return nil }
 func (p *PVCNode) Perf() *NodePerf           { return nil }
 func (p *PVCNode) Alerts() []Alert           { return p.AlertsValue }
+func (p *PVCNode) Status() string            { return p.StatusValue }
 func (p *PVCNode) isGraphNode()              {}
 
 // ServiceNode represents a Kubernetes Service surfaced when a service-graph
@@ -360,6 +407,7 @@ func (s *ServiceNode) StorageClass() string      { return "" }
 func (s *ServiceNode) Hardware() *Hardware       { return nil }
 func (s *ServiceNode) Perf() *NodePerf           { return nil }
 func (s *ServiceNode) Alerts() []Alert           { return nil }
+func (s *ServiceNode) Status() string            { return "" }
 func (s *ServiceNode) isGraphNode()              {}
 
 // ExternalNode represents a non-pod endpoint surfaced by the missing-UID
@@ -387,6 +435,7 @@ func (e *ExternalNode) StorageClass() string      { return "" }
 func (e *ExternalNode) Hardware() *Hardware       { return nil }
 func (e *ExternalNode) Perf() *NodePerf           { return nil }
 func (e *ExternalNode) Alerts() []Alert           { return nil }
+func (e *ExternalNode) Status() string            { return "" }
 func (e *ExternalNode) isGraphNode()              {}
 
 // NetAppAggrNode is one ONTAP aggregate. Id excludes the owning node so an
@@ -399,6 +448,7 @@ type NetAppAggrNode struct {
 	HealthValue string
 	UsageValue  *UsageBytes
 	AlertsValue []Alert
+	StatusValue string
 }
 
 func (n *NetAppAggrNode) ID() string                { return n.IDValue }
@@ -416,6 +466,7 @@ func (n *NetAppAggrNode) StorageClass() string      { return "" }
 func (n *NetAppAggrNode) Hardware() *Hardware       { return nil }
 func (n *NetAppAggrNode) Perf() *NodePerf           { return nil }
 func (n *NetAppAggrNode) Alerts() []Alert           { return n.AlertsValue }
+func (n *NetAppAggrNode) Status() string            { return n.StatusValue }
 func (n *NetAppAggrNode) isGraphNode()              {}
 
 // NetAppNode is one physical ONTAP controller. Materialised only when
@@ -430,6 +481,7 @@ type NetAppNode struct {
 	HardwareValue *Hardware
 	PerfValue     *NodePerf
 	AlertsValue   []Alert
+	StatusValue   string
 }
 
 func (n *NetAppNode) ID() string                { return n.IDValue }
@@ -447,6 +499,7 @@ func (n *NetAppNode) StorageClass() string      { return "" }
 func (n *NetAppNode) Hardware() *Hardware       { return n.HardwareValue }
 func (n *NetAppNode) Perf() *NodePerf           { return n.PerfValue }
 func (n *NetAppNode) Alerts() []Alert           { return n.AlertsValue }
+func (n *NetAppNode) Status() string            { return n.StatusValue }
 func (n *NetAppNode) isGraphNode()              {}
 
 // NetAppSVMNode is one ONTAP Storage Virtual Machine. An SVM spans aggregates
@@ -480,6 +533,7 @@ func (n *NetAppSVMNode) StorageClass() string      { return "" }
 func (n *NetAppSVMNode) Hardware() *Hardware       { return nil }
 func (n *NetAppSVMNode) Perf() *NodePerf           { return nil }
 func (n *NetAppSVMNode) Alerts() []Alert           { return nil }
+func (n *NetAppSVMNode) Status() string            { return "" }
 func (n *NetAppSVMNode) isGraphNode()              {}
 
 // SortNodes orders nodes deterministically by ID for stable output.

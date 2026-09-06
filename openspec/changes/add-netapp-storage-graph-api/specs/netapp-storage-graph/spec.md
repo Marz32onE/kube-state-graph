@@ -8,7 +8,7 @@ The builder SHALL resolve, for each joined claim, the SVM its FlexVol lives in �
 - `name` SHALL be `<svm>`.
 - `labels` SHALL be exactly `{ontap_cluster: "<ontap-cluster>"}` — no `cluster` key; the same `clusters[]` / `?cluster=` exclusion as the aggregate and controller.
 
-An SVM SHALL NOT carry `ipaddress`, `owner`, `application`, `containers`, `ready_status`, `health`, `usage`, `hardware` or `perf`. It SHALL be materialised only by the storage-flow graph (`storage-graph-api`) — as a tier of a retained claim's path or as a root — and NEVER by `GET /v1/graph`, whose body stays byte-identical. A claim whose matched series carries an empty `svm` SHALL produce no SVM node and SHALL contribute no storage-flow path at all — the tier chain is fixed and an `aggr → pvc` shortcut is not permitted; such a claim is counted like a topology miss for that graph.
+An SVM SHALL NOT carry `ipaddress`, `owner`, `application`, `containers`, `ready_status`, `health`, `usage`, `hardware`, `perf`, `alerts` or `status`. It SHALL be materialised only by the storage-flow graph (`storage-graph-api`) — as a tier of a retained claim's path or as a root — and NEVER by `GET /v1/graph`, whose body stays free of SVM nodes. A claim whose matched series carries an empty `svm` SHALL produce no SVM node and SHALL contribute no storage-flow path at all — the tier chain is fixed and an `aggr → pvc` shortcut is not permitted; such a claim is counted like a topology miss for that graph.
 
 #### Scenario: SVM identity and labels
 
@@ -45,7 +45,7 @@ Absence of data SHALL stay distinct from a reported unhealthy state — the buil
 
 **Hardware attribute.** The node SHALL additionally carry a typed, nullable `data.hardware` object resolved from the OPTIONAL Harvest info series `node_labels` (labels `cluster`, `node`, and any of `model`, `serial`, `version`, `vendor`, `location`; sample value ignored), matched on `(ontap-cluster, node)`: `{ model, serial, version, vendor, location }`, each field taken verbatim from the like-named label and **omitted when the label is empty or absent**; the whole object SHALL be omitted when no field resolves or no series matches. On duplicate series the lexically-smallest non-empty value per field wins. The attribute SHALL NEVER be placed inside `labels`.
 
-**Performance attribute.** The node SHALL additionally carry a typed, nullable `data.perf` object resolved from four OPTIONAL Harvest `system_node` counters, each matched on `(ontap-cluster, node)` and read **verbatim** (no `rate()` — the Harvest values are already per-second / percent figures): `cpu_busy_pct` from `node_cpu_busy`, `total_ops` from `node_total_ops`, `total_latency_us` from `node_total_latency`, `total_bytes_per_sec` from `node_total_data`. Each field is independently optional (omitted when its series is absent or its query failed); the object is omitted when no field resolves. Values are JSON numbers rounded to 6 significant digits. The builder SHALL NOT derive `health` — nor any other verdict — from these counters: thresholds are model- and estate-specific and belong in the operator's alert rules, whose verdicts reach the node through the `alert-overlay` capability. Each of the five new legs (`node_labels` plus the four counters) is OPTIONAL and degrades log-and-continue.
+**Performance attribute.** The node SHALL additionally carry a typed, nullable `data.perf` object resolved from four OPTIONAL Harvest `system_node` counters, each matched on `(ontap-cluster, node)` and read **verbatim** (no `rate()` — the Harvest values are already per-second / percent figures): `cpu_busy_pct` from `node_cpu_busy`, `total_ops` from `node_total_ops`, `total_latency_us` from `node_total_latency`, `total_bytes_per_sec` from `node_total_data`. Each field is independently optional (omitted when its series is absent or its query failed); the object is omitted when no field resolves. Values are JSON numbers rounded to 6 significant digits. The builder SHALL NOT derive `health` — nor the node's `status` verdict (graph-api "Node `status` attribute") — from these counters: thresholds are model- and estate-specific and belong in the operator's alert rules, whose verdicts reach the node through the `alert-overlay` capability and, from there, fold into `status`. `health="degraded"` itself DOES fold into `status` as critical. Each of the five new legs (`node_labels` plus the four counters) is OPTIONAL and degrades log-and-continue.
 
 Both attributes SHALL be resolved at build time onto the graph and therefore appear identically on `GET /v1/graph`, `GET /v1/storage-graph`, and every in-process engine call. A NetApp node SHALL be materialised ONLY via aggregate reference or as a storage-flow root — never wholesale from Harvest series presence — and SHALL NOT carry `ipaddress`, `owner`, `application`, `containers`, or `ready_status`. It acts as the **compound parent** of its aggregates (graph-api "Cytoscape compound node grouping"); in `GET /v1/graph` it is the target of no edge, while in the storage-flow graph it is the source of `storage-flow` edges of tier `node-aggr`.
 
@@ -91,8 +91,8 @@ Both attributes SHALL be resolved at build time onto the graph and therefore app
 
 #### Scenario: High CPU does not degrade health
 
-- **WHEN** `node_cpu_busy=99` and `node_new_status=1` match a controller
-- **THEN** the node carries `data.health="online"`
+- **WHEN** `node_cpu_busy=99` and `node_new_status=1` match a controller and no alert names it
+- **THEN** the node carries `data.health="online"` and `data.status="normal"`
 
 #### Scenario: Attributes present on both endpoints
 

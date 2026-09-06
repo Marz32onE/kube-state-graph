@@ -32,8 +32,10 @@ See `proposal.md` — Why. What shapes the approach:
   build already loads (plus the new Harvest node legs).
 - Weights that conserve in the **projected** body under every root /
   filter combination, computed order-free.
-- Zero byte change to `/v1/graph` goldens whose fixtures carry none of the
-  new series.
+- Every existing `/v1/graph` field byte-unchanged; the only diff a golden
+  may show is the added `data.status` key on pod / node / PVC / NetApp
+  node / aggregate entries (regenerated once, verified as a key-only
+  diff).
 - `alerts` as the first optional family without touching the five-family
   coverage rule or any existing backends file.
 
@@ -44,7 +46,14 @@ See `proposal.md` — Why. What shapes the approach:
 - SVM-level Harvest attributes (`svm_labels`, SVM health / usage) — the SVM
   node is an identity only in this change.
 - Alerts on `service`, `external` or `netapp-svm` nodes.
-- Any derived health verdict from performance counters (see proposal).
+- Any verdict derived from performance counters: `data.perf` feeds
+  neither `data.health` nor `data.status` — a CPU threshold is an alert
+  rule (see proposal). Backend-configured thresholds were considered and
+  rejected: a rule with `for:` already does duration, hysteresis and
+  per-model tuning better, and a second rule engine beside the alerting
+  store would give one node two sources of truth for the same judgement.
+- Server-side roll-up of `status` onto synthesised compound nodes (a fact
+  about the view, computed by the consumer).
 - A `/v1/graph` SVM node or `storage-flow` edge.
 
 ## Decisions
@@ -263,7 +272,8 @@ metrics.
   Registry entry per the spec; `ValidEdgeType` accepts it, so
   `?edge_type=storage-flow` on `/v1/graph` is a 200 with no edges.
 - `cytoscape.NodeData` gains `Hardware *HardwareDTO`, `Perf *PerfDTO`,
-  `Alerts []AlertDTO`, all `omitempty`; `compoundParent` gains the
+  `Alerts []AlertDTO`, all `omitempty`, and `Status string`
+  (`status,omitempty` — empty only on kinds that carry none, D11); `compoundParent` gains the
   `NodeTypeNetAppSVM → storage-cluster/<oc>` case; `storageClusterSeen` is
   already keyed on `labels.ontap_cluster`, so the SVM's group appears with
   no further change. `metricsDTO` already serialises `Edge.IO`.
@@ -280,7 +290,8 @@ metrics.
 
 `pkg/build` still imports nothing from `internal/`; the resolver and the
 flow assembler are pure and unit-tested with hand-built `Topology` /
-`model.Vector` fixtures (`storageflow_test.go`, `alerts_test.go`).
+`model.Vector` fixtures (`storageflow_test.go`, `alerts_test.go`, `status_test.go`; the
+fold itself is table-tested in `pkg/graph`).
 `ProjectStorage` gets property tests in `pkg/graph` (conservation at every
 interior node for random estates with random roots; retained ⊆ built; root
 presence). Component tests drive `/v1/storage-graph` through
@@ -289,6 +300,53 @@ per root side) and `/v1/graph` goldens extended only where a fixture adds
 `node_labels` / counters / `ALERTS`. Integration adds `TestStorageGraph`
 (Sankey conservation end to end) and extends `TestPVCNetAppHarvestJoin`'s
 fixture with `node_labels`.
+
+### D11. `status`: one worst-wins fold at the bake point
+
+`attachStatus(nodes)` runs in `Build` and `BuildStorage` immediately after
+`attachAlerts` (D7) and before `graph.NewGraph` — the same "bake before
+freeze" point — and sets `StatusValue` on every `PodNode`, `K8sNode`,
+`PVCNode`, `NetAppNode` and `NetAppAggrNode`. The rule is the pure
+`graph.FoldStatus(alerts []Alert, health, readyStatus string) string`,
+owned by `pkg/graph` beside the vocabulary constants `StatusNormal` /
+`StatusWarning` / `StatusCritical`, so the projection, the serialiser and
+every embedder read a field and know no rule:
+
+| signal | value | rank |
+|---|---|---|
+| `alerts[].severity` (lower-cased) | `critical` | critical |
+| | `warning`, **empty / absent, or any unrecognised value** | warning |
+| | `info`, `none` | no effect |
+| `health` | `degraded` | critical |
+| `ready_status` | `NotReady` | critical |
+| | `Unknown` | warning |
+| anything else, any absent attribute | | no effect |
+
+Result = the highest rank reached, else `normal`. A max over a set is
+order-free (D6), so shuffled inputs give one answer; the fold reads only
+the node's own attributes, so status never propagates between nodes (a
+degraded aggregate under an online controller colours only the
+aggregate).
+
+*Why bake rather than derive in the accessor?* `Status()` must be a pure
+field read like every other accessor so the serialiser stays a
+type-switch-free walk, and baking keeps the option of a future rule input
+the node does not carry without changing the accessor's shape. *Why write
+`normal` explicitly when every other attribute is omitted-when-absent?*
+The consumer already distinguishes "no `status` key" (this kind carries no
+signal — no border) from `normal` (judged, nothing wrong — green);
+collapsing the two would make a pod with no alerting store look like a
+service. The cost is one regeneration of every golden carrying an
+eligible kind, verified as a key-only diff. *Why is an unrecognised
+severity `warning`, not `normal`?* A firing alert is never nothing; the
+rule only decides how loud. `info` / `none` are the two conventional
+"not actionable" spellings and stay silent so an `InfoInhibitor`-style
+rule does not tint every node. *Why no `perf` input?* See Non-Goals — the
+operator writes `node_cpu_busy > 85` as a rule with `for: 10m` and a
+`severity`, and it lands here through D7. *Why no group roll-up?* A
+collapsed namespace's colour depends on which children are hidden — a
+fact about the view, not about a node; the front end already computes
+`worstStatus` from the leaf statuses it receives.
 
 ## Risks / Trade-offs
 
@@ -309,11 +367,22 @@ fixture with `node_labels`.
   deliberate; the six legs are all optional and run in the same errgroup.
 - [Two parsers drift] → both live in `pkg/kubegraph` and share every
   helper; the storage parser's tests mirror `ParseValues`'.
+- [A `severity` vocabulary outside `critical` / `warning` / `info` /
+  `none`] → falls to `warning`, never silent; documented in
+  `docs/upstream-metrics.md`. A mapping knob is a one-line follow-up if
+  an estate needs it.
+- [`normal` read as "healthy" on an estate whose `alerts` family is
+  unserved] → the docs and the attribute's spec define `normal` as "no
+  negative signal"; the Info logged at table load when no backend serves
+  `alerts` is the operator's cue.
 
 ## Migration Plan
 
-Additive. Deploy the new binary; `/v1/graph` bodies are byte-identical
-until the stores carry `node_labels`, the counters or `ALERTS`. Existing
+Additive. Deploy the new binary; `/v1/graph` bodies differ only by the
+`data.status` key on the five carrying kinds until the stores carry
+`node_labels`, the counters or `ALERTS`. A consumer that ignored unknown
+keys is unaffected; the demo front end already reads `status` with this
+exact enum. Existing
 backends files load unchanged (an Info notes the overlay is off). To
 enable alerts, add `alerts` to a backend's `families` and reload. Rollback
 is the previous binary; no data or config migration in either direction.

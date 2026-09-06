@@ -46,6 +46,7 @@
           "name": "worker-0",
           "type": "node",
           "parent": "cluster/cluster-alpha",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -62,6 +63,7 @@
             "name": "mongo"
           },
           "application": "mongo",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "db",
@@ -80,6 +82,7 @@
             "capacity_bytes": 10737418240
           },
           "storageclass": "gp3",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "db",
@@ -93,6 +96,7 @@
           "name": "legacy",
           "type": "pvc",
           "parent": "cluster-alpha/namespace/db",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "db"

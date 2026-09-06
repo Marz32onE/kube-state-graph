@@ -1498,6 +1498,7 @@ kubelet_volume_stats_capacity_bytes{cluster="cluster-alpha",namespace="shop",per
 	s.Equal("pvc-9f3a", pvc.Labels["volumename"])
 	s.Equal("svm-prod", pvc.Labels["svm"])
 	s.Equal("netapp-nas", pvc.StorageClass)
+	s.Equal("normal", pvc.Status)
 	s.Require().NotNil(pvc.Usage)
 	s.InDelta(50.0, *pvc.Usage.UsedBytes, 1e-9)
 
@@ -1508,15 +1509,18 @@ kubelet_volume_stats_capacity_bytes{cluster="cluster-alpha",namespace="shop",per
 	s.Require().True(ok, "qos-less pvc node must be present")
 	s.Equal("pvc-noqos", qosless.Labels["volumename"])
 	s.Equal("svm-prod", qosless.Labels["svm"])
+	s.Equal("normal", qosless.Status)
 
 	aggr, ok := byID["netapp/ontap-prod/aggr/aggr1"]
 	s.Require().True(ok, "netapp-aggr node must be present")
 	s.Equal("online", aggr.Health)
+	s.Equal("normal", aggr.Status)
 	s.Equal("netapp/ontap-prod/ontap-prod-01", aggr.Parent)
 	ctrl, ok := byID["netapp/ontap-prod/ontap-prod-01"]
 	s.Require().True(ok, "netapp-node must be present")
 	s.Equal("storage-cluster/ontap-prod", ctrl.Parent)
 	s.Equal("online", ctrl.Health)
+	s.Equal("normal", ctrl.Status)
 	s.Require().NotNil(ctrl.Hardware, "node_labels must surface data.hardware")
 	s.Equal("AFF-A400", ctrl.Hardware.Model)
 	for _, c := range body.Clusters {

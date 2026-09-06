@@ -77,7 +77,7 @@ A query with no declared family SHALL be a build-time failure of the repository'
 
 ### Requirement: Single-backend compatibility mode
 
-When no routing-table file is configured, the server SHALL behave as a table declaring exactly one backend: named `default`, addressed at `--prom-url`, serving **all six** families (the five required plus `alerts`), with no `zones` (a catch-all). Every query SHALL then be issued to exactly one destination, and every rendered query string, merge result, and serialised response body SHALL be byte-identical to the same deployment before backend routing existed — the added `ALERTS` leg contributes nothing to the body when the store holds no `ALERTS` series.
+When no routing-table file is configured, the server SHALL behave as a table declaring exactly one backend: named `default`, addressed at `--prom-url`, serving **all six** families (the five required plus `alerts`), with no `zones` (a catch-all). Every query SHALL then be issued to exactly one destination, and every rendered query string, merge result, and serialised response body SHALL be byte-identical to the same deployment before backend routing existed, apart from the `data.status` keys the graph-api "Node `status` attribute" requirement adds on every build — the added `ALERTS` leg contributes nothing to the body when the store holds no `ALERTS` series.
 
 When both a routing-table file and `--prom-url` are configured, the file SHALL take precedence and a Warn SHALL be logged stating that `--prom-url` is ignored.
 

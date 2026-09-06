@@ -54,6 +54,7 @@
           "name": "orders-data",
           "type": "pvc",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -66,6 +67,7 @@
           "name": "plain-data",
           "type": "pvc",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -78,6 +80,7 @@
           "name": "shared-data",
           "type": "pvc",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -90,6 +93,7 @@
           "name": "orders-0",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -103,6 +107,7 @@
           "name": "plain-0",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -116,6 +121,7 @@
           "name": "web-0",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -129,6 +135,7 @@
           "name": "web-1",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -142,6 +149,7 @@
           "name": "web-2",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop",
@@ -155,6 +163,7 @@
           "name": "worker-1",
           "type": "node",
           "parent": "cluster/cluster-alpha",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -166,6 +175,7 @@
           "name": "worker-2",
           "type": "node",
           "parent": "cluster/cluster-alpha",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha"
           }
@@ -177,6 +187,7 @@
           "name": "db-data",
           "type": "pvc",
           "parent": "cluster-beta/namespace/db",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-beta",
             "namespace": "db"
@@ -189,6 +200,7 @@
           "name": "db-0",
           "type": "pod",
           "parent": "cluster-beta/namespace/db",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-beta",
             "namespace": "db",
@@ -202,6 +214,7 @@
           "name": "worker-b",
           "type": "node",
           "parent": "cluster/cluster-beta",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-beta"
           }
@@ -213,6 +226,7 @@
           "name": "aggr1",
           "type": "netapp-aggr",
           "parent": "netapp/ontap-prod/ontap-prod-01",
+          "status": "normal",
           "labels": {
             "node": "ontap-prod-01",
             "ontap_cluster": "ontap-prod"
@@ -225,6 +239,7 @@
           "name": "ontap-prod-01",
           "type": "netapp-node",
           "parent": "storage-cluster/ontap-prod",
+          "status": "normal",
           "labels": {
             "ontap_cluster": "ontap-prod"
           }

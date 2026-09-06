@@ -127,7 +127,8 @@ has to cross-reference the diagram with an alert list by hand.
   `data.health` keeps its precise meaning — the ONTAP-reported
   `node_new_status`, where absence ≠ degraded. Threshold judgement belongs
   in the operator's alert rules, which reach the node through the alert
-  overlay below.
+  overlay below and, from there, the node's `status` verdict —
+  `data.perf` itself never feeds `status`.
 - **Alert overlay from the `ALERTS` series.** A new OPTIONAL leg reads the
   Prometheus / vmalert `ALERTS` series over the window and attaches active
   alerts to the graph node their labels identify: `{cluster, namespace,
@@ -158,6 +159,25 @@ has to cross-reference the diagram with an alert list by hand.
   embedder walking `graph.Graph` through `GraphNode.Alerts()`. The leg runs
   on every build (an unfiltered `/v1/graph` reads the whole estate's
   alerts), degrades log-and-continue, and absence of the series is silent.
+- **Node `status` verdict.** Every node kind that can carry a health
+  signal — `pod`, `node`, `pvc`, `netapp-node`, `netapp-aggr` — gains a
+  typed `data.status` string, exactly one of `normal` / `warning` /
+  `critical`, folded at build time (the same bake-before-freeze point as
+  `data.alerts`) from the signals the node ALREADY carries and nothing
+  else: its `data.alerts` by `severity`, its `data.health` (`degraded`)
+  and its `data.ready_status` (`NotReady` / `Unknown`). Worst wins.
+  `normal` means "no negative signal", never proof of health, and it is
+  written **explicitly** so a consumer can tell "the backend judged this
+  node and found nothing" from "this node kind carries no signal" —
+  `service`, `external`, `netapp-svm` and every synthesised group carry
+  no `status` key at all. The fold is the ONE place a verdict is
+  computed, so the front end, the Sankey and every embedder colour a node
+  from one enum and know no rule. `data.perf` deliberately does NOT feed
+  it: a CPU threshold is an alert rule's job (`node_cpu_busy > 85` with a
+  `for:` and a `severity`) and reaches `status` through `data.alerts`
+  like any other rule — see the performance bullet above. Group roll-up
+  (a collapsed namespace showing its worst pod) stays a consumer concern:
+  it is a fact about the view, not about any node.
 - **New `alerts` query family in the data-source (backends) YAML.** The
   routing table's `families` set gains `alerts`, so the operator declares
   which store holds `ALERTS` (typically the vmalert-fed store, which need
@@ -183,9 +203,12 @@ has to cross-reference the diagram with an alert list by hand.
   `docs/netapp-harvest-preconditions.md` gains the `node_labels` leg;
   `docs/upstream-backend-routing.md` gains the `alerts` family.
 
-No breaking change: `/v1/graph` gains three additive, omitted-when-absent
-attributes (`data.hardware`, `data.perf`, `data.alerts`); existing ids, edge ids and
-every existing field are byte-unchanged; existing backends files stay valid.
+No breaking change: `/v1/graph` gains four additive attributes —
+`data.hardware`, `data.perf`, `data.alerts` (each omitted when absent) and
+`data.status` (always present on the five kinds that can carry a signal,
+absent on every other kind); existing ids, edge ids and every existing field
+are byte-unchanged — a golden carrying one of those kinds gains `status`
+keys and nothing else; existing backends files stay valid.
 
 ## Capabilities
 
@@ -205,7 +228,8 @@ every existing field are byte-unchanged; existing backends files stay valid.
   active-in-window rule, label-set matching to pod / K8s node / PVC /
   NetApp node / NetApp aggregate nodes (cluster-aware when the label is
   present, unique-in-estate otherwise; K8s-vs-ONTAP disambiguation of the
-  `{cluster, node}` shape), the sorted `data.alerts` attribute,
+  `{cluster, node}` shape), the sorted `data.alerts` attribute (whose
+  `severity` is the one alert field feeding the `status` verdict),
   unmatched-alert observability, and per-family degradation.
 
 ### Modified Capabilities
@@ -224,7 +248,10 @@ every existing field are byte-unchanged; existing backends files stay valid.
   **Cytoscape.js response shape** — on BOTH endpoints — gains the
   `data.alerts` (pod / node / PVC / netapp-node / netapp-aggr),
   `data.hardware` and `data.perf` (`netapp-node`) node attributes, with a
-  `/v1/graph` golden pinning each.
+  `/v1/graph` golden pinning each; (5) a new **Node `status` attribute**
+  requirement: the worst-wins fold over `alerts` / `health` /
+  `ready_status`, explicit `normal`, the five carrying kinds, `perf`
+  excluded, no server-side group roll-up.
 - `upstream-backend-routing`: the family set grows to six with `alerts`
   as the first optional family — table validation, the implicit
   single-backend table, `Family.AcceptsAZ()` and the `queryFamily`
@@ -235,8 +262,10 @@ every existing field are byte-unchanged; existing backends files stay valid.
 - `pkg/graph`: `NodeTypeNetAppSVM`, `NetAppSVMNode`, `Hardware()` and
   `Perf()` accessors on the sealed `GraphNode` (nil for all but `NetAppNode`)
   and an `Alerts()` accessor (non-nil only on pod / K8s node / PVC /
-  NetApp node / NetApp aggregate), the `storage-flow` entry in
-  `EdgeTypes`, a storage `Scope` / projection.
+  NetApp node / NetApp aggregate), a `Status()` accessor (`""` on
+  service / external / SVM) with the pure `FoldStatus` rule and the
+  `StatusNormal` / `StatusWarning` / `StatusCritical` constants, the
+  `storage-flow` entry in `EdgeTypes`, a storage `Scope` / projection.
 - `pkg/build`: `netapp.go` resolves the SVM entity and reads `node_labels`;
   a storage-flow assembler builds the tier chain + summed weights from the
   existing per-claim I/O; `ReadTopology` fan-out grows by one optional
@@ -251,14 +280,17 @@ every existing field are byte-unchanged; existing backends files stay valid.
 - `pkg/build`: `resolveAlerts` in `topology.go` and the node perf read in
   `netapp.go` (six more optional legs in the `ReadTopology` fan-out
   overall — `node_labels`, four counters, `ALERTS`; query-count pins
-  move).
-- `pkg/cytoscape`: hardware, perf and alerts DTOs; `netapp-svm` parent rule;
-  storage-graph goldens.
+  move); `attachStatus` in `status.go`, run after `attachAlerts` on both
+  build paths.
+- `pkg/cytoscape`: hardware, perf and alerts DTOs and the `status` field;
+  `netapp-svm` parent rule; storage-graph goldens.
 - `pkg/kubegraph`: storage-request parser + `BuildStorageFromValues`.
 - `internal/api`: `handleStorageGraph`, swag annotations, `docs/`
   regenerated, route ↔ spec drift test, new goldens; the existing
-  `with-netapp-storage-cytoscape.json` golden gains only `data.hardware`
-  when the fixture supplies `node_labels`.
+  `with-netapp-storage-cytoscape.json` golden gains `data.hardware`
+  when the fixture supplies `node_labels`; **every** golden carrying a
+  pod / node / PVC / NetApp node / aggregate is regenerated once for the
+  added `status` keys (verified as a key-only diff).
 - `internal/integration`: `TestPVCNetAppHarvestJoin` fixture gains
   `node_labels`; new storage-graph end-to-end test (Sankey shape:
   conservation across tiers).
@@ -267,6 +299,11 @@ every existing field are byte-unchanged; existing backends files stay valid.
   `docs/upstream-backend-routing.md`,
   `CLAUDE.md` (request surface, edge-type list, NetApp bullet).
 - Downstream (out of this repo): the demo's `netapp-faker` should emit
-  `node_labels`; the frontend's Sankey consumes this body. Neither blocks
-  this change.
+  `node_labels`; the frontend's Sankey consumes this body. The frontend
+  already reads `data.status` with exactly this enum (`NodeStatus`,
+  `STATUS_COLOR`, client-side `worstStatus` roll-up) but its `wire.ts`
+  marks the field "panel-only — the backend emits no health status
+  field"; that comment and the "absent → no border" fallback become the
+  wire contract. A CPU rule for the demo's controllers is a vmalert rule
+  in the demo chart, not backend config. None of this blocks this change.
 - No new dependencies.

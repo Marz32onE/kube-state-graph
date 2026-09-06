@@ -12,11 +12,77 @@ Each `type="pod"`, `type="node"`, `type="pvc"`, `type="netapp-node"` and `type="
 #### Scenario: Unalerted node has no key
 
 - **WHEN** a node matched no alert
-- **THEN** its `data` object has no `alerts` key, so a body with no alerts is byte-identical to the pre-change golden
+- **THEN** its `data` object has no `alerts` key, so a body with no alerts differs from the pre-change golden only by the `status` keys the "Node `status` attribute" requirement adds
+
+### Requirement: Node `status` attribute
+
+Each `type="pod"`, `type="node"`, `type="pvc"`, `type="netapp-node"` and `type="netapp-aggr"` node SHALL carry a typed `data.status` string — exactly one of `"normal"`, `"warning"`, `"critical"` — **always present** on those five kinds and **never inside `labels`**. `service`, `external`, `netapp-svm` and every synthesised group node SHALL NOT carry `status`, so a consumer can tell "judged, nothing wrong" (`normal`) from "this kind carries no health signal" (no key). The value SHALL be folded at build time, worst-wins, from the node's OWN attributes and nothing else:
+
+- `data.alerts`: an entry whose `severity` (compared case-insensitively) is `critical` ranks critical; `warning`, an empty or absent `severity`, or any unrecognised value ranks warning; `info` and `none` rank nothing;
+- `data.health`: `degraded` ranks critical;
+- `data.ready_status`: `NotReady` ranks critical, `Unknown` ranks warning;
+- every other value, and every absent attribute, ranks nothing.
+
+The result is the highest rank reached, else `normal`. `data.perf` SHALL NOT influence `status`: a threshold over a performance counter is an alert rule's job and reaches `status` through `data.alerts`. The fold is a pure function of the node's own attributes (order-free over the alert set) and SHALL never read another node, so status does not propagate along edges or compound parents. The attribute SHALL appear identically on `GET /v1/graph`, `GET /v1/storage-graph` and every in-process engine call. Roll-up onto compound groups (a collapsed namespace showing its worst pod) is NOT performed by the server.
+
+#### Scenario: Worst severity wins
+
+- **WHEN** a pod carries alerts with severities `warning` and `critical`
+- **THEN** its `data.status` equals `"critical"`
+
+#### Scenario: Warning only
+
+- **WHEN** a pod's only alert carries `severity="warning"`
+- **THEN** its `data.status` equals `"warning"`
+
+#### Scenario: Unrecognised or missing severity is a warning
+
+- **WHEN** one PVC's only alert carries `severity="page"` and another PVC's only alert carries no `severity`
+- **THEN** both carry `data.status="warning"`
+
+#### Scenario: Informational alerts do not tint
+
+- **WHEN** a pod's only alerts carry `severity="info"` and `severity="none"`
+- **THEN** its `data.status` equals `"normal"`
+
+#### Scenario: Unalerted node is explicitly normal
+
+- **WHEN** a pod matched no alert and its `data` has no `alerts` key
+- **THEN** its `data.status` equals `"normal"` and the key is present
+
+#### Scenario: Degraded controller
+
+- **WHEN** a `netapp-node` carries `data.health="degraded"` and no alert
+- **THEN** its `data.status` equals `"critical"`
+
+#### Scenario: Status does not propagate
+
+- **WHEN** a `netapp-aggr` carries `data.health="degraded"` and its owning `netapp-node` carries `data.health="online"`, neither with an alert
+- **THEN** the aggregate's `data.status` equals `"critical"` and the controller's equals `"normal"`
+
+#### Scenario: Kubernetes node readiness
+
+- **WHEN** one `type="node"` carries `data.ready_status="NotReady"`, a second `"Unknown"`, and a third has no `ready_status`, none with an alert
+- **THEN** their `data.status` values are `"critical"`, `"warning"` and `"normal"` respectively
+
+#### Scenario: High CPU alone is normal
+
+- **WHEN** a `netapp-node` carries `data.perf.cpu_busy_pct=99`, `data.health="online"` and no alert
+- **THEN** its `data.status` equals `"normal"`
+
+#### Scenario: Kinds without a signal carry no key
+
+- **WHEN** a body contains `service`, `external`, `netapp-svm` and synthesised group nodes
+- **THEN** none of their `data` objects has a `status` key
+
+#### Scenario: Present on both endpoints
+
+- **WHEN** a node is retained by both `GET /v1/graph` and `GET /v1/storage-graph`
+- **THEN** both bodies carry the identical `data.status` on it
 
 ### Requirement: NetApp node `hardware` and `perf` attributes
 
-Each `type="netapp-node"` node MAY carry two typed, nullable objects, both `omitempty` and never inside `labels`: `data.hardware = { model, serial, version, vendor, location }` (strings, each omitted when unresolved) from the Harvest `node_labels` info series, and `data.perf = { cpu_busy_pct, total_ops, total_latency_us, total_bytes_per_sec }` (JSON numbers rounded to 6 significant digits, each omitted when unresolved) from the Harvest `system_node` counters — per the `netapp-storage-graph` "NetApp node entity and health" requirement. No other node type SHALL carry either. `data.health` on the same node SHALL remain the `node_new_status`-reported value and SHALL NOT be derived from `perf`. Both attributes SHALL appear on `GET /v1/graph` and `GET /v1/storage-graph` alike.
+Each `type="netapp-node"` node MAY carry two typed, nullable objects, both `omitempty` and never inside `labels`: `data.hardware = { model, serial, version, vendor, location }` (strings, each omitted when unresolved) from the Harvest `node_labels` info series, and `data.perf = { cpu_busy_pct, total_ops, total_latency_us, total_bytes_per_sec }` (JSON numbers rounded to 6 significant digits, each omitted when unresolved) from the Harvest `system_node` counters — per the `netapp-storage-graph` "NetApp node entity and health" requirement. No other node type SHALL carry either. `data.health` on the same node SHALL remain the `node_new_status`-reported value and SHALL NOT be derived from `perf`; nor SHALL `data.status` (below) read `perf`. Both attributes SHALL appear on `GET /v1/graph` and `GET /v1/storage-graph` alike.
 
 #### Scenario: Hardware and perf serialised
 

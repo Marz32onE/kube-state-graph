@@ -28,6 +28,7 @@
           "name": "checkout",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"

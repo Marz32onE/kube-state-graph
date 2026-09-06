@@ -162,6 +162,8 @@ components:
           $ref: '#/components/schemas/github_com_akira-core_kube-state-graph_pkg_cytoscape.PerfDTO'
         ready_status:
           type: string
+        status:
+          type: string
         storageclass:
           type: string
         type:

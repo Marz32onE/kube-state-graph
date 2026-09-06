@@ -28,6 +28,7 @@
           "name": "checkout",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -40,6 +41,7 @@
           "name": "cart",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -52,6 +54,7 @@
           "name": "direct",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -64,6 +67,7 @@
           "name": "rare",
           "type": "pod",
           "parent": "cluster-alpha/namespace/shop",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha",
             "namespace": "shop"
@@ -76,6 +80,7 @@
           "name": "worker-0",
           "type": "node",
           "parent": "cluster/cluster-alpha",
+          "status": "normal",
           "labels": {
             "cluster": "cluster-alpha"
           }

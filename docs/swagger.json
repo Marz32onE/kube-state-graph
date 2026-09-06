@@ -217,6 +217,9 @@
                     "ready_status": {
                         "type": "string"
                     },
+                    "status": {
+                        "type": "string"
+                    },
                     "storageclass": {
                         "type": "string"
                     },

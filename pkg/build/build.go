@@ -175,6 +175,7 @@ func (b *Builder) Build(ctx context.Context, window time.Duration, end time.Time
 	// the attribute must reach every consumer of this graph alike (/v1/graph,
 	// /v1/storage-graph, and any embedder walking GraphNode.Alerts()).
 	attachAlerts(ctx, nodes, topology)
+	attachStatus(nodes)
 	g := graph.NewGraph(nodes, edges, b.clk.Now().UTC())
 	// The identity table the reader composed. Every cluster-scoped id and label
 	// already carries the identity; the graph needs the table so the
@@ -270,6 +271,7 @@ func (b *Builder) BuildStorage(ctx context.Context, window time.Duration, end ti
 	// endpoint identically, since it is resolved onto the graph rather than by
 	// a projection.
 	attachAlerts(ctx, nodes, topology)
+	attachStatus(nodes)
 	g := graph.NewGraph(nodes, edges, b.clk.Now().UTC())
 	g.ClusterIdentities = topology.ClusterIdentities
 
