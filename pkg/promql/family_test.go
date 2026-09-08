@@ -115,9 +115,23 @@ func TestFamilyAcceptsAZ(t *testing.T) {
 	assert.True(t, FamilyKSM.AcceptsAZ())
 	assert.True(t, FamilyKubelet.AcceptsAZ())
 	assert.True(t, FamilyHarvest.AcceptsAZ())
+	assert.True(t, FamilyAlerts.AcceptsAZ())
 	assert.False(t, FamilyServiceGraph.AcceptsAZ())
 	assert.False(t, FamilyProbe.AcceptsAZ())
 	assert.False(t, Family("not-a-family").AcceptsAZ(), "an unknown family is never zone-routable")
+}
+
+// TestFamilyRendersAZ pins the matcher bit independently of zone-routability.
+// ksm / kubelet / alerts route AND render; harvest routes without rendering;
+// servicegraph / probe do neither.
+func TestFamilyRendersAZ(t *testing.T) {
+	assert.True(t, FamilyKSM.RendersAZ())
+	assert.True(t, FamilyKubelet.RendersAZ())
+	assert.True(t, FamilyAlerts.RendersAZ())
+	assert.False(t, FamilyHarvest.RendersAZ(), "Harvest routes by zone without an az matcher")
+	assert.False(t, FamilyServiceGraph.RendersAZ())
+	assert.False(t, FamilyProbe.RendersAZ())
+	assert.False(t, Family("not-a-family").RendersAZ(), "an unknown family never renders az")
 }
 
 // TestFamilyAcceptsAZ_HomogeneousWithinFamily is the guard the derivation
@@ -141,5 +155,29 @@ func TestFamilyAcceptsAZ_HomogeneousWithinFamily(t *testing.T) {
 	}
 	for _, f := range Families {
 		assert.Equal(t, seen[f], f.AcceptsAZ(), "AcceptsAZ must mirror queryDims for %q", f)
+	}
+}
+
+// TestFamilyRendersAZ_HomogeneousWithinFamily is the matcher-bit sibling of
+// TestFamilyAcceptsAZ_HomogeneousWithinFamily: every query in a family must
+// agree about dimAZ (the rendered matcher), excluding the routing-only
+// dimAZRoute bit. A disagreement would make RendersAZ resolve to false and
+// silently drop the matcher from QueryLabels.
+func TestFamilyRendersAZ_HomogeneousWithinFamily(t *testing.T) {
+	seen := map[Family]bool{}
+	first := map[Family]Query{}
+	for q, f := range queryFamily {
+		az := queryDims[q]&dimAZ != 0
+		if prev, ok := seen[f]; ok {
+			assert.Equal(t, prev, az,
+				"family %q is inhomogeneous: %s and %s disagree about rendering the az matcher",
+				f, first[f], q)
+			continue
+		}
+		seen[f] = az
+		first[f] = q
+	}
+	for _, f := range Families {
+		assert.Equal(t, seen[f], f.RendersAZ(), "RendersAZ must mirror queryDims dimAZ for %q", f)
 	}
 }

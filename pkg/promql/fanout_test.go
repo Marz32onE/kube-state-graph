@@ -51,6 +51,12 @@ func (f *fakeBackend) seen() (calls int, queries []string) {
 	return f.calls, append([]string(nil), f.queries...)
 }
 
+func (f *fakeBackend) seenNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.names...)
+}
+
 func sample(metric string, labels map[string]string, v float64) *model.Sample {
 	m := model.Metric{model.MetricNameLabel: model.LabelValue(metric)}
 	for k, val := range labels {
