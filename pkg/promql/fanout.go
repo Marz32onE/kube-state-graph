@@ -123,12 +123,10 @@ type fanoutQuerier struct {
 	metrics Metrics
 }
 
-// Instant resolves the query's family, selects the backends that must answer
-// it, issues the IDENTICAL query string to each, and merges the results.
-//
-// The query string is never rewritten per backend: routing decides WHICH store
-// is asked, the rendered selector decides WHAT it returns, and the two compose
-// rather than substitute for one another.
+// Instant resolves the query's family from the hardcoded classification
+// table, then dispatches through issue. An unclassified name fails here
+// rather than silently reaching no store — QueryLabels never takes this
+// path, because it supplies the family itself.
 func (f *fanoutQuerier) Instant(ctx context.Context, name, query string, ts time.Time) (model.Vector, error) {
 	fam, ok := FamilyOf(Query(name))
 	if !ok {
@@ -137,7 +135,17 @@ func (f *fanoutQuerier) Instant(ctx context.Context, name, query string, ts time
 		// arbitrary name must fail loudly rather than silently reach no store.
 		return nil, fmt.Errorf("prom query %s: no upstream family declared for this query", name)
 	}
+	return f.issue(ctx, fam, name, query, ts)
+}
 
+// issue selects the backends that must answer family fam, issues the IDENTICAL
+// query string to each, and merges the results.
+//
+// The query string is never rewritten per backend: routing decides WHICH store
+// is asked, the rendered selector decides WHAT it returns, and the two compose
+// rather than substitute for one another. Instant and QueryLabels share this
+// core so a change to zone selection or merge semantics moves both paths.
+func (f *fanoutQuerier) issue(ctx context.Context, fam Family, name, query string, ts time.Time) (model.Vector, error) {
 	selected := f.table.Select(fam, f.az)
 	if len(selected) == 0 {
 		// Two different situations reach here, and they deserve different log

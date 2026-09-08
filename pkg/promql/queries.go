@@ -516,19 +516,23 @@ func FamilyOf(q Query) (Family, bool) {
 // A family whose queries disagreed would resolve to false (not zone-routable,
 // so fanned out to every backend serving it), which is the safe direction.
 // TestFamilyAcceptsAZ_HomogeneousWithinFamily fails on such a disagreement.
-var familyAcceptsAZ = buildFamilyAcceptsAZ()
+var familyAcceptsAZ = buildFamilyDim(dimAZ | dimAZRoute)
 
-func buildFamilyAcceptsAZ() map[Family]bool {
+// buildFamilyDim folds queryDims into a per-family bit: a family carries the
+// bit iff EVERY query in it does. A family whose queries disagreed resolves to
+// false, which is the safe direction for both derivations below (not
+// zone-routable, and no matcher rendered).
+func buildFamilyDim(mask dims) map[Family]bool {
 	out := make(map[Family]bool, len(Families))
 	seen := make(map[Family]bool, len(Families))
 	for q, f := range queryFamily {
-		az := queryDims[q]&(dimAZ|dimAZRoute) != 0
+		set := queryDims[q]&mask != 0
 		if !seen[f] {
 			seen[f] = true
-			out[f] = az
+			out[f] = set
 			continue
 		}
-		out[f] = out[f] && az
+		out[f] = out[f] && set
 	}
 	return out
 }
@@ -538,6 +542,22 @@ func buildFamilyAcceptsAZ() map[Family]bool {
 // the requested zones. A family that accepts no dimension is always fanned out
 // to every backend serving it.
 func (f Family) AcceptsAZ() bool { return familyAcceptsAZ[f] }
+
+// familyRendersAZ is derived from queryDims once, at package initialisation:
+// a family renders an `az` matcher iff EVERY query in it carries dimAZ. The
+// routing-only dimAZRoute bit is excluded, so Harvest routes by zone without
+// the matcher (the per-zone store boundary is the filter).
+//
+// QueryLabels reads this bit for an arbitrary metric that has no queryDims
+// entry of its own: the family's queries are the only honest statement of
+// what that store's series are labelled with. TestFamilyRendersAZ_HomogeneousWithinFamily
+// fails the build if a family's queries disagree.
+var familyRendersAZ = buildFamilyDim(dimAZ)
+
+// RendersAZ reports whether a query in family f carries the `az` matcher.
+// Distinct from AcceptsAZ: Harvest is zone-routable (AcceptsAZ) but does not
+// render the matcher (the store boundary is the zone filter).
+func (f Family) RendersAZ() bool { return familyRendersAZ[f] }
 
 // HarvestVolumeLabel is the STOCK Harvest label naming the ONTAP FlexVol, on
 // both the volume-object family (QVolumeLabels) and the six QoS workload

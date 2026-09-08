@@ -209,11 +209,17 @@ func closeIdle(q Querier) {
 // snapshot is read ONCE here and closed over, which is what makes "a reload
 // does not disturb a build in flight" structural rather than best-effort.
 func (r *Router) QuerierFor(sel Selector) Querier {
-	st := r.state.Load()
+	return r.querier(r.state.Load(), normaliseValues(sel.AZ))
+}
+
+// querier binds one routing snapshot and one zone set into a dispatcher. It is
+// the single place a fanoutQuerier is constructed, so QuerierFor and
+// QueryLabels cannot drift over what a bound querier closes over.
+func (r *Router) querier(st *routerState, az []string) *fanoutQuerier {
 	return &fanoutQuerier{
 		table:   st.table,
 		clients: st.clients,
-		az:      normaliseValues(sel.AZ),
+		az:      az,
 		metrics: r.metrics,
 	}
 }

@@ -244,6 +244,48 @@ engine := kubegraph.NewRouted(router, kubegraph.Options{APITimeout: 30 * time.Se
 g, err := engine.Build(ctx, window, end, promql.Selector{AZ: []string{"zone-a"}})
 ```
 
+### Label query
+
+`Router.QueryLabels` is the routed path for a metric the graph build does not
+itself issue. The **family is required and caller-declared** — an arbitrary
+metric has no `queryFamily` entry, so the caller names the store map. `az` is
+optional and single-valued; every other label is an exact-match (`=`) filter.
+The evaluation instant is required (the package holds no clock). A lookback
+window, when set, wraps the selector in `last_over_time`.
+
+The example below is the request `TestQueryLabels_DocumentedExample` issues:
+
+```go
+sets, err := router.QueryLabels(ctx, promql.LabelQuery{
+    Metric: "kube_pod_info",
+    Family: promql.FamilyKSM,
+    AZ:     "zone-a",
+    Filters: map[string]string{
+        "namespace": "shop",
+        "pod":       "checkout",
+    },
+    At:     end,
+    Window: 5 * time.Minute,
+})
+```
+
+| Family | `az` set |
+|---|---|
+| `ksm`, `kubelet`, `alerts` | routed to the zone's backends **and** rendered as a matcher (the configured `az` label key) |
+| `harvest` | routed to the zone's backends, **no** matcher — the per-zone store is the filter |
+| `servicegraph`, `probe` | **request error** naming the family; pass the `az` label as a filter with the field left empty |
+
+Other rules:
+
+- Filters are `=` only. A value is matched literally; it is never compiled as a regular expression.
+- A filter whose key equals the configured `az` label key is rejected **when `AZ` is also set** (two matchers on one label). With `AZ` empty the filter is the escape hatch for a family that does not route by zone.
+- The result is one `map[string]string` per matched series — label sets only, no sample values — sorted as a pure function of those maps. The reserved `__name__` label is stripped, and the result is de-duplicated by the STRIPPED label set (the vector merge keys on `__name__` too, and whether an upstream preserves it through a rolling function varies by engine).
+- Every caller-supplied string that reaches the query is validated first: the metric name against the Prometheus metric-name grammar, every filter key and the configured `az` label key against the label-name grammar, and the `az` value and every filter value for control characters, invalid UTF-8 and a length cap (`promql.MaxLabelQueryValueLen`). A rejected request issues no upstream call.
+- The result is bounded (`LabelQuery.Limit`, default `promql.DefaultLabelQueryLimit`). Exceeding it is an error naming the bound and the observed count, never a truncation.
+- A family **no backend serves** is an error naming the family (unlike the server's optional `alerts` leg, which is Debug-empty). A requested zone no backend covers stays empty-plus-Warn. A backend error fails the call naming that backend.
+
+`env`, `cluster` and `namespace` are ordinary filters here, not named dimensions: they never route, and the helper does not apply the graph build's per-query dimension rules to them. A `cluster` filter on `harvest` matches the ONTAP cluster label.
+
 Three ways to obtain the table, all producing the same validated value:
 
 | Source | Call |
