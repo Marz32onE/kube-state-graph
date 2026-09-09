@@ -22,7 +22,7 @@ cluster N: kube-state-metrics ──┤
 - 依呼叫端指定的 `[start, end]`，從**單一**集中式 VictoriaMetrics 讀取 `kube_*` 拓樸、Harvest／kubelet 儲存系列，以及 `traces_service_graph_*` 執行期指標。建圖會查的每一條系列列在 [`docs/upstream-metrics.md`](docs/upstream-metrics.md)。
 - Join 成多叢集圖，節點鍵為帶叢集範圍的 pod UID 與 node 名稱。
 - 回傳 Cytoscape.js JSON（`/v1/graph`）。
-- 提供靜態邊類型目錄（`/v1/edge-types`）。有資料的叢集清單改由任一 `/v1/graph` 回應的 `clusters` 欄位提供。
+- 有資料的叢集清單由任一 `/v1/graph` 回應的 `clusters` 欄位提供。
 - 每次請求都重新建圖——v1 **不附帶 in-process result cache、singleflight，也不發 HTTP cache validator**（無 `ETag` / `If-None-Match` / `304`）。後續分散式部署的水平擴展 cache 機制留待另案。`start` / `end` 接受 RFC 3339 或 Unix 秒，server 僅強制 `end > start`，其後原樣 pass through 給上游 PromQL——**不做** bucketing、alignment、視窗上限或未來時間擋板；bounded query cost 交由 VictoriaMetrics 搜尋限制負責。序列化輸出為確定性 body，僅含 `apiVersion`、`clusters`、`elements`；pod／node／service 的 IP 在頂層 `ipaddress`，不在 `labels`。Pod 另帶具型別的 `data` 屬性——`owner`（`{kind, name}`）、`application`（ArgoCD 應用）、`containers`（`[{name, image}]`）——皆 `omitempty` 且絕不在 `labels`。
 - **在來源端收斂**：`cluster`、`namespace`、`az`、`env` 會被渲染成上游 PromQL 的 label matcher，由 VictoriaMetrics 先過濾，樣本才上線。service-graph 系列刻意完整讀取，詳見[請求過濾參數](#請求過濾參數)。
 
@@ -59,7 +59,6 @@ curl "http://localhost:8080/v1/graph?start=${start}&end=${end}&az=eu-west-1a&env
 | `namespace` | 上游 **與** projection | 可重複。收斂 pod／claim／Service／EndpointSlice 系列；node 與 NetApp aggregate 則**靠參照**跟著收斂。 |
 | `az` | 上游 | 可重複。比對 `--az-label`（預設 `az`），套用於所有拓樸查詢。 |
 | `env` | 上游 | 可重複。比對 `--env-label`（預設 `env`）。 |
-| `edge_type` | projection | 可重複，依 `/v1/edge-types` 驗證。 |
 | `prune` | projection | `true`（預設）只保留位於 connectivity edge 上的工作負載；`false` 回傳完整清單：所有已載入 pod 及其 node／PVC／NetApp 鏈，且在未帶 `cluster`／`namespace` 時連未被參照的基礎設施也一併列出。 |
 
 **哪個 matcher 進到哪條系列**是硬編碼契約：

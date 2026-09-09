@@ -97,7 +97,7 @@ The container-integration suite SHALL contain at least one test for each of the 
 - A `namespace` filtered request whose in-scope pod calls an out-of-namespace pod: the peer is rendered as `external/<server label>` with `labels={}`, no pod is synthesised, and a series between two out-of-namespace pods produces nothing.
 - A `cluster` filtered request whose in-scope pod calls a pod in another cluster: the partner is `external/<server label>` and no other-cluster pod node is present.
 - A `prune=false` request surfacing a connectivity-disconnected pod together with its `pod-to-node`, `pod-mounts-pvc`, and `pvc-to-netapp-aggr` chain, and a `prune=false` request with no filter surfacing a podless K8s node.
-- `/v1/edge-types` returning the static catalogue.
+- A `GET /v1/graph` request carrying the withdrawn `edge_type` parameter returning a body byte-identical to the same request without it, and `GET /v1/edge-types` returning `404` with the standard error body.
 
 Fixtures SHALL stamp `cluster` on every kube-state-metrics and kubelet series and `az` / `env` (under the default keys) on every topology family, so the selector-level filters can be exercised end-to-end against a real VictoriaMetrics.
 

@@ -18,14 +18,11 @@ func TestEdgeTypePodCallsService_MayCrossCluster(t *testing.T) {
 	if !def.MayCrossCluster {
 		t.Error("pod-calls-service may_cross_cluster must be true (route-engine ingress-cluster anchoring)")
 	}
-	if !ValidEdgeType(EdgeTypePodCallsService) {
-		t.Error("ValidEdgeType must accept pod-calls-service")
-	}
 }
 
 // The storage-flow entry describes the whole fixed tier chain in ONE registry
-// row: its source and target sets are the union of the chain's five hops, so a
-// consumer validating an edge against the catalogue accepts every tier. It is
+// row: its source and target sets are the union of the chain's five hops, so
+// the declaration covers every tier. It is
 // never cross-cluster — the NetApp tiers belong to no Kubernetes cluster and
 // both Kubernetes hops are intra-cluster by construction.
 func TestEdgeTypeStorageFlow_RegistryEntry(t *testing.T) {
@@ -38,9 +35,6 @@ func TestEdgeTypeStorageFlow_RegistryEntry(t *testing.T) {
 	}
 	if def == nil {
 		t.Fatal("EdgeTypeStorageFlow is not registered in EdgeTypes")
-	}
-	if !ValidEdgeType(EdgeTypeStorageFlow) {
-		t.Fatal("ValidEdgeType must accept storage-flow")
 	}
 	if !def.Directed {
 		t.Error("storage-flow is directed, storage → workload")

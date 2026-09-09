@@ -74,7 +74,6 @@ func (s *Server) Handler() http.Handler {
 	)
 	v1.GET("/graph", s.handleGraph)
 	v1.GET("/storage-graph", s.handleStorageGraph)
-	v1.GET("/edge-types", s.handleEdgeTypes)
 
 	r.GET("/livez", s.handleLivez)
 	r.GET("/readyz", s.handleReadyz)

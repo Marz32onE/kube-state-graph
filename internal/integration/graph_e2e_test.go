@@ -128,7 +128,7 @@ func (s *GraphSuite) TestSingleClusterGraph() {
 
 func (s *GraphSuite) TestCrossClusterEdgePresent() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	// Cross-cluster status is recovered via the topology pod-UID index: the
@@ -610,7 +610,7 @@ traces_service_graph_request_total{client="nightly-28901-abc",server="peer-pod",
 
 func (s *GraphSuite) TestConnStringUnresolvableProducesExternalNode() {
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	s.Contains(string(body), `"type":"external"`)
@@ -1265,32 +1265,38 @@ func (s *GraphSuite) TestClustersEndpointRemoved() {
 	s.Contains(body.Clusters, "cluster-beta")
 }
 
-func (s *GraphSuite) TestEdgeTypesCatalogue() {
+// The edge-type catalogue route is withdrawn together with the ?edge_type=
+// filter it validated. Both halves matter end to end: a request that still
+// carries the parameter must receive the SAME body as one that does not (the
+// parameter is unknown, so no edge class is filtered out), and the route
+// itself must 404 with the standard error envelope like any removed v1 path.
+func (s *GraphSuite) TestEdgeTypeFilterWithdrawnAndCatalogueRemoved() {
 	srv := s.StartAPIServer(nil)
-	resp := s.httpGet(srv.URL + "/v1/edge-types")
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	// Assert the full registry (graph.EdgeTypes) is advertised — including
-	// service-selects-pod, previously omitted (F9).
-	for _, et := range []string{"pod-mounts-pvc", "pod-calls-pod", "pod-calls-service", "service-selects-pod"} {
-		s.Contains(string(body), et)
-	}
 
-	// may_cross_cluster contract: pod-calls-service MAY cross clusters (a
-	// route-engine-resolved endpoint anchors on the selected ingress cluster,
-	// which may be a family sibling; the D29 connection-string path stays
-	// intra-cluster per edge), and service-selects-pod fans out across
-	// same-family clusters and MAY cross.
-	var catalogue struct {
-		EdgeTypes []graph.EdgeTypeDefinition `json:"edge_types"`
-	}
-	s.Require().NoError(json.Unmarshal(body, &catalogue))
-	got := map[graph.EdgeType]bool{}
-	for _, et := range catalogue.EdgeTypes {
-		got[et.Type] = et.MayCrossCluster
-	}
-	s.True(got["pod-calls-service"], "pod-calls-service may cross clusters via a route-engine ingress-cluster hit")
-	s.True(got["service-selects-pod"], "service-selects-pod may cross clusters via the same-family endpoint union")
+	plain := s.httpGet(s.graphURL(srv.URL, nil))
+	defer func() { _ = plain.Body.Close() }()
+	s.Require().Equal(http.StatusOK, plain.StatusCode)
+	want, err := io.ReadAll(plain.Body)
+	s.Require().NoError(err)
+
+	filtered := s.httpGet(s.graphURL(srv.URL, func(q url.Values) { q.Set("edge_type", "pod-calls-pod") }))
+	defer func() { _ = filtered.Body.Close() }()
+	s.Require().Equal(http.StatusOK, filtered.StatusCode)
+	got, err := io.ReadAll(filtered.Body)
+	s.Require().NoError(err)
+	s.Equal(string(want), string(got), "a withdrawn parameter must not narrow the body")
+
+	// The unfiltered body carries edge types the old filter would have
+	// dropped — proof the identity above is not two empty responses.
+	s.Contains(string(want), `"type":"pod-to-node"`)
+
+	cat := s.httpGet(srv.URL + "/v1/edge-types")
+	defer func() { _ = cat.Body.Close() }()
+	s.Require().Equal(http.StatusNotFound, cat.StatusCode)
+	s.Empty(cat.Header.Get("Cache-Control"))
+	catBody, err := io.ReadAll(cat.Body)
+	s.Require().NoError(err)
+	s.Contains(string(catBody), `"reason":"not_found"`)
 }
 
 // TestPodMountsPVCEdgePresent (F8) closes the integration gap for the

@@ -55,7 +55,11 @@ func TestGraphEndpoint_InvalidRange(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-func TestEdgeTypesEndpoint_StaticCatalogue(t *testing.T) {
+// GET /v1/edge-types is removed (BREAKING). A removed v1 route must 404 like
+// any unknown path — no redirect, no 410, no Cache-Control, and the standard
+// error envelope. The edge types a body can carry are fixed by the graph-api
+// specification; there is no discovery endpoint for them.
+func TestEdgeTypesEndpoint_Removed(t *testing.T) {
 	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -63,26 +67,18 @@ func TestEdgeTypesEndpoint_StaticCatalogue(t *testing.T) {
 	resp, err := http.Get(srv.URL + "/v1/edge-types")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Contains(t, resp.Header.Get("Cache-Control"), "max-age=3600")
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("Cache-Control"))
 
 	var body struct {
 		APIVersion string `json:"apiVersion"`
-		EdgeTypes  []struct {
-			Type string `json:"type"`
-		} `json:"edge_types"`
+		Error      struct {
+			Reason string `json:"reason"`
+		} `json:"error"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "v1", body.APIVersion)
-	want := map[string]bool{"pod-mounts-pvc": false, "pod-calls-pod": false}
-	for _, e := range body.EdgeTypes {
-		if _, ok := want[e.Type]; ok {
-			want[e.Type] = true
-		}
-	}
-	for k, v := range want {
-		assert.Truef(t, v, "missing edge type %q", k)
-	}
+	assert.Equal(t, "not_found", body.Error.Reason)
 }
 
 func TestLivez(t *testing.T) {

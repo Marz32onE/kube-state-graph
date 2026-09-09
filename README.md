@@ -29,8 +29,8 @@ cluster N: kube-state-metrics ──┤
 - Joins them into a multi-cluster graph keyed by cluster-scoped pod UIDs and
   node names.
 - Returns the graph as Cytoscape.js JSON (`/v1/graph`).
-- Exposes a static edge-type catalogue (`/v1/edge-types`). The set of clusters
-  with data is the `clusters` field of any `/v1/graph` response.
+- The set of clusters with data is the `clusters` field of any `/v1/graph`
+  response.
 - Builds the graph on every request — v1 ships **no in-process result cache**,
   **no singleflight**, and **no HTTP cache validators** (`ETag` /
   `If-None-Match` / `304`). A horizontally scalable cache mechanism for
@@ -77,7 +77,8 @@ When the server is started with API keys configured (`--api-keys-file` or
 `--api-keys`), every `/v1/*` request must carry an `X-API-Key: <key>` header:
 
 ```bash
-curl -H 'X-API-Key: my-secret-key' 'http://localhost:8080/v1/edge-types'
+curl -H 'X-API-Key: my-secret-key' \
+  'http://localhost:8080/v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z'
 ```
 
 Health probes (`/livez`, `/readyz`), `/metrics`, and the docs routes
@@ -96,7 +97,6 @@ are AND-combined.
 | `namespace` | upstream **and** projection | Repeatable. Narrows the pod-, claim-, Service- and EndpointSlice-scoped series; nodes and NetApp aggregates follow **by reference**. |
 | `az` | upstream | Repeatable. Matched against `--az-label` (default `az`) on every topology query. |
 | `env` | upstream | Repeatable. Matched against `--env-label` (default `env`). |
-| `edge_type` | projection | Repeatable; validated against `/v1/edge-types`. |
 | `prune` | projection | `true` (default) keeps only workload on a connectivity edge. `false` returns the inventory: every loaded pod with its node / PVC / NetApp chain, plus unreferenced infrastructure when no `cluster` or `namespace` filter narrows it. |
 
 **Which matcher reaches which series** is a hardcoded contract:

@@ -14,8 +14,8 @@ type View struct {
 //  1. Unless scope.Inventory is set, compute the connectivity prune set.
 //  2. Apply cluster / namespace filters to nodes; admit infrastructure nodes
 //     by reference (or unconditionally under Inventory).
-//  3. Apply the edge-type filter and drop edges whose endpoints are absent,
-//     re-adding a single missing partner where the filters allow it.
+//  3. Drop edges whose endpoints are absent, re-adding a single missing
+//     partner where the filters allow it.
 func Project(g *Graph, scope Scope) View {
 	if g == nil {
 		return View{}
@@ -337,9 +337,6 @@ func filterEdges(g *Graph, scope Scope, nodes map[string]GraphNode, excluded map
 		primary[id] = struct{}{}
 	}
 	for _, e := range g.Edges {
-		if !scope.edgeTypeAllowed(e.Type) {
-			continue
-		}
 		_, srcOK := primary[e.Source]
 		_, tgtOK := primary[e.Target]
 		if srcOK && tgtOK {

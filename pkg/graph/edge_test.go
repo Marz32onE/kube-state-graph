@@ -120,18 +120,17 @@ func TestWithIO_ImmutableCopy(t *testing.T) {
 	assert.NotSame(t, orig, with)
 }
 
-// TestEdgeTypes_TopologyRelationshipEntries — the two new topology edge types
-// are registered (so /v1/edge-types advertises them and ?edge_type= accepts
-// them) with the expected directed/intra-cluster source/target contract.
+// TestEdgeTypes_TopologyRelationshipEntries — the two topology edge types are
+// declared in the registry with the expected directed/intra-cluster
+// source/target contract, and the withdrawn pvc-to-storageclass type is not.
 func TestEdgeTypes_TopologyRelationshipEntries(t *testing.T) {
-	assert.True(t, ValidEdgeType(EdgeTypePodToNode))
-	assert.True(t, ValidEdgeType(EdgeTypePVCToNetAppAggr))
-	assert.False(t, ValidEdgeType("pvc-to-storageclass"))
-
 	byType := map[EdgeType]EdgeTypeDefinition{}
 	for _, d := range EdgeTypes {
 		byType[d.Type] = d
 	}
+	assert.Contains(t, byType, EdgeTypePodToNode)
+	assert.Contains(t, byType, EdgeTypePVCToNetAppAggr)
+	assert.NotContains(t, byType, EdgeType("pvc-to-storageclass"))
 
 	p2n := byType[EdgeTypePodToNode]
 	assert.True(t, p2n.Directed)

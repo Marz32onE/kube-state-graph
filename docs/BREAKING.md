@@ -1,3 +1,85 @@
+# BREAKING changes — remove the edge-type catalogue and the `edge_type` filter
+
+A declared v1 break. No compatibility shim, no redirect, no deprecation window.
+
+## Removed endpoint
+
+`GET /v1/edge-types` is gone. A client still calling the route receives `404`
+with the standard error body (`{"apiVersion":"v1","error":{"reason":"not_found",…}}`)
+and no `Cache-Control` header — the same shape the removed `GET /v1/clusters`
+returns. The route no longer appears in the served OpenAPI document, and no
+`GET /v1/edge-types` server span is emitted.
+
+The catalogue existed to populate and validate the `edge_type` filter below.
+With that filter withdrawn it described nothing a caller could act on: the set
+of edge types a body can carry is fixed by the API contract —
+`pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`,
+`pod-to-node`, `pvc-to-netapp-aggr` on `/v1/graph`, and `storage-flow` on
+`/v1/storage-graph` — and every edge already carries its own `data.type`.
+
+## Withdrawn `/v1/graph` parameter
+
+`edge_type` is withdrawn. Like `name`, `root`, `depth` and `direction` before
+it, it is now an unknown parameter: **ignored without error**, and its VALUE is
+never inspected. Two consequences are invisible in the response shape, so check
+callers rather than status codes:
+
+- `?edge_type=pod-calls-pod` returns the **full** projection. The parameter was
+  a projection-level gate over the edge list only — node admission never
+  consulted it — so a filtered request already returned every node of the
+  default view with the edges that justified them stripped out. It now returns
+  those edges too, and the body is byte-identical to the same request without
+  the parameter.
+- `?edge_type=pod-calls-pods` (any unregistered value) is now `200`, not the
+  `400 invalid_scope` the registry-backed validation produced.
+
+**Replacement:** filter client-side on each edge's `data.type`, which every
+edge has always carried. A consumer doing so keeps the infrastructure nodes it
+drops edges for, which is the thing the server-side filter could not express.
+
+The `/v1/graph` request surface is now exactly `start`, `end`, `cluster`,
+`namespace`, `az`, `env`, `prune`. `/v1/storage-graph` is unchanged: it already
+ignored `edge_type`.
+
+## In-process embedder (`pkg/`) signature changes
+
+D32 embedders must update call sites — a silently-ignored argument would
+reproduce in Go the inert control this removal exists to prevent:
+
+| Before | After |
+|---|---|
+| `graph.NewScope(clusters, namespaces, edgeTypes, inventory) (Scope, error)` | `graph.NewScope(clusters, namespaces, inventory) Scope` |
+| `graph.Scope{Clusters, Namespaces, EdgeTypes, Inventory}` | `graph.Scope{Clusters, Namespaces, Inventory}` |
+| `graph.ValidEdgeType(t)` | removed |
+
+`NewScope` no longer returns an error: edge-type validation was its only
+failure mode, and every remaining dimension is an opaque string set the request
+parser has already validated. `kubegraph.ParseValues`,
+`kubegraph.Engine.BuildFromValues` and every other `pkg/` signature are
+unchanged, so an embedder that goes through the facade needs no edit.
+
+**Retained:** `graph.EdgeTypes` and `graph.EdgeTypeDefinition`. The registry is
+the builder's single in-code declaration of each edge type — its
+`may_cross_cluster` bit buckets the cross-cluster edge count, and the
+`pod-service-graph` specification pins the `pod-calls-service` declaration. It
+is no longer serialised to any HTTP response.
+
+## Self-metrics
+
+`kube_state_graph_http_requests_total{path="/v1/edge-types"}` and the matching
+duration series stop being produced; a request to the old path counts under
+`path="<unmatched>"` like any 404. This is a label VALUE disappearing, not a
+metric or label contract change — but a dashboard or alert keyed on that path
+goes stale.
+
+## NOT changed
+
+No node type, edge type, `labels` key, `data.*` attribute, edge id, or
+`/v1/graph` body for any request that did not send `edge_type`. The
+connectivity prune, `prune`, the edge retention and partner re-add rules, and
+the cluster / namespace projection are untouched. Every golden fixture is
+byte-identical.
+
 # BREAKING changes — replace StorageClass nodes with NetApp nodes
 
 This release is a declared v1 break. There is no compatibility shim.

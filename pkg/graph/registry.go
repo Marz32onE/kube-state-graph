@@ -7,8 +7,10 @@ type EdgeTypeLabel struct {
 	Description string `json:"description,omitempty"`
 }
 
-// EdgeTypeDefinition is one entry in the static catalogue served by
-// GET /v1/edge-types.
+// EdgeTypeDefinition is one entry in the edge-type registry: the single
+// in-code declaration of an edge type's endpoints, directionality, label keys
+// and cross-cluster capability. It is a builder-side contract, not a served
+// document — the catalogue endpoint that once serialised it is withdrawn.
 type EdgeTypeDefinition struct {
 	Type            EdgeType        `json:"type"`
 	Description     string          `json:"description"`
@@ -19,28 +21,12 @@ type EdgeTypeDefinition struct {
 	Labels          []EdgeTypeLabel `json:"labels"`
 }
 
-// validEdgeTypes is the lookup set derived from EdgeTypes at init. Because it
-// is built from the registry itself, it can never drift from what the builder
-// produces and /v1/edge-types advertises.
-var validEdgeTypes = func() map[EdgeType]struct{} {
-	out := make(map[EdgeType]struct{}, len(EdgeTypes))
-	for _, def := range EdgeTypes {
-		out[def.Type] = struct{}{}
-	}
-	return out
-}()
-
-// ValidEdgeType reports whether t is a registered edge type — i.e. present in
-// the EdgeTypes registry served by /v1/edge-types. Request parsers use it to
-// reject unknown ?edge_type= filter values instead of silently matching no
-// edges.
-func ValidEdgeType(t EdgeType) bool {
-	_, ok := validEdgeTypes[t]
-	return ok
-}
-
-// EdgeTypes is the in-code registry consumed by both the graph builder and
-// the /v1/edge-types HTTP handler.
+// EdgeTypes is the in-code registry of every edge type the builder can
+// produce. It is the single place an edge type is declared: `MayCrossCluster`
+// derives neverCrossCluster (which buckets the cross-cluster edge count), and
+// the pod-service-graph capability pins the `may_cross_cluster: true`
+// declaration on pod-calls-service. Adding an edge type means adding it here
+// and to the builder in the same change.
 var EdgeTypes = []EdgeTypeDefinition{
 	{
 		Type:            EdgeTypePodMountsPVC,
@@ -108,7 +94,7 @@ var EdgeTypes = []EdgeTypeDefinition{
 	},
 	{
 		Type:            EdgeTypeStorageFlow,
-		Description:     "One hop of the storage flow chain served by GET /v1/storage-graph, oriented storage → workload: netapp-node → netapp-aggr → netapp-svm → pvc → pod → node. Emitted ONLY by that endpoint — GET /v1/graph never produces one, so ?edge_type=storage-flow there is a 200 with no edges. Each edge names its hop in labels.tier, and each (source, target) pair appears at most once however many claims flow through it. A claim whose match resolved an SVM but no aggregate (the FlexGroup shape) enters the chain at the svm-pvc tier; a pod scheduled on no node ends its path at pvc-pod. Cross-cluster does not apply: the NetApp tiers belong to no Kubernetes cluster, and every Kubernetes hop (pvc → pod, pod → node) is intra-cluster by construction. An edge on a path with at least one measured claim carries a typed data.metrics object holding the sum, over every claim flowing through it, of that claim's storage I/O (read_ops / write_ops / read_bytes_per_sec / write_bytes_per_sec); the claim-level svm-pvc edge additionally carries read_latency_us / write_latency_us and the declared max_iops / max_bytes_per_sec ceiling, which no other tier ever does. Weights conserve tier to tier, so a Sankey layout needs no rebalancing.",
+		Description:     "One hop of the storage flow chain served by GET /v1/storage-graph, oriented storage → workload: netapp-node → netapp-aggr → netapp-svm → pvc → pod → node. Emitted ONLY by that endpoint — GET /v1/graph never produces one. Each edge names its hop in labels.tier, and each (source, target) pair appears at most once however many claims flow through it. A claim whose match resolved an SVM but no aggregate (the FlexGroup shape) enters the chain at the svm-pvc tier; a pod scheduled on no node ends its path at pvc-pod. Cross-cluster does not apply: the NetApp tiers belong to no Kubernetes cluster, and every Kubernetes hop (pvc → pod, pod → node) is intra-cluster by construction. An edge on a path with at least one measured claim carries a typed data.metrics object holding the sum, over every claim flowing through it, of that claim's storage I/O (read_ops / write_ops / read_bytes_per_sec / write_bytes_per_sec); the claim-level svm-pvc edge additionally carries read_latency_us / write_latency_us and the declared max_iops / max_bytes_per_sec ceiling, which no other tier ever does. Weights conserve tier to tier, so a Sankey layout needs no rebalancing.",
 		SourceType:      []NodeType{NodeTypeNetAppNode, NodeTypeNetAppAggr, NodeTypeNetAppSVM, NodeTypePVC, NodeTypePod},
 		TargetType:      []NodeType{NodeTypeNetAppAggr, NodeTypeNetAppSVM, NodeTypePVC, NodeTypePod, NodeTypeK8sNode},
 		Directed:        true,

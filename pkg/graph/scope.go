@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"fmt"
 	"sort"
 )
 
@@ -13,10 +12,15 @@ import (
 // projection applies the same two filters again as defence in depth — a node
 // that reached the graph anyway (an unlabelled series bucketed to
 // cluster="unknown", say) must not slip into a filtered view.
+//
+// There is deliberately no edge-type dimension. `edge_type` was a
+// projection-only gate over the edge list that never reached node admission,
+// so it emptied an edge class while leaving the infrastructure those edges
+// justified; it is withdrawn, and a consumer wanting fewer edge types drops
+// them by the `type` every edge already carries.
 type Scope struct {
-	Clusters   map[string]struct{}   // empty ⇒ no cluster filter
-	Namespaces map[string]struct{}   // empty ⇒ no namespace filter
-	EdgeTypes  map[EdgeType]struct{} // empty ⇒ all edge types
+	Clusters   map[string]struct{} // empty ⇒ no cluster filter
+	Namespaces map[string]struct{} // empty ⇒ no namespace filter
 
 	// Inventory turns the default connectivity prune OFF: every pod is emitted
 	// with its pod-to-node / pod-mounts-pvc / pvc-to-netapp-aggr chain
@@ -29,39 +33,18 @@ type Scope struct {
 	Inventory bool
 }
 
-// NewScope constructs a Scope from raw query parameter values, validating them.
-func NewScope(clusters, namespaces, edgeTypes []string, inventory bool) (Scope, error) {
-	// Validate edge types against the single in-code registry (EdgeTypes) so a
-	// typo like "pod-calls-pods" is an error, not a scope that silently
-	// filters every edge out. Living here (not in the HTTP parser) gives D32
-	// embedders constructing scopes directly the same guard. Empty values are
-	// skipped — edgeTypeSet drops them, keeping a bare `edge_type=` a no-op.
-	for _, et := range edgeTypes {
-		if et == "" {
-			continue
-		}
-		if !ValidEdgeType(EdgeType(et)) {
-			return Scope{}, fmt.Errorf("unknown edge_type %q", et)
-		}
-	}
+// NewScope constructs a Scope from raw query parameter values.
+//
+// It returns no error: every remaining dimension is a set of opaque strings
+// whose values are validated (length, control characters) by the request
+// parser before they reach here, and an unknown cluster or namespace is an
+// empty result rather than a rejection.
+func NewScope(clusters, namespaces []string, inventory bool) Scope {
 	return Scope{
 		Clusters:   stringSet(clusters),
 		Namespaces: stringSet(namespaces),
-		EdgeTypes:  edgeTypeSet(edgeTypes),
 		Inventory:  inventory,
-	}, nil
-}
-
-// edgeTypeAllowed reports whether an edge of type t is permitted by the
-// edge-type filter (an empty filter permits every type). filterEdges is its
-// only caller; it stays a method so the "empty means all" convention lives
-// with the field it governs.
-func (s Scope) edgeTypeAllowed(t EdgeType) bool {
-	if len(s.EdgeTypes) == 0 {
-		return true
 	}
-	_, ok := s.EdgeTypes[t]
-	return ok
 }
 
 func stringSet(values []string) map[string]struct{} {
@@ -72,19 +55,6 @@ func stringSet(values []string) map[string]struct{} {
 	for _, v := range values {
 		if v != "" {
 			out[v] = struct{}{}
-		}
-	}
-	return out
-}
-
-func edgeTypeSet(values []string) map[EdgeType]struct{} {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make(map[EdgeType]struct{}, len(values))
-	for _, v := range values {
-		if v != "" {
-			out[EdgeType(v)] = struct{}{}
 		}
 	}
 	return out

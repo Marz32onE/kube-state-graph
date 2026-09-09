@@ -65,9 +65,7 @@ traces_service_graph_request_server_seconds_bucket{client="checkout",server="car
 		fixedNow, 30*time.Second))
 
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) {
-		q.Set("edge_type", "pod-calls-pod")
-	}))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
@@ -127,9 +125,7 @@ traces_service_graph_request_total{client="a",server="b",cluster="cluster-alpha"
 		fixedNow, 30*time.Second))
 
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) {
-		q.Set("edge_type", "pod-calls-pod")
-	}))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
@@ -198,9 +194,7 @@ traces_service_graph_request_total{client="client",server="unknown",cluster="clu
 		fixedNow, 30*time.Second))
 
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) {
-		q.Set("edge_type", "pod-calls-pod")
-	}))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
@@ -335,9 +329,7 @@ traces_service_graph_request_failed_total{client="producer",server="consumer",cl
 		fixedNow, 30*time.Second))
 
 	srv := s.StartAPIServer(func(cfg *config.Config) {})
-	resp := s.httpGet(s.graphURL(srv.URL, func(q url.Values) {
-		q.Set("edge_type", "pod-calls-pod")
-	}))
+	resp := s.httpGet(s.graphURL(srv.URL, nil))
 	defer func() { _ = resp.Body.Close() }()
 	s.Require().Equal(http.StatusOK, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)

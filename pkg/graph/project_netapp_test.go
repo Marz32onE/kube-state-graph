@@ -111,14 +111,6 @@ func TestProject_NamespaceFilteredPVCPullsAggregateAndParent(t *testing.T) {
 	assert.True(t, ids[NetAppNodeID("ontap-prod", "ontap-prod-01")], "controller pulled as compound parent")
 }
 
-func TestProject_EdgeTypeFilterSelectsNetAppEdges(t *testing.T) {
-	v := Project(netappGraph(), Scope{EdgeTypes: map[EdgeType]struct{}{EdgeTypePVCToNetAppAggr: {}}})
-	for _, e := range v.Edges {
-		assert.Equal(t, EdgeTypePVCToNetAppAggr, e.Type)
-	}
-	assert.Len(t, v.Edges, 2)
-}
-
 func TestClusterNames_ExcludesONTAP(t *testing.T) {
 	g := netappGraph()
 	names := g.ClusterNames()

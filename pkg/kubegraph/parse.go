@@ -30,7 +30,7 @@ func (e *ParseError) Error() string { return e.Message }
 // `cluster` and `namespace` deliberately appear in BOTH Selector and Scope —
 // they narrow the queries at the source and are re-applied over the result as
 // defence in depth. `az` / `env` are selector-only (no node carries them), and
-// `edge_type` / `prune` are projection-only.
+// `prune` is projection-only.
 type Request struct {
 	Start    time.Time
 	End      time.Time
@@ -50,8 +50,10 @@ const maxSelectorValueLen = 253
 // is independent of any HTTP framework.
 //
 // Unknown parameters are ignored, which is how the withdrawn `name`, `root`,
-// `depth` and `direction` parameters degrade: an old client receives the
-// unanchored view rather than an error.
+// `depth`, `direction` and `edge_type` parameters degrade: an old client
+// receives the unanchored, unfiltered view rather than an error. A withdrawn
+// parameter's VALUE is never inspected, so a value that used to be rejected
+// (an unregistered `edge_type`) is now simply ignored.
 //
 // On failure it returns a *ParseError carrying the stable reason code.
 func ParseValues(v url.Values) (Request, error) {
@@ -79,17 +81,8 @@ func ParseValues(v url.Values) (Request, error) {
 		return req, err
 	}
 
-	// Unknown ?edge_type= values are rejected by graph.NewScope itself
-	// (validated against the registry /v1/edge-types serves), so D32 embedders
-	// constructing scopes directly get the same 400-not-silent-empty guard;
-	// the error surfaces below as the usual invalid_scope ParseError.
-	//
 	// Inventory is the INVERSE of `prune` so the zero Scope keeps prune on.
-	scope, serr := graph.NewScope(v["cluster"], v["namespace"], v["edge_type"], !prune)
-	if serr != nil {
-		return req, &ParseError{"invalid_scope", serr.Error()}
-	}
-	req.Scope = scope
+	req.Scope = graph.NewScope(v["cluster"], v["namespace"], !prune)
 	req.Selector = promql.Selector{
 		AZ:        v["az"],
 		Env:       v["env"],
@@ -112,7 +105,8 @@ type StorageRequest struct {
 // ParseStorageValues parses the /v1/storage-graph query parameters. It shares
 // timestamp and selector-value validation with ParseValues so the two
 // endpoints cannot drift on those contracts. az and env are required and
-// single-valued; edge_type and prune are ignored.
+// single-valued; `prune` and every unknown parameter — including the
+// withdrawn `edge_type` — are ignored.
 func ParseStorageValues(v url.Values) (StorageRequest, error) {
 	var req StorageRequest
 
