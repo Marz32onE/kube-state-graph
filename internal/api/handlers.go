@@ -29,17 +29,15 @@ import (
 //	@Description
 //	@Description	**Window**: `start`/`end` accept RFC 3339 or Unix seconds. Only `end > start` is enforced; the pair is passed through to upstream PromQL verbatim. Bounded query cost is delegated to upstream VictoriaMetrics search limits. Each request triggers a fresh fan-out — there is no in-process result cache.
 //	@Description
-//	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `edge_type`, `name`. The `name` filter matches `n.Name()` exactly across every node type (pod, K8s node, PVC, service, external, netapp-aggr, netapp-node).
-//	@Description
-//	@Description	**Traversal** (set `root` to enable): `depth` 0..6 (default 2), `direction` `in`/`out`/`both` (default `both`).
+//	@Description	**Filters** (all repeatable; AND across param names, OR within a single name): `cluster`, `namespace`, `az`, `env`. The withdrawn `name`, `root`, `depth`, `direction` and `edge_type` parameters are ignored without error, whatever value they carry.
 //	@Description
 //	@Description	**Node types**: `pod`, `node`, `pvc`, `service`, `external`, `netapp-aggr`, `netapp-node`, plus the presentation-only `cluster`, `storage-cluster`, `namespace`, `application` and `controller` compound group nodes synthesised by the Cytoscape serialiser (`cluster > namespace > application > controller > pod`, with absent levels skipped; `cluster > namespace > [application >] {service, pvc}`; `cluster > node`; `storage-cluster > netapp-node > netapp-aggr`, where the real `netapp-node` is the compound parent of its aggregates). **Edge types**: `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`, `pod-to-node`, `pvc-to-netapp-aggr`. An ingress entry-point `service` node additionally carries `labels.role` — `ingress-gateway` (a routed hit's chain entry; gateway pods and a synthesized `pod-calls-service` hop to the backend exist behind it) or `ingress-lb` (the ingress LB fallback destination; no routed backend). The key is absent on every other service node.
 //	@Description
 //	@Description	**Edge `data.metrics`**: a union of two disjoint families. RED (trace-derived call edges): `rate` (req/s, required within the family), `error_rate`, `p90_server_ms`. I/O (`pvc-to-netapp-aggr` edges): `read_ops`, `write_ops`, `read_latency_us`, `write_latency_us`, `read_bytes_per_sec`, `write_bytes_per_sec` from Harvest, verbatim. Schema-level every field is optional (rate moved off `required`); a RED object always carries a positive `rate`. All values are JSON numbers rounded to 6 significant digits and MAY appear in exponent form. The key is omitted entirely when the edge has no measurements.
 //	@Description
-//	@Description	**Endpoint resolution**: for a call endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): both a `<service>.<namespace>` host and a headless `<pod>.<service>.<namespace>` host resolve to the addressed `(namespace, service)`. Resolution is anchored on ONE cluster — the UID-recovered client-pod cluster when available, else the trace-source label — and succeeds only when that cluster itself holds the same-named Service; a family sibling holding it is not enough, and there is no cross-family fallback, so this path is always intra-cluster. It materialises a single `service` node (`<cluster>/<ns>/<service>`) and one `pod-calls-service` edge. From that node, on-demand `service-selects-pod` edges fan out to the backing pods of EVERY same-family cluster holding the same-named Service (cluster names equal after normalising digit runs), so those edges MAY cross clusters; there is no endpoint-backed pruning — a sibling with zero endpoints simply contributes none. A `server="unknown"` endpoint whose client resolved to a real pod is instead classified from its peer address (in-cluster DNS name, bare short Service name in the client pod's namespace, or a ClusterIP literal looked up in the client's own cluster) and resolves under the same anchor rule. When the optional Istio route engine is configured, a global/ingress FQDN that would otherwise fall through resolves to the Service the selected ingress cluster's Gateway + VirtualService config routed it to — that cluster may be a family sibling of the caller's, so the resulting `pod-calls-service` edge MAY cross clusters, and the ingress entry point's own fan-out is locked to the selected cluster's endpoints. Anything unresolved yields an `external` node (`external/<value>`), as does a non-URL missing-UID label. Calls whose target is not a service stay typed `pod-calls-pod`. See `/v1/edge-types` for the authoritative per-type catalogue.
+//	@Description	**Endpoint resolution**: for a call endpoint whose pod UID is empty, the `client`/`server` label is inspected for a `://` connection string (no operator knob — detection is hardcoded). When present, the URL host is parsed (an optional `.svc.<domain>` suffix is stripped): both a `<service>.<namespace>` host and a headless `<pod>.<service>.<namespace>` host resolve to the addressed `(namespace, service)`. Resolution is anchored on ONE cluster — the UID-recovered client-pod cluster when available, else the trace-source label — and succeeds only when that cluster itself holds the same-named Service; a family sibling holding it is not enough, and there is no cross-family fallback, so this path is always intra-cluster. It materialises a single `service` node (`<cluster>/<ns>/<service>`) and one `pod-calls-service` edge. From that node, on-demand `service-selects-pod` edges fan out to the backing pods of EVERY same-family cluster holding the same-named Service (cluster names equal after normalising digit runs), so those edges MAY cross clusters; there is no endpoint-backed pruning — a sibling with zero endpoints simply contributes none. A `server="unknown"` endpoint whose client resolved to a real pod is instead classified from its peer address (in-cluster DNS name, bare short Service name in the client pod's namespace, or a ClusterIP literal looked up in the client's own cluster) and resolves under the same anchor rule. When the optional Istio route engine is configured, a global/ingress FQDN that would otherwise fall through resolves to the Service the selected ingress cluster's Gateway + VirtualService config routed it to — that cluster may be a family sibling of the caller's, so the resulting `pod-calls-service` edge MAY cross clusters, and the ingress entry point's own fan-out is locked to the selected cluster's endpoints. Anything unresolved yields an `external` node (`external/<value>`), as does a non-URL missing-UID label. Calls whose target is not a service stay typed `pod-calls-pod`.
 //	@Description
-//	@Description	Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments&edge_type=pod-calls-pod`
+//	@Description	Example: `GET /v1/graph?start=2026-05-05T11:00:00Z&end=2026-05-05T12:00:00Z&cluster=prod-eu&namespace=payments`
 //	@Description
 //	@Description	<details><summary><b>Sample response</b></summary>
 //	@Description
@@ -68,7 +66,6 @@ import (
 //	@Param			namespace	query		[]string	false	"Restrict to listed Kubernetes namespaces (repeatable, OR-combined). Pushed into every namespace-labelled upstream query; nodes and NetApp aggregates follow by reference."	collectionFormat(multi)	example(payments)
 //	@Param			az			query		[]string	false	"Restrict to listed availability zones (repeatable, OR-combined). Pushed into every topology query as a matcher on the deployment's configured zone label (default `az`, see --az-label)."	collectionFormat(multi)	example(eu-west-1a)
 //	@Param			env			query		[]string	false	"Restrict to listed environments (repeatable, OR-combined). Pushed into every topology query as a matcher on the deployment's configured environment label (default `env`, see --env-label)."	collectionFormat(multi)	example(prod)
-//	@Param			edge_type	query		[]string	false	"Restrict to listed edge types. Repeatable, OR-combined."	collectionFormat(multi)	Enums(pod-mounts-pvc,pod-calls-pod,pod-calls-service,service-selects-pod,pod-to-node,pvc-to-netapp-aggr)	example(pod-calls-pod)
 //	@Param			prune		query		boolean		false	"Keep only workload on a connectivity edge (the default). `false` returns the inventory instead: every loaded pod with its node / PVC / NetApp chain, plus unreferenced infrastructure when no cluster or namespace filter narrows it."	default(true)	example(true)
 //	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
 //	@Success		200			{object}	cytoscape.Body
@@ -107,7 +104,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 //	@Description
 //	@Description	**Roots** (optional, repeatable; OR within a name, AND across storage vs workload sides): `ontap_cluster`, `aggr`, `svm`, `pod=<namespace>/<name>`, `node` (matched against both the ONTAP controller name and the Kubernetes node name). An empty root list returns every complete path in the selected estate. A root the upstream names is always drawn, even with no flow; a root no series names is simply absent.
 //	@Description
-//	@Description	`cluster` / `namespace` remain optional narrowing filters. `edge_type` and `prune` are ignored. Auth, timeout (504) and upstream error mapping match `/v1/graph`.
+//	@Description	`cluster` / `namespace` remain optional narrowing filters. `prune` and every unknown parameter — including the withdrawn `edge_type` — are ignored. Auth, timeout (504) and upstream error mapping match `/v1/graph`.
 //	@Tags			graph
 //	@Produce		json
 //	@Param			start			query		string		true	"Window start. RFC 3339 or Unix seconds."	example(2026-05-01T12:00:00Z)
@@ -214,51 +211,6 @@ func (s *Server) parseStorageGraphRequest(c *gin.Context) (kubegraph.StorageRequ
 		return kubegraph.StorageRequest{}, err
 	}
 	return req, nil
-}
-
-// edgeTypesBody is the response shape of GET /v1/edge-types.
-type edgeTypesBody struct {
-	APIVersion string                     `json:"apiVersion"`
-	EdgeTypes  []graph.EdgeTypeDefinition `json:"edge_types"`
-}
-
-// ----- /v1/edge-types -------------------------------------------------------
-
-// handleEdgeTypes returns the static catalogue of edge types this server
-// can produce.
-//
-//	@Summary		Edge-type catalogue
-//	@Description	Static catalogue of edge types this server can produce — directionality, valid source/target node types, supported labels, and whether the edge may cross cluster boundaries. No upstream calls; served with `Cache-Control: public, max-age=3600`. Use this to validate the `edge_type` filter on `/v1/graph` and to drive UI legends.
-//	@Description
-//	@Description	<details><summary><b>Edge type matrix</b></summary>
-//	@Description
-//	@Description	| type | source → target | directed | cross-cluster |
-//	@Description	|---|---|---|---|
-//	@Description	| `pod-mounts-pvc` | pod → pvc | yes | no |
-//	@Description	| `pod-calls-pod` | pod \| service \| external → pod \| external | yes | yes |
-//	@Description	| `pod-calls-service` | pod \| service \| external → service | yes | yes |
-//	@Description	| `service-selects-pod` | service → pod | yes | yes |
-//	@Description
-//	@Description	An ingress entry-point `service` node carries `labels.role`: `ingress-gateway` (chain entry hop; gateway pods and a synthesized `pod-calls-service` hop to the backend exist behind it) or `ingress-lb` (ingress LB fallback destination, no routed backend).
-//	@Description
-//	@Description	A call endpoint whose pod UID is empty and whose `client`/`server` label is a `://` connection string is resolved (detection hardcoded, no operator knob) against every loaded cluster in the caller's family (cluster names equal after normalising digit runs; anchored on the UID-recovered client-pod cluster when available, else the trace-source label): each surviving family cluster holding the addressed Service yields a `service` node and a `pod-calls-service` edge (which may therefore cross clusters). Candidates provably without backing pods (zero endpoints in an endpoint-visible cluster) are pruned when an endpoint-backed sibling exists; an anchor naming no loaded family falls back to the single loaded family holding the Service (multi-family names are ambiguous and stay external). Zero surviving candidates yield an `external` node. A non-URL missing-UID label resolves to an `external` node. `service-selects-pod` edges are materialised on demand from `service` nodes to their own cluster's backing pods.
-//	@Description
-//	@Description	</details>
-//	@Tags			discovery
-//	@Produce		json
-//	@Param			X-API-Key	header		string		false	"API key. Required when the server is started with API keys configured."
-//	@Success		200	{object}	edgeTypesBody
-//	@Failure		401	{object}	errorBody	"Missing or invalid `X-API-Key` (only when API key auth is configured)"
-//	@Security		ApiKeyAuth
-//	@Router			/v1/edge-types [get]
-func (s *Server) handleEdgeTypes(c *gin.Context) {
-	body := edgeTypesBody{
-		APIVersion: APIVersion,
-		EdgeTypes:  graph.EdgeTypes,
-	}
-	raw, _ := json.Marshal(body)
-	c.Header("Cache-Control", "public, max-age=3600")
-	c.Data(http.StatusOK, "application/json; charset=utf-8", raw)
 }
 
 // ----- /livez, /readyz ------------------------------------------------------

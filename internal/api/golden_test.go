@@ -107,14 +107,6 @@ func stampFixtureStatuses(nodes []graph.GraphNode) {
 	}
 }
 
-func TestGolden_EdgeTypes(t *testing.T) {
-	body := map[string]any{
-		"apiVersion": APIVersion,
-		"edge_types": graph.EdgeTypes,
-	}
-	compareGolden(t, "edge-types.json", body)
-}
-
 func compareGolden(t *testing.T, file string, body any) {
 	t.Helper()
 	got, err := json.MarshalIndent(body, "", "  ")

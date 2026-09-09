@@ -81,10 +81,10 @@ func (r StorageRoots) Any() bool {
 // storage root is never dropped by them, because a NetApp node belongs to no
 // Kubernetes cluster and carries no namespace.
 //
-// There is deliberately no EdgeTypes field and no Inventory field: the body has
-// exactly one edge type, and the storage projection is reachability over the
-// tier chain rather than the connectivity prune, so `edge_type` and `prune` are
-// ignored by the request parser.
+// There is deliberately no Inventory field: the storage projection is
+// reachability over the tier chain rather than the connectivity prune, so
+// `prune` is ignored by the request parser. The body carries exactly one edge
+// type, and no scope of either endpoint filters by edge type any more.
 type StorageScope struct {
 	Clusters   map[string]struct{} // empty ⇒ no cluster filter
 	Namespaces map[string]struct{} // empty ⇒ no namespace filter

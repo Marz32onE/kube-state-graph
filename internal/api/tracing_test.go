@@ -50,9 +50,9 @@ func installInMemoryTracer(t *testing.T) *tracetest.InMemoryExporter {
 // Reading the exporter straight after the response is a race the test can lose:
 // otelgin ends the server span in a DEFERRED call, after the handler returns,
 // while net/http flushes a response larger than its 4 KB write buffer to the
-// client mid-handler. /v1/edge-types is well past that, so the client can have
-// the whole body in hand before the span exists. Only the positive assertions
-// need this — a test asserting NO span has nothing to wait for.
+// client mid-handler, so a client can have the whole body in hand before the
+// span exists. Only the positive assertions need this — a test asserting NO
+// span has nothing to wait for.
 func waitForSpans(t *testing.T, exporter *tracetest.InMemoryExporter, msg string) tracetest.SpanStubs {
 	t.Helper()
 	var spans tracetest.SpanStubs
@@ -89,7 +89,10 @@ func TestTracing_MetricsScrapeEmitsNoSpan(t *testing.T) {
 	assert.Empty(t, exporter.GetSpans(), "/metrics must not generate spans")
 }
 
-func TestTracing_EdgeTypesEmitsServerSpan(t *testing.T) {
+// The withdrawn edge-type catalogue route matches nothing, so it can produce
+// no span carrying its route template — the same contract the removed
+// /v1/clusters route holds.
+func TestTracing_RemovedEdgeTypesRouteEmitsNoSpan(t *testing.T) {
 	exporter := installInMemoryTracer(t)
 	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
@@ -98,17 +101,34 @@ func TestTracing_EdgeTypesEmitsServerSpan(t *testing.T) {
 	resp, err := http.Get(srv.URL + "/v1/edge-types")
 	require.NoError(t, err)
 	resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	for _, span := range exporter.GetSpans() {
+		assert.NotEqual(t, "GET /v1/edge-types", span.Name,
+			"a removed route must not appear as a traced route template")
+	}
+}
+
+func TestTracing_GraphEmitsServerSpan(t *testing.T) {
+	exporter := installInMemoryTracer(t)
+	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + graphProbePath)
+	require.NoError(t, err)
+	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	spans := waitForSpans(t, exporter, "/v1/edge-types must emit at least one server span")
+	spans := waitForSpans(t, exporter, "/v1/graph must emit at least one server span")
 
 	var found bool
 	for _, span := range spans {
-		if span.Name == "GET /v1/edge-types" {
+		if span.Name == "GET /v1/graph" {
 			found = true
 		}
 	}
-	assert.True(t, found, "expected server span named GET /v1/edge-types")
+	assert.True(t, found, "expected server span named GET /v1/graph")
 }
 
 // TestTracing_InboundTraceparentBecomesParent asserts otelgin extracts the
@@ -121,7 +141,7 @@ func TestTracing_InboundTraceparentBecomesParent(t *testing.T) {
 
 	const wantTraceID = "0af7651916cd43dd8448eb211c80319c"
 	const wantParent = "b7ad6b7169203331"
-	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/edge-types", nil)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+graphProbePath, nil)
 	require.NoError(t, err)
 	req.Header.Set("traceparent", "00-"+wantTraceID+"-"+wantParent+"-01")
 
@@ -130,10 +150,10 @@ func TestTracing_InboundTraceparentBecomesParent(t *testing.T) {
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	spans := waitForSpans(t, exporter, "/v1/edge-types must emit a server span")
+	spans := waitForSpans(t, exporter, "/v1/graph must emit a server span")
 	var serverSpan *tracetest.SpanStub
 	for i := range spans {
-		if spans[i].Name == "GET /v1/edge-types" {
+		if spans[i].Name == "GET /v1/graph" {
 			serverSpan = &spans[i]
 			break
 		}
@@ -233,7 +253,7 @@ func TestAuth_NoAPIKeyInLogs(t *testing.T) {
 	srv := httptest.NewServer(server.Handler())
 	t.Cleanup(srv.Close)
 
-	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/edge-types", nil)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+graphProbePath, nil)
 	require.NoError(t, err)
 	req.Header.Set(APIKeyHeader, sentinelKey)
 	resp, err := http.DefaultClient.Do(req)
@@ -254,7 +274,7 @@ func TestTracing_BodyStableAcrossTracingState(t *testing.T) {
 	s := newServerWithMocks(t, newMockQuerier(t, nil), nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
-	url := srv.URL + "/v1/edge-types"
+	url := srv.URL + graphProbePath
 
 	// First fetch with no tracer overrides (default is whatever the test
 	// process has installed — typically the noop tracer).

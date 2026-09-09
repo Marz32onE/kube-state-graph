@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func sampleGraph() *Graph {
@@ -109,14 +108,6 @@ func TestProject_NamespaceFilter(t *testing.T) {
 			assert.Equal(t, "shop", n.Labels()["namespace"])
 		}
 	}
-}
-
-func TestProject_EdgeTypeFilter(t *testing.T) {
-	v := Project(sampleGraph(), Scope{EdgeTypes: map[EdgeType]struct{}{EdgeTypePodCallsPod: {}}})
-	for _, e := range v.Edges {
-		assert.Equal(t, EdgeTypePodCallsPod, e.Type)
-	}
-	assert.Len(t, v.Edges, 2)
 }
 
 // Namespace filter retains a K8sNode iff an in-scope pod is scheduled on it
@@ -282,8 +273,7 @@ func TestProject_ClusterFilterMatchesRawComponent(t *testing.T) {
 	g := identityGraph()
 
 	t.Run("raw name admits every identity sharing it", func(t *testing.T) {
-		scope, err := NewScope([]string{"c1"}, nil, nil, true)
-		require.NoError(t, err)
+		scope := NewScope([]string{"c1"}, nil, true)
 		got := map[string]bool{}
 		for _, n := range Project(g, scope).Nodes {
 			got[n.ID()] = true
@@ -294,14 +284,12 @@ func TestProject_ClusterFilterMatchesRawComponent(t *testing.T) {
 	})
 
 	t.Run("an identity is not a filter value", func(t *testing.T) {
-		scope, err := NewScope([]string{"us-dev-c1"}, nil, nil, true)
-		require.NoError(t, err)
+		scope := NewScope([]string{"us-dev-c1"}, nil, true)
 		assert.Empty(t, Project(g, scope).Nodes)
 	})
 
 	t.Run("infra node admitted through the raw component", func(t *testing.T) {
-		scope, err := NewScope([]string{"c1"}, nil, nil, false)
-		require.NoError(t, err)
+		scope := NewScope([]string{"c1"}, nil, false)
 		// prune=true keeps only connectivity-connected workload, so assert the
 		// predicate directly: the host node passes the cluster check and is
 		// referenced by p1.
@@ -309,8 +297,7 @@ func TestProject_ClusterFilterMatchesRawComponent(t *testing.T) {
 		referenced := map[string]struct{}{"us-dev-c1/w0": {}}
 		assert.True(t, infraNodePassesFilters(host, scope, referenced, g.ClusterRawName))
 
-		identityScope, err := NewScope([]string{"us-dev-c1"}, nil, nil, false)
-		require.NoError(t, err)
+		identityScope := NewScope([]string{"us-dev-c1"}, nil, false)
 		assert.False(t, infraNodePassesFilters(host, identityScope, referenced, g.ClusterRawName))
 	})
 }
