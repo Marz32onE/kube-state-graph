@@ -11,7 +11,7 @@ The HTTP API SHALL expose every endpoint under the `/v1/` route prefix and SHALL
 
 #### Scenario: Body carries apiVersion
 
-- **WHEN** a client sends `GET /v1/edge-types`
+- **WHEN** a client sends `GET /v1/graph?start=...&end=...`
 - **THEN** the server returns 200 with a JSON body whose top-level object contains `"apiVersion": "v1"`
 
 #### Scenario: Unversioned route is not served
@@ -65,7 +65,7 @@ Each **node** SHALL be `{ data: { id, name, type, labels } }`:
 
 Each **edge** SHALL be `{ data: { id, type, source, target, labels } }`:
 - `id` SHALL be a UUID, RFC 4122 compliant, encoded as a lowercase canonical string.
-- `type` SHALL be one of the registered edge types from `/v1/edge-types`.
+- `type` SHALL be one of the edge types this endpoint produces — `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`, `pod-to-node`, `pvc-to-netapp-aggr` — each defined by the `pod-service-graph`, `cluster-topology-source`, and `netapp-storage-graph` capabilities. `storage-flow` is produced by `GET /v1/storage-graph` alone and SHALL NOT appear in a `/v1/graph` body. The set is a fixed contract of this specification; there is no discovery endpoint for it.
 - `source` and `target` SHALL each match the `id` of a node present in the same response's `elements.nodes`.
 - `labels` SHALL be a JSON object whose values are strings only (`map[string]string`). The exact key set per edge type is defined by the `pod-service-graph`, `cluster-topology-source`, and `netapp-storage-graph` capabilities. Wherever an edge carries a `cluster` key its value is a cluster identity, never a raw name that appears on no node of the body.
 - `data` MAY carry an optional `metrics` object (`omitempty`) holding the edge's measurements — see "Edge `metrics` attribute".
@@ -152,16 +152,21 @@ Implementations SHALL NOT encode booleans or numbers as strings inside `labels`.
 - **WHEN** the response contains an edge that carries a `data.metrics` object
 - **THEN** its `data.labels` still contains only string values and no `rate`, `error_rate`, `p90_server_ms`, `read_ops`, `write_ops`, `read_latency_us`, `write_latency_us`, `read_bytes_per_sec`, `write_bytes_per_sec`, `max_iops`, or `max_bytes_per_sec` key
 
+#### Scenario: storage-flow never appears in a graph body
+
+- **WHEN** a client sends any `GET /v1/graph` request
+- **THEN** no edge in the response has `data.type` equal to `"storage-flow"`
+
 ### Requirement: Filter parameters
 
-`GET /v1/graph` SHALL accept the optional filter parameters `cluster`, `namespace`, `az`, `env`, `edge_type` (each repeatable) and `prune` (single-valued, `true` | `false`, default `true`). The request surface is exactly `start`, `end`, `cluster`, `namespace`, `az`, `env`, `edge_type`, `prune`; every parameter except `start` / `end` is optional. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter **value** (a cluster, namespace, zone, or environment with no data) SHALL NOT cause an error — it yields an empty result. An unknown filter **parameter** (including the withdrawn `name`, `root`, `depth`, `direction`) SHALL be ignored without error.
+`GET /v1/graph` SHALL accept the optional filter parameters `cluster`, `namespace`, `az`, `env` (each repeatable) and `prune` (single-valued, `true` | `false`, default `true`). The request surface is exactly `start`, `end`, `cluster`, `namespace`, `az`, `env`, `prune`; every parameter except `start` / `end` is optional. Multiple values for the same parameter SHALL be OR-combined; different parameters SHALL be AND-combined. An unknown filter **value** (a cluster, namespace, zone, or environment with no data) SHALL NOT cause an error — it yields an empty result. An unknown filter **parameter** — including the withdrawn `name`, `root`, `depth`, `direction` and `edge_type` — SHALL be ignored without error, whatever value it carries: a withdrawn parameter never narrows the body and never rejects the request.
 
 The `cluster` value is the **raw** Kubernetes cluster name — the value of the upstream `cluster` label — not the composed identity the response lists in `clusters[]`. A raw name selects every cluster identity whose raw component equals it, across zones and environments; the triple `az` + `env` + `cluster` pins exactly one identity, because those three request dimensions are the identity's three components.
 
 Filters fall into two classes:
 
 - **Selector-level filters** — `cluster`, `namespace`, `az`, `env` — SHALL be rendered into the upstream PromQL queries of the build as label matchers, so the graph is narrowed by VictoriaMetrics before any sample is read. Which matcher reaches which series is the hardcoded contract of the `cluster-topology-source` capability ("Request-scoped upstream selectors"); the service-graph series are deliberately read unfiltered (`pod-service-graph`). A request with no selector-level filter SHALL issue exactly the queries it issues today and produce a byte-identical body.
-- **Projection-level filters** — `cluster` and `namespace` (applied again over the built graph as defence in depth), `edge_type`, and `prune` — SHALL be applied at response time as a projection over the freshly built graph. The projection-level `cluster` check compares the request's raw values against the **raw-name component** of each element's cluster identity (recovered from the built graph's identity table; an identity absent from the table compares as itself), so the projection admits exactly what the upstream matcher admitted.
+- **Projection-level filters** — `cluster` and `namespace` (applied again over the built graph as defence in depth) and `prune` — SHALL be applied at response time as a projection over the freshly built graph. The projection-level `cluster` check compares the request's raw values against the **raw-name component** of each element's cluster identity (recovered from the built graph's identity table; an identity absent from the table compares as itself), so the projection admits exactly what the upstream matcher admitted. There is no projection over edge type: every edge of the built graph whose endpoints survive node filtering is emitted, and a client wanting fewer edge types drops them by `data.type`.
 
 Empty filters SHALL return the **connectivity-connected subgraph** of the full multi-cluster graph for the time window (the default connectivity prune — see "Default projection prunes connectivity-disconnected workload"); it is NOT the full topology inventory. `prune=false` returns the inventory instead.
 
@@ -212,7 +217,17 @@ Selector-level values SHALL be validated before rendering: a value longer than 2
 #### Scenario: Edge-type filter with no matching edges
 
 - **WHEN** a client sends `?edge_type=pod-calls-pod` and the time window contains no service-graph data
-- **THEN** the response is 200 with `elements.edges: []` and no error
+- **THEN** the response is 200 with `elements.edges: []` and no error — because the default connectivity prune leaves nothing to draw, not because the parameter filtered anything; the body is identical to the same request without `edge_type`
+
+#### Scenario: Withdrawn edge_type parameter is ignored
+
+- **WHEN** a client sends `?edge_type=pod-calls-pod` for a window whose built graph holds `pod-calls-pod`, `pod-to-node` and `pod-mounts-pvc` edges
+- **THEN** the response is 200 and byte-identical to the response for the same request without `edge_type` — every edge type the projection would otherwise emit is present, none is filtered out
+
+#### Scenario: Unregistered edge_type value is not an error
+
+- **WHEN** a client sends `?edge_type=pod-calls-pods` (a value no edge type has ever carried)
+- **THEN** the response is 200 with the default view, not 400 `invalid_scope` — the parameter is unknown to the server and its value is never inspected
 
 #### Scenario: Unknown cluster name
 
@@ -261,8 +276,8 @@ Selector-level values SHALL be validated before rendering: a value longer than 2
 
 #### Scenario: Withdrawn parameters are ignored
 
-- **WHEN** a client sends `?name=frontend&root=cluster-alpha/abc&depth=1`
-- **THEN** the server ignores the three parameters and returns the unanchored view for the remaining parameters (200), not a 400
+- **WHEN** a client sends `?name=frontend&root=cluster-alpha/abc&depth=1&edge_type=pod-calls-pod`
+- **THEN** the server ignores the four parameters and returns the unanchored view for the remaining parameters (200), not a 400
 
 #### Scenario: No selector-level filter issues today's queries
 
@@ -310,55 +325,6 @@ Selector-level values SHALL be validated before rendering: a value longer than 2
 - **WHEN** pod `web` in namespace `shop` calls only pods in namespace `payments`, and a client sends `?namespace=shop`
 - **THEN** `web` is retained (its edge to the `external/<payments-peer-label>` partner is a connectivity edge) and the response contains `web`, that `external` node, and the edge
 
-### Requirement: Edge-type discovery endpoint
-
-The server SHALL expose `GET /v1/edge-types` that returns the static catalogue of edge types this server can produce. The response SHALL list at least `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`, `pod-to-node`, `pvc-to-netapp-aggr`, and `storage-flow`. Each catalogue entry SHALL describe `source_type` (one of `"pod"`, `"node"`, `"pvc"`, `"service"`, `"external"`, `"netapp-aggr"`, `"netapp-node"`, `"netapp-svm"`, **or a JSON array of such strings** when more than one is permitted), `target_type` (same form as `source_type`), `directed`, `may_cross_cluster`, and a `labels` array enumerating the keys this edge type can emit on edge `labels`. The `pod-calls-pod` and `pod-calls-service` entries SHALL enumerate a `relation` label (`value_type: "string"`; emitted values `"link"` / `"transport"`, absent on ordinary edges); the `service-selects-pod` entry SHALL NOT. The `storage-flow` entry SHALL enumerate a `tier` label (`value_type: "string"`; emitted values `node-aggr`, `aggr-svm`, `svm-pvc`, `pvc-pod`, `pod-node`) and an `attribution` label (`value_type: "string"`; emitted value `"split"`, absent otherwise). The endpoint SHALL NOT issue any upstream calls and SHALL NOT depend on time-range or cluster parameters. The response SHALL include a long `Cache-Control: public, max-age=3600` header.
-
-#### Scenario: Static catalogue
-
-- **WHEN** a client sends `GET /v1/edge-types`
-- **THEN** the response body contains an `edge_types` array including objects whose `type` values include `pod-mounts-pvc`, `pod-calls-pod`, `pod-calls-service`, `service-selects-pod`, `pod-to-node`, `pvc-to-netapp-aggr`, and `storage-flow`, and no `pvc-to-storageclass` entry
-
-#### Scenario: pod-calls-pod marked may_cross_cluster
-
-- **WHEN** a client inspects the catalogue entry for `pod-calls-pod`
-- **THEN** its `may_cross_cluster` field is `true`, its `source_type` and `target_type` are arrays containing `"pod"` and `"external"`, and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (representing the trace source cluster; cross-cluster status is detected by comparing the source/target nodes' `labels.cluster` rather than from edge labels) and an entry whose `name` is `relation` with `value_type: "string"` (the span-link relation marker — `"link"` for a logical producer→consumer edge, `"transport"` for a pod→broker network hop, absent otherwise)
-
-#### Scenario: pod-calls-service catalogue entry
-
-- **WHEN** a client inspects the catalogue entry for `pod-calls-service`
-- **THEN** its `directed` field is `true`, its `may_cross_cluster` field is `true` (a `"://"` connection string resolves to a service node in the caller's OWN cluster, but the Istio route-resolution engine anchors on the selected ingress cluster, which may be a family sibling of the caller's), its `source_type` is an array containing `"pod"` and `"external"`, its `target_type` is `"service"` (or `["service"]`), and its `labels` array enumerates an entry whose `name` is `cluster` with `value_type: "string"` (omitted when the client side is non-pod) and an entry whose `name` is `relation` with `value_type: "string"` (same semantics as on `pod-calls-pod`)
-
-#### Scenario: service-selects-pod catalogue entry
-
-- **WHEN** a client inspects the catalogue entry for `service-selects-pod`
-- **THEN** its `directed` field is `true`, its `may_cross_cluster` field is `true` (a local service node fans out to backing pods across same-family clusters holding the same-named Service, so the edge may connect a service to a pod in a different cluster of the caller's family), its `source_type` is `["service"]` (or `"service"`), its `target_type` is `["pod"]` (or `"pod"`), and its `labels` array does NOT enumerate a `relation` entry (a shared fan-out edge is never relation-marked)
-
-#### Scenario: pod-to-node catalogue entry
-
-- **WHEN** a client inspects the catalogue entry for `pod-to-node`
-- **THEN** its `directed` field is `true`, its `may_cross_cluster` field is `false` (a pod and its scheduled node are always in the same cluster), its `source_type` is `["pod"]` (or `"pod"`), and its `target_type` is `["node"]` (or `"node"`)
-
-#### Scenario: pvc-to-storageclass catalogue entry
-
-- **WHEN** a client inspects the catalogue for a `pvc-to-storageclass` entry
-- **THEN** no such entry exists — the edge type is removed from the registry and replaced by `pvc-to-netapp-aggr`
-
-#### Scenario: pvc-to-netapp-aggr catalogue entry
-
-- **WHEN** a client inspects the catalogue entry for `pvc-to-netapp-aggr`
-- **THEN** its `directed` field is `true`, its `may_cross_cluster` field is `false` (the target NetApp aggregate belongs to no Kubernetes cluster, so the Kubernetes cross-cluster notion does not apply), its `source_type` is `["pvc"]` (or `"pvc"`), its `target_type` is `["netapp-aggr"]` (or `"netapp-aggr"`), and its `labels` array is empty
-
-#### Scenario: storage-flow catalogue entry
-
-- **WHEN** a client inspects the catalogue entry for `storage-flow`
-- **THEN** its `directed` field is `true`, its `may_cross_cluster` field is `false`, its `source_type` is `["netapp-node", "netapp-aggr", "netapp-svm", "pvc", "pod"]`, its `target_type` is `["netapp-aggr", "netapp-svm", "pvc", "pod", "node"]`, and its `labels` array enumerates `tier` and `attribution`, both `value_type: "string"`
-
-#### Scenario: storage-flow accepted as an edge_type value
-
-- **WHEN** a client sends `GET /v1/graph?...&edge_type=storage-flow`
-- **THEN** the server returns 200 (the value is registered) with a body containing no edges, since `/v1/graph` never emits that type
-
 ### Requirement: Cross-cluster edge representation
 
 A cross-cluster edge (`pod-calls-pod`, `pod-calls-service`, or `service-selects-pod` whose source-node cluster **identity** differs from its target-node cluster identity) SHALL be emitted with **both real endpoint nodes** only when both clusters are **loaded** by the build — every build without a `cluster` filter, or a build whose `cluster` filter lists both clusters' raw names. Consumers detect cross-cluster status by comparing the `labels.cluster` of the edge's resolved source and target nodes — not from edge labels. Two clusters sharing a raw name under different zones or environments are distinct identities and an edge between them IS cross-cluster. A `pod-calls-pod` edge carries `labels.cluster` (the client pod's cluster identity, present iff the client side resolved to a pod — `pod-service-graph` "Edge cluster label"); a `service-selects-pod` edge carries no `cluster` key (its source is a service node, which is cluster-scoped via its own `labels.cluster`).
@@ -391,7 +357,7 @@ For identical input — same `(window, filters, upstream-data)` — the server S
 
 The serialiser SHALL maintain determinism by sorting `view.Nodes` and `view.Edges`, sorting `Graph.ClusterNames()`, sorting `IPAddress` slices at construction, and keeping the response body shape fixed at `{apiVersion, clusters, elements}` for graph routes (no time-of-build or echo-of-input fields). Every rendered upstream selector SHALL be a pure function of the sorted, de-duplicated parameter values.
 
-`GET /v1/edge-types`, `GET /openapi.yaml`, `GET /openapi.json`, and `GET /docs` SHALL carry an explicit `Cache-Control` header. `GET /v1/graph` SHALL NOT emit a `Cache-Control` header.
+`GET /openapi.yaml`, `GET /openapi.json`, and `GET /docs` SHALL carry an explicit `Cache-Control` header. `GET /v1/graph` SHALL NOT emit a `Cache-Control` header.
 
 #### Scenario: Body byte-identical across repeated requests
 
@@ -511,8 +477,8 @@ When `--api-keys-file` is set and `--api-keys-reload-interval` is positive, the 
 
 #### Scenario: Valid key is accepted
 
-- **WHEN** the server is started with `--api-keys=k1,k2` and a client sends `X-API-Key: k2` to `/v1/edge-types`
-- **THEN** the response is `200 OK` with the edge-type catalogue
+- **WHEN** the server is started with `--api-keys=k1,k2` and a client sends `X-API-Key: k2` to `GET /v1/graph?start=...&end=...`
+- **THEN** the response is `200 OK` with a Cytoscape.js graph body
 
 #### Scenario: Open paths bypass auth even when keys are configured
 
@@ -592,7 +558,7 @@ For `GET /v1/graph`, the server SHALL apply a configurable per-build `context.Wi
 
 ### Requirement: Per-request timeout (non-graph endpoints)
 
-For non-graph endpoints that perform upstream calls (`GET /readyz` `up{}` probe), the server SHALL apply a `context.WithTimeout` derived from `--api-timeout` (default 5 seconds) to the upstream call. On `context.DeadlineExceeded`, the request SHALL receive `504 Gateway Timeout` with `reason: "timeout"`. The same timeout bounds the build's `up{}` retention probe. Endpoints that do not perform upstream calls (`GET /v1/edge-types`, `GET /livez`, `GET /metrics`, `GET /openapi.*`, `GET /docs*`) are not subject to this timeout.
+For non-graph endpoints that perform upstream calls (`GET /readyz` `up{}` probe), the server SHALL apply a `context.WithTimeout` derived from `--api-timeout` (default 5 seconds) to the upstream call. On `context.DeadlineExceeded`, the request SHALL receive `504 Gateway Timeout` with `reason: "timeout"`. The same timeout bounds the build's `up{}` retention probe. Endpoints that do not perform upstream calls (`GET /livez`, `GET /metrics`, `GET /openapi.*`, `GET /docs*`) are not subject to this timeout.
 
 #### Scenario: Readiness probe stalls beyond api timeout
 
@@ -603,6 +569,11 @@ For non-graph endpoints that perform upstream calls (`GET /readyz` `up{}` probe)
 
 - **WHEN** a client sends `GET /v1/clusters` while centralised VictoriaMetrics is unresponsive
 - **THEN** the request returns 404 Not Found immediately — the endpoint is removed, no upstream call is made, and the api timeout does not apply
+
+#### Scenario: Edge-type catalogue request while upstream is unresponsive
+
+- **WHEN** a client sends `GET /v1/edge-types` while centralised VictoriaMetrics is unresponsive
+- **THEN** the request returns 404 Not Found immediately with the standard error body — the endpoint is removed, no upstream call is made, and the api timeout does not apply
 
 ### Requirement: Outside-retention error
 
