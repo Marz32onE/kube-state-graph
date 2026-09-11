@@ -15,7 +15,7 @@ import (
 // and a generic upstream failure (→ ReasonUpstream).
 func TestClassifyReadError_MapsByCause(t *testing.T) {
 	t.Parallel()
-	span := trace.SpanFromContext(context.Background()) // non-recording no-op span
+	span := trace.SpanFromContext(t.Context()) // non-recording no-op span
 	cases := []struct {
 		name string
 		err  error

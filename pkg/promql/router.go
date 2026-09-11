@@ -287,9 +287,7 @@ func (r *Router) ProbeAll(ctx context.Context, ts time.Time) error {
 	failed := make([]string, len(selected))
 	var wg sync.WaitGroup
 	for i, b := range selected {
-		wg.Add(1)
-		go func(i int, b Backend) {
-			defer wg.Done()
+		wg.Go(func() {
 			q, ok := st.clients[b.Name()]
 			if !ok {
 				failed[i] = b.Name()
@@ -299,7 +297,7 @@ func (r *Router) ProbeAll(ctx context.Context, ts time.Time) error {
 				routerMetricsOf(r.metrics).IncBackendQueryFailure(b.Name())
 				failed[i] = b.Name()
 			}
-		}(i, b)
+		})
 	}
 	wg.Wait()
 

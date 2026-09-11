@@ -757,7 +757,7 @@ func TestReadTopology_HarvestLegFailureDoesNotFailBuild(t *testing.T) {
 		Return(model.Vector{}, nil).
 		Maybe()
 
-	tp, err := ReadTopology(context.Background(), q, time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
+	tp, err := ReadTopology(t.Context(), q, time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
 	require.NoError(t, err, "a failing Harvest leg must not fail the build")
 	assert.Empty(t, tp.NetAppAggrs)
 }
@@ -773,7 +773,7 @@ func TestReadTopology_QoSLegFailureDoesNotFailBuild(t *testing.T) {
 		Return(model.Vector{}, nil).
 		Maybe()
 
-	_, err := ReadTopology(context.Background(), q, time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
+	_, err := ReadTopology(t.Context(), q, time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
 	require.NoError(t, err, "a failing QoS leg must not fail the build")
 }
 
@@ -802,7 +802,7 @@ func TestReadTopology_FanOutLegCount(t *testing.T) {
 			}).
 			Maybe()
 
-		_, err := ReadTopology(context.Background(), q, time.Minute, time.Unix(1, 0).UTC(),
+		_, err := ReadTopology(t.Context(), q, time.Minute, time.Unix(1, 0).UTC(),
 			Options{}, promql.Selector{})
 		require.NoError(t, err)
 
@@ -917,7 +917,7 @@ func TestReadTopology_AccumulatingAnnotationLegDegrades(t *testing.T) {
 	legs[promql.QPodOwner] = legFixture{sampleVec(appOwner("shop", "web-1", "Deployment", "web")), nil}
 	q := legQuerier(t, legs)
 
-	tp, err := readTopologyDefaults(context.Background(), q)
+	tp, err := readTopologyDefaults(t.Context(), q)
 	require.NoError(t, err, "an accumulating-cardinality annotation leg must not fail the build")
 	for _, name := range []promql.Query{promql.QReplicaSetAnnotations, promql.QJobAnnotations} {
 		require.Contains(t, tp.RawSeriesCount, string(name),
@@ -962,7 +962,7 @@ func TestReadTopology_DegradedJobAnnotationsSuppressCronJobHop(t *testing.T) {
 	t.Run("degraded suppresses the hop", func(t *testing.T) {
 		q := legQuerier(t, fixture(legFixture{nil, errors.New("search.maxUniqueTimeseries exceeded")}))
 
-		tp, err := readTopologyDefaults(context.Background(), q)
+		tp, err := readTopologyDefaults(t.Context(), q)
 		require.NoError(t, err, "the leg must still degrade rather than fail the build")
 		require.Len(t, tp.Pods, 1)
 		assert.Empty(t, tp.Pods[0].Application(),
@@ -976,7 +976,7 @@ func TestReadTopology_DegradedJobAnnotationsSuppressCronJobHop(t *testing.T) {
 		// An empty vector is the genuine "this Job carries no annotation" answer.
 		q := legQuerier(t, fixture(legFixture{model.Vector{}, nil}))
 
-		tp, err := readTopologyDefaults(context.Background(), q)
+		tp, err := readTopologyDefaults(t.Context(), q)
 		require.NoError(t, err)
 		require.Len(t, tp.Pods, 1)
 		assert.Equal(t, "reports", tp.Pods[0].Application(),
@@ -1001,14 +1001,14 @@ func TestReadTopology_RequiredAnnotationLegFailsBuild(t *testing.T) {
 		t.Run(string(name), func(t *testing.T) {
 			q := legQuerier(t, failingLegs(nil, errors.New("upstream 5xx"), name))
 
-			_, err := readTopologyDefaults(context.Background(), q)
+			_, err := readTopologyDefaults(t.Context(), q)
 			require.Error(t, err, "%s is abort-on-error and must fail the build", name)
 		})
 	}
 }
 
 func TestReadTopology_DegradingLegHonoursCallerCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	q := legQuerier(t, failingLegs(nil, errors.New("context canceled"), promql.QJobAnnotations))
@@ -1021,7 +1021,7 @@ func TestReadTopology_DegradingLegHonoursCallerCancellation(t *testing.T) {
 	// is on fetch or fetchOptional, so it would not actually pin
 	// optionalQueryFatal's callerCtx branch — only the pair does.
 	live := legQuerier(t, failingLegs(nil, errors.New("upstream 5xx"), promql.QJobAnnotations))
-	_, err = readTopologyDefaults(context.Background(), live)
+	_, err = readTopologyDefaults(t.Context(), live)
 	require.NoError(t, err, "the same leg and error must degrade when the caller is still alive")
 }
 

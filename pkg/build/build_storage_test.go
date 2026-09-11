@@ -1,7 +1,6 @@
 package build
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -54,7 +53,7 @@ func TestBuildStorage_IssuesNoServiceGraphOrProbeQuery(t *testing.T) {
 	sel := promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}}
 
 	_, err := newStorageBuilder(t, q).BuildStorage(
-		context.Background(), time.Minute, time.Unix(1, 0).UTC(), sel)
+		t.Context(), time.Minute, time.Unix(1, 0).UTC(), sel)
 	require.NoError(t, err)
 
 	issued := map[string]bool{}
@@ -81,7 +80,7 @@ func TestBuildStorage_EmitsOnlyStorageFlow(t *testing.T) {
 	q, _ := newRecordingQuerier(t, storageFixtures())
 
 	g, err := newStorageBuilder(t, q).BuildStorage(
-		context.Background(), time.Minute, time.Unix(1, 0).UTC(),
+		t.Context(), time.Minute, time.Unix(1, 0).UTC(),
 		promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}})
 	require.NoError(t, err)
 
@@ -107,7 +106,7 @@ func TestBuildStorage_DrawsTheWholeChain(t *testing.T) {
 	q, _ := newRecordingQuerier(t, storageFixtures())
 
 	g, err := newStorageBuilder(t, q).BuildStorage(
-		context.Background(), time.Minute, time.Unix(1, 0).UTC(),
+		t.Context(), time.Minute, time.Unix(1, 0).UTC(),
 		promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}})
 	require.NoError(t, err)
 
@@ -138,7 +137,7 @@ func TestBuildStorage_CarriesClusterIdentities(t *testing.T) {
 	q, _ := newRecordingQuerier(t, fixtures)
 
 	g, err := newStorageBuilder(t, q).BuildStorage(
-		context.Background(), time.Minute, time.Unix(1, 0).UTC(),
+		t.Context(), time.Minute, time.Unix(1, 0).UTC(),
 		promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}})
 	require.NoError(t, err)
 
@@ -154,7 +153,7 @@ func TestBuildStorage_EmptyEstateIsNotOutsideRetention(t *testing.T) {
 	q, seen := newRecordingQuerier(t, nil)
 
 	g, err := newStorageBuilder(t, q).BuildStorage(
-		context.Background(), time.Minute, time.Unix(1, 0).UTC(),
+		t.Context(), time.Minute, time.Unix(1, 0).UTC(),
 		promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}})
 	require.NoError(t, err, "an empty filtered estate is an empty graph, not an error")
 	assert.Empty(t, g.NodesByID)
@@ -175,7 +174,7 @@ func TestBuildStorage_MaterialisesFlowlessInventory(t *testing.T) {
 	q, _ := newRecordingQuerier(t, fixtures)
 
 	g, err := newStorageBuilder(t, q).BuildStorage(
-		context.Background(), time.Minute, time.Unix(1, 0).UTC(),
+		t.Context(), time.Minute, time.Unix(1, 0).UTC(),
 		promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}})
 	require.NoError(t, err)
 

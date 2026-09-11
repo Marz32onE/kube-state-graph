@@ -875,7 +875,7 @@ func (s *RouteStoreSuite) TearDownSuite() {
 // the 3-hop narrows to the seeded gateways, the default-443 port selects the
 // TLS-terminated listener's RC, and its route cluster names payments.
 func (s *RouteStoreSuite) TestTrafficSnapshotThreeHopAndTranslate() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	st, err := routestore.Open(ctx, s.chDSN)
 	s.Require().NoError(err, "schema validation must pass against the seeded store")
 	defer func() { _ = st.Close() }()
@@ -924,7 +924,7 @@ func (s *RouteStoreSuite) TestTrafficSnapshotThreeHopAndTranslate() {
 // BEFORE the resolution instant collapses under the probe's no-FINAL dedup
 // instead of resurrecting a dead cluster.
 func (s *RouteStoreSuite) TestClustersWithIngressIPProbe() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	st, err := routestore.Open(ctx, s.chDSN)
 	s.Require().NoError(err)
 	defer func() { _ = st.Close() }()
@@ -962,7 +962,7 @@ func (s *RouteStoreSuite) TestClustersWithIngressIPProbe() {
 // superset load into ScopedFor, and the load is strictly scoped to the
 // requested cluster.
 func (s *RouteStoreSuite) TestTrafficSnapshotNoFinalDedupAndBareRef() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	st, err := routestore.Open(ctx, s.chDSN)
 	s.Require().NoError(err)
 	defer func() { _ = st.Close() }()
@@ -1022,7 +1022,7 @@ func (s *RouteStoreSuite) TestTrafficSnapshotNoFinalDedupAndBareRef() {
 // ever starts failing because the stale row NO LONGER resurrects, the store
 // semantics changed and the WithUniqueRows guardrails should be re-examined.
 func (s *RouteStoreSuite) TestUniqueRowsAgainstRewriteWriterResurrectsStaleRow() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	st, err := routestore.Open(ctx, s.chDSN, routestore.WithUniqueRows())
 	s.Require().NoError(err)
 	defer func() { _ = st.Close() }()
@@ -1050,7 +1050,7 @@ func (s *RouteStoreSuite) TestUniqueRowsAgainstRewriteWriterResurrectsStaleRow()
 // silent. The default no-prune mode's probe (TestClustersWithIngressIPProbe)
 // correctly reports no cluster for the same IP.
 func (s *RouteStoreSuite) TestUniqueRowsProbeAgainstRewriteWriterResurrectsDeadCluster() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	st, err := routestore.Open(ctx, s.chDSN, routestore.WithUniqueRows())
 	s.Require().NoError(err)
 	defer func() { _ = st.Close() }()
@@ -1071,7 +1071,7 @@ func (s *RouteStoreSuite) TestUniqueRowsProbeAgainstRewriteWriterResurrectsDeadC
 // also guard the dt64Lit no-`?`-bind trap (a second-precision bind would make
 // them pass vacuously); do not widen them.
 func (s *RouteStoreSuite) TestAsOfBoundaryValidFromEqualsInstant() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	st, err := routestore.Open(ctx, s.chDSN)
 	s.Require().NoError(err)
 	defer func() { _ = st.Close() }()
@@ -1104,7 +1104,7 @@ func (s *RouteStoreSuite) TestAsOfBoundaryValidFromEqualsInstant() {
 // KSG_ROUTE_STORE_USERNAME / KSG_ROUTE_STORE_PASSWORD). The password-protected
 // container rejects a credential-free Open, so a vacuous pass is impossible.
 func (s *RouteStoreSuite) TestOpenWithAuthUsesEnvStyleCredentials() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	freeDSN, err := stripDSNUserinfo(s.chDSN)
 	s.Require().NoError(err)
 
@@ -1122,7 +1122,7 @@ func (s *RouteStoreSuite) TestOpenWithAuthUsesEnvStyleCredentials() {
 // (any invocation would fail). Unique IP → RouteIngressLBService anchored on
 // the selected cluster; the dup IP's same-cluster collision → ambiguous.
 func (s *RouteStoreSuite) TestNginxFallbackResolvesViaRealStore() {
-	ctx := context.Background()
+	ctx := s.T().Context()
 	st, err := routestore.Open(ctx, s.chDSN)
 	s.Require().NoError(err)
 	defer func() { _ = st.Close() }()

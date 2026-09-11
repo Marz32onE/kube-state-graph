@@ -74,7 +74,7 @@ func TestBuildFromValues_EmptyUpstream(t *testing.T) {
 
 	eng := kubegraph.New(q, kubegraph.Options{APITimeout: 5 * time.Second})
 
-	body, err := eng.BuildFromValues(context.Background(), url.Values{
+	body, err := eng.BuildFromValues(t.Context(), url.Values{
 		"start": {"1700000000"},
 		"end":   {"1700003600"},
 	})
@@ -92,7 +92,7 @@ func TestBuildStorageFromValues_EmptyUpstream(t *testing.T) {
 		Return(model.Vector{}, nil).Maybe()
 
 	eng := kubegraph.New(q, kubegraph.Options{APITimeout: 5 * time.Second})
-	body, err := eng.BuildStorageFromValues(context.Background(), url.Values{
+	body, err := eng.BuildStorageFromValues(t.Context(), url.Values{
 		"start": {"1700000000"},
 		"end":   {"1700003600"},
 		"az":    {"zone-a"},
@@ -107,7 +107,7 @@ func TestBuildStorageFromValues_EmptyUpstream(t *testing.T) {
 
 func TestBuildStorageFromValues_ParseErrorReason(t *testing.T) {
 	eng := kubegraph.New(promqlmocks.NewMockQuerier(t), kubegraph.Options{})
-	_, err := eng.BuildStorageFromValues(context.Background(), url.Values{
+	_, err := eng.BuildStorageFromValues(t.Context(), url.Values{
 		"start": {"1700000000"},
 		"end":   {"1700003600"},
 		"env":   {"prod"},
@@ -130,12 +130,12 @@ func TestBuildStorageFromValues_AgreesWithComposedPipeline(t *testing.T) {
 		"aggr":  {"aggr1"},
 	}
 
-	facade, err := eng.BuildStorageFromValues(context.Background(), vals)
+	facade, err := eng.BuildStorageFromValues(t.Context(), vals)
 	require.NoError(t, err)
 
 	req, err := kubegraph.ParseStorageValues(vals)
 	require.NoError(t, err)
-	g, err := eng.BuildStorage(context.Background(), req.End.Sub(req.Start), req.End, req.Selector)
+	g, err := eng.BuildStorage(t.Context(), req.End.Sub(req.Start), req.End, req.Selector)
 	require.NoError(t, err)
 	composed := cytoscape.Serialise(g, graph.ProjectStorage(g, req.Scope))
 	assert.Equal(t, composed, facade)
@@ -146,13 +146,13 @@ func TestEngine_Probe(t *testing.T) {
 		q := promqlmocks.NewMockQuerier(t)
 		q.EXPECT().Instant(mock.Anything, "up", mock.Anything, mock.Anything).
 			Return(model.Vector{}, nil)
-		require.NoError(t, kubegraph.New(q, kubegraph.Options{}).Probe(context.Background()))
+		require.NoError(t, kubegraph.New(q, kubegraph.Options{}).Probe(t.Context()))
 	})
 	t.Run("unreachable", func(t *testing.T) {
 		q := promqlmocks.NewMockQuerier(t)
 		q.EXPECT().Instant(mock.Anything, "up", mock.Anything, mock.Anything).
 			Return(nil, errors.New("dial tcp: connection refused"))
-		require.Error(t, kubegraph.New(q, kubegraph.Options{}).Probe(context.Background()))
+		require.Error(t, kubegraph.New(q, kubegraph.Options{}).Probe(t.Context()))
 	})
 }
 
@@ -162,7 +162,7 @@ func TestBuildFromValues_ParseErrorShortCircuits(t *testing.T) {
 
 	eng := kubegraph.New(q, kubegraph.Options{})
 
-	_, err := eng.BuildFromValues(context.Background(), url.Values{"end": {"1700003600"}})
+	_, err := eng.BuildFromValues(t.Context(), url.Values{"end": {"1700003600"}})
 	var pe *kubegraph.ParseError
 	require.ErrorAs(t, err, &pe)
 	assert.Equal(t, "missing_start", pe.Reason)
@@ -250,7 +250,7 @@ func TestBuildFromValues_PushesSelectorIntoTopologyQueries(t *testing.T) {
 		}).Maybe()
 
 	eng := kubegraph.New(q, kubegraph.Options{APITimeout: 5 * time.Second})
-	_, err := eng.BuildFromValues(context.Background(), url.Values{
+	_, err := eng.BuildFromValues(t.Context(), url.Values{
 		"start":     {"1700000000"},
 		"end":       {"1700003600"},
 		"namespace": {"shop"},

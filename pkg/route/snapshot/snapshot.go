@@ -14,7 +14,7 @@
 package snapshot
 
 import (
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -94,7 +94,7 @@ func (s *Snapshot) ResolveIPToGateways(ip string) []store.GatewayCand {
 	if !found {
 		return nil
 	}
-	sort.Strings(podLabels) // order-free result, independent of row order
+	slices.Sort(podLabels) // order-free result, independent of row order
 
 	// Hop 3: L -> candidate gateways (gateway.selector ⊆ L, same namespace as
 	// the ingress Service).
@@ -299,26 +299,16 @@ func (s *Snapshot) live(vf, vt time.Time) bool {
 // (unnormalized), so the reader must match both; matching only the qualified
 // form silently drops every bare-bound VS's routes.
 func boundTo(vsNS string, bound []string, gwNS, gwName string) bool {
-	if contains(bound, gwNS+"/"+gwName) {
+	if slices.Contains(bound, gwNS+"/"+gwName) {
 		return true
 	}
-	return vsNS == gwNS && contains(bound, gwName)
-}
-
-// contains reports whether set has x (mirrors ClickHouse has()).
-func contains(set []string, x string) bool {
-	for _, s := range set {
-		if s == x {
-			return true
-		}
-	}
-	return false
+	return vsNS == gwNS && slices.Contains(bound, gwName)
 }
 
 // containsAll reports whether sub ⊆ super (mirrors ClickHouse hasAll(super, sub)).
 func containsAll(super, sub []string) bool {
 	for _, x := range sub {
-		if !contains(super, x) {
+		if !slices.Contains(super, x) {
 			return false
 		}
 	}

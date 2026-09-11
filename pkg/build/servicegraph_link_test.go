@@ -1,7 +1,6 @@
 package build
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -470,7 +469,7 @@ func TestReadServiceGraph_SameFQDNResolvedOnce(t *testing.T) {
 		return RouteDestination{Cluster: "cluster-alpha", Namespace: "shop", Service: "payments", Port: 8080}, RouteHit, nil
 	}}
 
-	res, err := ReadServiceGraph(context.Background(), q,
+	res, err := ReadServiceGraph(t.Context(), q,
 		5*time.Minute, end, sampleTopologyWithServices(), resolver, time.Second, false)
 	require.NoError(t, err)
 	require.Len(t, resolver.requests(), 1,

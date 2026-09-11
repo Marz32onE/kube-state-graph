@@ -103,7 +103,7 @@ func newScopeFake() *scopeFake {
 
 func readTopologyWith(t *testing.T, q promql.Querier, opts Options) {
 	t.Helper()
-	_, err := ReadTopology(context.Background(), q, time.Minute, time.Unix(1, 0).UTC(),
+	_, err := ReadTopology(t.Context(), q, time.Minute, time.Unix(1, 0).UTC(),
 		opts, promql.Selector{})
 	require.NoError(t, err)
 }
@@ -113,7 +113,7 @@ func readTopologyWith(t *testing.T, q promql.Querier, opts Options) {
 // rather than on what survived the parse.
 func scopedQoSVectors(t *testing.T, q promql.Querier, opts Options, v *topologyVectors) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	done := func() <-chan struct{} {
 		c := make(chan struct{})
 		close(c)
@@ -271,7 +271,7 @@ func TestReadScopedQoS_FailedChunkDegradesOnlyItsOwnClaims(t *testing.T) {
 func TestReadScopedQoS_RequiredLegFailureStillFailsTheBuild(t *testing.T) {
 	q := legQuerier(t, failingLegs(nil, errors.New("upstream 5xx"), promql.QPodInfo))
 
-	_, err := ReadTopology(context.Background(), q, time.Minute, time.Unix(1, 0).UTC(),
+	_, err := ReadTopology(t.Context(), q, time.Minute, time.Unix(1, 0).UTC(),
 		Options{}, promql.Selector{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "upstream 5xx")

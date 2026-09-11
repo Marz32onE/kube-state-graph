@@ -107,10 +107,9 @@ func sameKeySet(old *[]string, next []string) bool {
 // LoadCSV parses comma-separated keys (whitespace trimmed; blanks dropped)
 // and atomically replaces the active set.
 func (ks *KeySet) LoadCSV(csv string) {
-	parts := strings.Split(csv, ",")
-	out := make([]string, 0, len(parts))
+	out := make([]string, 0, strings.Count(csv, ",")+1)
 	seen := map[string]struct{}{}
-	for _, p := range parts {
+	for p := range strings.SplitSeq(csv, ",") {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue

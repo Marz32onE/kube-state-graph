@@ -1,12 +1,13 @@
 package build
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"maps"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -796,11 +797,8 @@ func parseTopology(v topologyVectors, keys promql.LabelKeys) Topology {
 		// timestamps (two distinct UIDs scraped at the same step) the
 		// lexically-larger UID is the deterministic tie-break, so the canonical
 		// pick is a pure function of the data, not vector arrival order (D6).
-		sort.SliceStable(group, func(i, j int) bool {
-			if group[i].ts != group[j].ts {
-				return group[i].ts > group[j].ts
-			}
-			return group[i].uid > group[j].uid
+		slices.SortStableFunc(group, func(a, b podObs) int {
+			return cmp.Or(cmp.Compare(b.ts, a.ts), cmp.Compare(b.uid, a.uid))
 		})
 		// kube-state-metrics emits multiple series per pod-UID as labels evolve
 		// during scheduling (e.g. node arrives after the first scrape). Merge
@@ -1032,7 +1030,7 @@ func parseTopology(v topologyVectors, keys promql.LabelKeys) Topology {
 	for c := range clusters {
 		clusterList = append(clusterList, c)
 	}
-	sort.Strings(clusterList)
+	slices.Sort(clusterList)
 
 	mc.warn()
 
@@ -1184,11 +1182,8 @@ func resolvePodContainers(vec model.Vector, mc *clusterResolver) map[podNameKey]
 	}
 	for pod := range out {
 		list := out[pod]
-		sort.SliceStable(list, func(i, j int) bool {
-			if list[i].Name != list[j].Name {
-				return list[i].Name < list[j].Name
-			}
-			return list[i].Image < list[j].Image
+		slices.SortStableFunc(list, func(a, b graph.Container) int {
+			return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Image, b.Image))
 		})
 	}
 	return out

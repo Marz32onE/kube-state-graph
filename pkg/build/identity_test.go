@@ -1,7 +1,6 @@
 package build
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -222,7 +221,7 @@ func TestBuild_ClusterIdentitiesReachTheGraph(t *testing.T) {
 		Return(model.Vector{}, nil)
 
 	g, err := New(q, Options{}, nil, nil).
-		Build(context.Background(), 5*time.Minute, probeTestEnd, promql.Selector{})
+		Build(t.Context(), 5*time.Minute, probeTestEnd, promql.Selector{})
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"cluster-beta", "eu-prod-c1", "us-dev-c1"}, g.ClusterNames())

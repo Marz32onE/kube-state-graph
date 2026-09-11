@@ -177,7 +177,7 @@ func StampLabels(exposition, extra string) string {
 	// entry lacks an "=" and the two slices stop lining up.
 	type labelPair struct{ key, text string }
 	var pairs []labelPair
-	for _, p := range strings.Split(extra, ",") {
+	for p := range strings.SplitSeq(extra, ",") {
 		if k, _, ok := strings.Cut(p, "="); ok {
 			pairs = append(pairs, labelPair{key: strings.TrimSpace(k), text: strings.TrimSpace(p)})
 		}

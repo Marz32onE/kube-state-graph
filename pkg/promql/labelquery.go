@@ -1,12 +1,12 @@
 package promql
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -265,21 +265,19 @@ func labelSetID(m map[string]string, keys []string) string {
 }
 
 func sortLabelSets(sets []labelSetEntry) {
-	sort.SliceStable(sets, func(i, j int) bool {
-		return labelSetLess(sets[i], sets[j])
-	})
+	slices.SortStableFunc(sets, compareLabelSets)
 }
 
-func labelSetLess(a, b labelSetEntry) bool {
+func compareLabelSets(a, b labelSetEntry) int {
 	n := min(len(a.keys), len(b.keys))
 	for i := range n {
-		if a.keys[i] != b.keys[i] {
-			return a.keys[i] < b.keys[i]
+		if c := cmp.Compare(a.keys[i], b.keys[i]); c != 0 {
+			return c
 		}
 		k := a.keys[i]
-		if a.labels[k] != b.labels[k] {
-			return a.labels[k] < b.labels[k]
+		if c := cmp.Compare(a.labels[k], b.labels[k]); c != 0 {
+			return c
 		}
 	}
-	return len(a.keys) < len(b.keys)
+	return cmp.Compare(len(a.keys), len(b.keys))
 }

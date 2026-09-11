@@ -49,7 +49,7 @@ func TestNewRouted_ScopedBuildReachesOneZonesBackend(t *testing.T) {
 	engine := NewRouted(router, Options{APITimeout: time.Second})
 
 	end := time.Unix(1_700_000_000, 0).UTC()
-	_, err = engine.Build(context.Background(), 5*time.Minute, end, promql.Selector{AZ: []string{"zone-a"}})
+	_, err = engine.Build(t.Context(), 5*time.Minute, end, promql.Selector{AZ: []string{"zone-a"}})
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, zoneA.asked, "the selected zone's backend answers the build")

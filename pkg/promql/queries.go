@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -403,7 +404,7 @@ var requiredFamilies = []Family{
 // RequiredFamilies returns the families a routing table must cover, in the
 // fixed order of Families. Exported so a configuration layer can report the
 // requirement without restating the set.
-func RequiredFamilies() []Family { return append([]Family(nil), requiredFamilies...) }
+func RequiredFamilies() []Family { return slices.Clone(requiredFamilies) }
 
 // Optional reports whether a table may leave family f served by no backend.
 func (f Family) Optional() bool {

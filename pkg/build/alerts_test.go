@@ -1,7 +1,6 @@
 package build
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -430,7 +429,7 @@ func TestAttachAlerts_StampsAndWarns(t *testing.T) {
 	buf := captureLogs(t)
 	nodes := alertEstate()
 
-	attachAlerts(context.Background(), nodes, Topology{
+	attachAlerts(t.Context(), nodes, Topology{
 		clusters: identityResolver(t),
 		Alerts: sampleVec(
 			alertSample("KubePodCrashLooping", "warning", map[string]string{
@@ -461,7 +460,7 @@ func TestAttachAlerts_FullMatchIsSilent(t *testing.T) {
 	buf := captureLogs(t)
 	nodes := alertEstate()
 
-	attachAlerts(context.Background(), nodes, Topology{
+	attachAlerts(t.Context(), nodes, Topology{
 		clusters: identityResolver(t),
 		Alerts: sampleVec(alertSample("NodeNotReady", "critical", map[string]string{
 			"cluster": "c1", "node": "worker-1",
@@ -478,7 +477,7 @@ func TestAttachAlerts_EmptyVectorIsSilent(t *testing.T) {
 	buf := captureLogs(t)
 	nodes := alertEstate()
 
-	attachAlerts(context.Background(), nodes, Topology{clusters: identityResolver(t)})
+	attachAlerts(t.Context(), nodes, Topology{clusters: identityResolver(t)})
 
 	for _, n := range nodes {
 		assert.Nil(t, n.Alerts())
@@ -496,7 +495,7 @@ func TestReadTopology_AlertsLegFailureDoesNotFailBuild(t *testing.T) {
 		"cluster": "c", "namespace": "shop", "pod": "orders-0", "uid": "u1", "node": "w0",
 	}}), nil}
 
-	tp, err := readTopologyDefaults(context.Background(), legQuerier(t, legs))
+	tp, err := readTopologyDefaults(t.Context(), legQuerier(t, legs))
 	require.NoError(t, err, "the alert overlay must never fail a build")
 	assert.Empty(t, tp.Alerts)
 	require.Contains(t, tp.RawSeriesCount, string(promql.QAlerts))
@@ -513,7 +512,7 @@ func TestReadTopology_AlertsVectorCarriedRaw(t *testing.T) {
 	}))
 	legs := map[promql.Query]legFixture{promql.QAlerts: {vec, nil}}
 
-	tp, err := readTopologyDefaults(context.Background(), legQuerier(t, legs))
+	tp, err := readTopologyDefaults(t.Context(), legQuerier(t, legs))
 	require.NoError(t, err)
 	assert.Equal(t, vec, tp.Alerts)
 	assert.Equal(t, 1, tp.RawSeriesCount[string(promql.QAlerts)])

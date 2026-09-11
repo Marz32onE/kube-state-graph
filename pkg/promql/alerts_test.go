@@ -1,7 +1,6 @@
 package promql
 
 import (
-	"context"
 	"log/slog"
 	"testing"
 	"time"
@@ -132,7 +131,7 @@ func TestFanout_UnservedAlertsFamilyIsQuiet(t *testing.T) {
 	r := routerWithFakes(t, tbl, map[string]*fakeBackend{"k8s": {}, "netapp": {}}, nil)
 
 	vec, err := r.QuerierFor(Selector{AZ: []string{"zone-a"}}).
-		Instant(context.Background(), string(QAlerts), "q", time.Unix(0, 0))
+		Instant(t.Context(), string(QAlerts), "q", time.Unix(0, 0))
 	require.NoError(t, err, "an unserved optional family is never an error")
 	assert.Empty(t, vec)
 
@@ -159,7 +158,7 @@ func TestFanout_ServedAlertsFamilyMissingZoneStillWarns(t *testing.T) {
 	}, nil)
 
 	vec, err := r.QuerierFor(Selector{AZ: []string{"zone-b"}}).
-		Instant(context.Background(), string(QAlerts), "q", time.Unix(0, 0))
+		Instant(t.Context(), string(QAlerts), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 	assert.Empty(t, vec)
 	assert.Contains(t, buf.String(), "no upstream backend serves this query for the requested zones")
@@ -177,9 +176,9 @@ func TestFanout_AlertsReachesOnlyItsOwnBackend(t *testing.T) {
 	r := routerWithFakes(t, tbl, map[string]*fakeBackend{"k8s": k8s, "vmalert": vmalert}, nil)
 
 	q := r.QuerierFor(Selector{})
-	_, err = q.Instant(context.Background(), string(QAlerts), "alerts-q", time.Unix(0, 0))
+	_, err = q.Instant(t.Context(), string(QAlerts), "alerts-q", time.Unix(0, 0))
 	require.NoError(t, err)
-	_, err = q.Instant(context.Background(), string(QPodInfo), "ksm-q", time.Unix(0, 0))
+	_, err = q.Instant(t.Context(), string(QPodInfo), "ksm-q", time.Unix(0, 0))
 	require.NoError(t, err)
 
 	_, alertQueries := vmalert.seen()

@@ -44,7 +44,7 @@ func TestInstant_UpstreamWarningsLogged(t *testing.T) {
 		warns: v1.Warnings{"results may be partial: -search.maxSamplesPerQuery exceeded"},
 	}}
 
-	got, err := c.Instant(context.Background(), string(QPodInfo), "kube_pod_info", time.Unix(1000, 0))
+	got, err := c.Instant(t.Context(), string(QPodInfo), "kube_pod_info", time.Unix(1000, 0))
 
 	require.NoError(t, err, "warnings must not fail the query")
 	assert.Equal(t, vec, got, "value is returned unchanged alongside warnings")
@@ -62,7 +62,7 @@ func TestInstant_NoWarnings_NoWarnLog(t *testing.T) {
 	buf := captureClientLogs(t)
 	c := &Client{api: fakeAPI{val: model.Vector{}}}
 
-	got, err := c.Instant(context.Background(), string(QNodeInfo), "kube_node_info", time.Unix(1000, 0))
+	got, err := c.Instant(t.Context(), string(QNodeInfo), "kube_node_info", time.Unix(1000, 0))
 
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -79,7 +79,7 @@ func TestInstant_WarningsAlongsideError_StillLogged(t *testing.T) {
 		err:   assert.AnError,
 	}}
 
-	_, err := c.Instant(context.Background(), string(QPodInfo), "kube_pod_info", time.Unix(1000, 0))
+	_, err := c.Instant(t.Context(), string(QPodInfo), "kube_pod_info", time.Unix(1000, 0))
 
 	require.Error(t, err)
 	out := buf.String()

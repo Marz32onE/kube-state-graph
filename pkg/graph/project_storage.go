@@ -463,23 +463,19 @@ func scaleFlow(io *IOMetrics, n int) (IOMetrics, bool) {
 	f := float64(n)
 	ok := false
 	if io.ReadOps != nil {
-		v := *io.ReadOps / f
-		out.ReadOps = &v
+		out.ReadOps = new(*io.ReadOps / f)
 		ok = true
 	}
 	if io.WriteOps != nil {
-		v := *io.WriteOps / f
-		out.WriteOps = &v
+		out.WriteOps = new(*io.WriteOps / f)
 		ok = true
 	}
 	if io.ReadBytesPerSec != nil {
-		v := *io.ReadBytesPerSec / f
-		out.ReadBytesPerSec = &v
+		out.ReadBytesPerSec = new(*io.ReadBytesPerSec / f)
 		ok = true
 	}
 	if io.WriteBytesPerSec != nil {
-		v := *io.WriteBytesPerSec / f
-		out.WriteBytesPerSec = &v
+		out.WriteBytesPerSec = new(*io.WriteBytesPerSec / f)
 		ok = true
 	}
 	return out, ok
@@ -490,11 +486,9 @@ func addPtr(dst, src *float64) *float64 {
 		return dst
 	}
 	if dst == nil {
-		v := *src
-		return &v
+		return new(*src)
 	}
-	v := *dst + *src
-	return &v
+	return new(*dst + *src)
 }
 
 func projectedEdge(e *Edge, io *IOMetrics) *Edge {

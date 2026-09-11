@@ -2,7 +2,7 @@ package build
 
 import (
 	"math"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/prometheus/common/model"
@@ -269,9 +269,8 @@ func sumAscending(xs []float64) float64 {
 	if len(xs) == 0 {
 		return 0
 	}
-	cp := make([]float64, len(xs))
-	copy(cp, xs)
-	sort.Float64s(cp)
+	cp := slices.Clone(xs)
+	slices.Sort(cp)
 	var sum float64
 	for _, v := range cp {
 		sum += v
@@ -304,7 +303,7 @@ func seriesKeyExcluding(m model.Metric, skip model.LabelName) string {
 		}
 		names = append(names, string(k))
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	var b strings.Builder
 	for i, n := range names {
 		if i > 0 {

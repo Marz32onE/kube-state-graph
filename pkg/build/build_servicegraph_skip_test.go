@@ -72,7 +72,7 @@ func TestBuild_FilteredEmptyTopology_SkipsServiceGraphRead(t *testing.T) {
 	q, recorded := newRecordingEmptyQuerier(t)
 
 	sel := promql.Selector{Namespace: []string{"does-not-exist"}}
-	g, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, sel)
+	g, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, sel)
 
 	require.NoError(t, err)
 	require.NotNil(t, g)
@@ -91,7 +91,7 @@ func TestBuild_FilteredEmptyTopology_SkipsServiceGraphRead(t *testing.T) {
 func TestBuild_UnfilteredEmptyTopology_StillReadsServiceGraph(t *testing.T) {
 	q, recorded := newRecordingEmptyQuerier(t)
 
-	_, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, promql.Selector{})
+	_, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, promql.Selector{})
 
 	require.NoError(t, err)
 	names := recorded()
@@ -122,7 +122,7 @@ func TestBuild_FilteredWithLoadedTopology_ReadsServiceGraph(t *testing.T) {
 		Maybe()
 
 	sel := promql.Selector{Namespace: []string{"shop"}}
-	g, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, sel)
+	g, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, sel)
 
 	require.NoError(t, err)
 	require.NotNil(t, g)

@@ -155,15 +155,12 @@ func round6(v float64) float64 {
 // nil when neither family is present so the metrics key is wholly absent.
 func metricsDTO(m *graph.EdgeMetrics, io *graph.IOMetrics) *EdgeMetricsDTO {
 	if m != nil {
-		rate := round6(m.Rate)
-		dto := &EdgeMetricsDTO{Rate: &rate}
+		dto := &EdgeMetricsDTO{Rate: new(round6(m.Rate))}
 		if m.ErrorRate != nil {
-			er := round6(*m.ErrorRate)
-			dto.ErrorRate = &er
+			dto.ErrorRate = new(round6(*m.ErrorRate))
 		}
 		if m.P90ServerMs != nil {
-			p90 := round6(*m.P90ServerMs)
-			dto.P90ServerMs = &p90
+			dto.P90ServerMs = new(round6(*m.P90ServerMs))
 		}
 		return dto
 	}
@@ -173,45 +170,37 @@ func metricsDTO(m *graph.EdgeMetrics, io *graph.IOMetrics) *EdgeMetricsDTO {
 	dto := &EdgeMetricsDTO{}
 	filled := false
 	if io.ReadOps != nil {
-		v := round6(*io.ReadOps)
-		dto.ReadOps = &v
+		dto.ReadOps = new(round6(*io.ReadOps))
 		filled = true
 	}
 	if io.WriteOps != nil {
-		v := round6(*io.WriteOps)
-		dto.WriteOps = &v
+		dto.WriteOps = new(round6(*io.WriteOps))
 		filled = true
 	}
 	if io.ReadLatencyUs != nil {
-		v := round6(*io.ReadLatencyUs)
-		dto.ReadLatencyUs = &v
+		dto.ReadLatencyUs = new(round6(*io.ReadLatencyUs))
 		filled = true
 	}
 	if io.WriteLatencyUs != nil {
-		v := round6(*io.WriteLatencyUs)
-		dto.WriteLatencyUs = &v
+		dto.WriteLatencyUs = new(round6(*io.WriteLatencyUs))
 		filled = true
 	}
 	if io.ReadBytesPerSec != nil {
-		v := round6(*io.ReadBytesPerSec)
-		dto.ReadBytesPerSec = &v
+		dto.ReadBytesPerSec = new(round6(*io.ReadBytesPerSec))
 		filled = true
 	}
 	if io.WriteBytesPerSec != nil {
-		v := round6(*io.WriteBytesPerSec)
-		dto.WriteBytesPerSec = &v
+		dto.WriteBytesPerSec = new(round6(*io.WriteBytesPerSec))
 		filled = true
 	}
 	// The ceilings deliberately do NOT set `filled`: the builder can only
 	// attach them alongside a measurement (design.md D3 hop C), so they can
 	// never be the sole reason a metrics object exists.
 	if io.MaxIOPS != nil {
-		v := round6(*io.MaxIOPS)
-		dto.MaxIOPS = &v
+		dto.MaxIOPS = new(round6(*io.MaxIOPS))
 	}
 	if io.MaxBytesPerSec != nil {
-		v := round6(*io.MaxBytesPerSec)
-		dto.MaxBytesPerSec = &v
+		dto.MaxBytesPerSec = new(round6(*io.MaxBytesPerSec))
 	}
 	if !filled {
 		return nil
@@ -238,20 +227,16 @@ func perfDTO(p *graph.NodePerf) *PerfDTO {
 	}
 	dto := &PerfDTO{}
 	if p.CPUBusyPct != nil {
-		v := round6(*p.CPUBusyPct)
-		dto.CPUBusyPct = &v
+		dto.CPUBusyPct = new(round6(*p.CPUBusyPct))
 	}
 	if p.TotalOps != nil {
-		v := round6(*p.TotalOps)
-		dto.TotalOps = &v
+		dto.TotalOps = new(round6(*p.TotalOps))
 	}
 	if p.TotalLatencyUs != nil {
-		v := round6(*p.TotalLatencyUs)
-		dto.TotalLatencyUs = &v
+		dto.TotalLatencyUs = new(round6(*p.TotalLatencyUs))
 	}
 	if p.TotalBytesPerSec != nil {
-		v := round6(*p.TotalBytesPerSec)
-		dto.TotalBytesPerSec = &v
+		dto.TotalBytesPerSec = new(round6(*p.TotalBytesPerSec))
 	}
 	return dto
 }

@@ -50,7 +50,7 @@ func TestBuild_UpProbeError_WarnsAndProceeds(t *testing.T) {
 	buf := captureLogs(t)
 	q := newEmptyTopologyQuerier(t, nil, errors.New("probe exploded"))
 
-	g, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, promql.Selector{})
+	g, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, promql.Selector{})
 
 	require.NoError(t, err, "a failed probe must not fail the build")
 	require.NotNil(t, g)
@@ -70,7 +70,7 @@ func TestBuild_UpProbeEmpty_NoWarnProceeds(t *testing.T) {
 	buf := captureLogs(t)
 	q := newEmptyTopologyQuerier(t, model.Vector{}, nil)
 
-	g, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, promql.Selector{})
+	g, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, promql.Selector{})
 
 	require.NoError(t, err)
 	require.NotNil(t, g)
@@ -89,7 +89,7 @@ func TestBuild_UpProbeHealthy_OutsideRetentionUnchanged(t *testing.T) {
 	})
 	q := newEmptyTopologyQuerier(t, up, nil)
 
-	g, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, promql.Selector{})
+	g, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, promql.Selector{})
 
 	require.Error(t, err)
 	assert.Nil(t, g)
@@ -113,7 +113,7 @@ func TestBuild_FilteredEmptyResultSkipsRetentionClassification(t *testing.T) {
 		Maybe()
 
 	sel := promql.Selector{Namespace: []string{"shop"}}
-	g, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, sel)
+	g, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, sel)
 
 	require.NoError(t, err, "an empty filtered result is a valid empty graph, not an error")
 	require.NotNil(t, g)
@@ -126,7 +126,7 @@ func TestBuild_FilteredEmptyResultSkipsRetentionClassification(t *testing.T) {
 func TestBuild_UnfilteredEmptyResultStillClassifiesRetention(t *testing.T) {
 	q := newEmptyTopologyQuerier(t, model.Vector{{Value: 1}}, nil)
 
-	_, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, promql.Selector{})
+	_, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, promql.Selector{})
 
 	require.Error(t, err)
 	var be *Error
@@ -164,7 +164,7 @@ func TestBuild_SelectorReachesTopologyQueriesOnly(t *testing.T) {
 		AZ: []string{"zone-a"}, Env: []string{"prod"},
 		Cluster: []string{"cluster-alpha"}, Namespace: []string{"shop"},
 	}
-	_, err := New(q, Options{}, nil, nil).Build(context.Background(), 5*time.Minute, probeTestEnd, sel)
+	_, err := New(q, Options{}, nil, nil).Build(t.Context(), 5*time.Minute, probeTestEnd, sel)
 	require.NoError(t, err)
 
 	assert.Equal(t,

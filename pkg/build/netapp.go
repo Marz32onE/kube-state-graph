@@ -1,8 +1,9 @@
 package build
 
 import (
+	"cmp"
 	"log/slog"
-	"sort"
+	"slices"
 
 	"github.com/prometheus/common/model"
 
@@ -212,7 +213,7 @@ func resolveNetAppStorage(claims []pvcVolume, v topologyVectors) netappResult {
 	// bits of every I/O figure — is a pure function of the matched set rather
 	// than of upstream vector order (D6).
 	for i := range volsByClaim {
-		sort.Strings(volsByClaim[i])
+		slices.Sort(volsByClaim[i])
 	}
 
 	// Keyed by the same stock `volume` label the topology family carries, so a
@@ -522,7 +523,7 @@ func buildNetAppIndexes(
 // sortByID orders any slice of graph nodes by id, so every inventory slice is a
 // pure function of the set rather than of map iteration.
 func sortByID[T graph.GraphNode](nodes []T) {
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID() < nodes[j].ID() })
+	slices.SortFunc(nodes, func(a, b T) int { return cmp.Compare(a.ID(), b.ID()) })
 }
 
 // qosCandidatesFor gathers the QoS candidates of every FlexVol name a claim
@@ -597,12 +598,10 @@ func indexPolicyCeilings(maxIOPS, maxMBps model.Vector) map[policyKey]*graph.IOM
 	for k := range keys {
 		c := &graph.IOMetrics{}
 		if v, ok := iops[k]; ok {
-			vv := v
-			c.MaxIOPS = &vv
+			c.MaxIOPS = &v
 		}
 		if v, ok := mbps[k]; ok {
-			vv := v * bytesPerMB
-			c.MaxBytesPerSec = &vv
+			c.MaxBytesPerSec = new(v * bytesPerMB)
 		}
 		out[k] = c
 	}
@@ -629,12 +628,10 @@ func applyCeiling(io *graph.IOMetrics, index map[policyKey]*graph.IOMetrics, k p
 		return
 	}
 	if c.MaxIOPS != nil {
-		v := *c.MaxIOPS
-		io.MaxIOPS = &v
+		io.MaxIOPS = new(*c.MaxIOPS)
 	}
 	if c.MaxBytesPerSec != nil {
-		v := *c.MaxBytesPerSec
-		io.MaxBytesPerSec = &v
+		io.MaxBytesPerSec = new(*c.MaxBytesPerSec)
 	}
 }
 
@@ -825,7 +822,7 @@ func sumIOFamily(vals []float64) (float64, bool) {
 	if len(vals) == 0 {
 		return 0, false
 	}
-	sort.Float64s(vals)
+	slices.Sort(vals)
 	var sum float64
 	for _, v := range vals {
 		sum += v
@@ -1033,12 +1030,10 @@ func usageByAggr(used, total model.Vector) map[aggrKey]*graph.UsageBytes {
 	for k := range keys {
 		ub := &graph.UsageBytes{}
 		if v, ok := u[k]; ok {
-			vv := v
-			ub.UsedBytes = &vv
+			ub.UsedBytes = &v
 		}
 		if v, ok := c[k]; ok {
-			vv := v
-			ub.CapacityBytes = &vv
+			ub.CapacityBytes = &v
 		}
 		out[k] = ub
 	}
@@ -1091,12 +1086,10 @@ func resolvePVCUsage(used, capacity model.Vector, mc *clusterResolver) map[pvcKe
 	for k := range keys {
 		ub := &graph.UsageBytes{}
 		if v, ok := usedBy[k]; ok {
-			vv := v
-			ub.UsedBytes = &vv
+			ub.UsedBytes = &v
 		}
 		if v, ok := capBy[k]; ok {
-			vv := v
-			ub.CapacityBytes = &vv
+			ub.CapacityBytes = &v
 		}
 		out[k] = ub
 	}

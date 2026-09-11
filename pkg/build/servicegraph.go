@@ -1,12 +1,13 @@
 package build
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -455,7 +456,7 @@ func newSGResolver(topology Topology, filtered bool) *sgResolver {
 		podIPCandidates[fk] = append(podIPCandidates[fk], podIPCandidate{cluster: ik.cluster, pod: pod})
 	}
 	for _, cands := range podIPCandidates {
-		sort.Slice(cands, func(i, j int) bool { return cands[i].cluster < cands[j].cluster })
+		slices.SortFunc(cands, func(a, b podIPCandidate) int { return cmp.Compare(a.cluster, b.cluster) })
 	}
 
 	// Inverted index for D29 connection-string resolution: (family, namespace,
@@ -475,7 +476,7 @@ func newSGResolver(topology Topology, filtered bool) *sgResolver {
 		svcCandidates[key] = append(svcCandidates[key], svcCandidate{cluster: k.cluster, obs: obs})
 	}
 	for _, cands := range svcCandidates {
-		sort.Slice(cands, func(i, j int) bool { return cands[i].cluster < cands[j].cluster })
+		slices.SortFunc(cands, func(a, b svcCandidate) int { return cmp.Compare(a.cluster, b.cluster) })
 	}
 
 	// Reverse ClusterIP index for the resolve-unknown-server-ip-peer bare
@@ -1826,7 +1827,7 @@ func (r *sgResolver) resolveRouteChain(dest RouteDestination, backendSvcID strin
 	for _, ep := range eps {
 		podIDs = append(podIDs, ep.Pod.ID())
 	}
-	sort.Strings(podIDs)
+	slices.Sort(podIDs)
 	for i, podID := range podIDs {
 		if i > 0 && podIDs[i-1] == podID {
 			continue // sorted-unique; addRouteChainEdge dedupes anyway (D6)
@@ -1897,8 +1898,8 @@ func classifyK8sDNS(host string) (service, namespace string, ok bool) {
 	// FQDNs the cluster-domain suffix is then the LAST ".svc." occurrence
 	// (e.g. "myservice.svc.svc.cluster.local") — a first-occurrence
 	// strings.Index would truncate those too early as well.
-	if strings.HasSuffix(host, ".svc") {
-		rel = strings.TrimSuffix(host, ".svc")
+	if r, ok := strings.CutSuffix(host, ".svc"); ok {
+		rel = r
 	} else if i := strings.LastIndex(host, ".svc."); i >= 0 {
 		rel = host[:i]
 	}

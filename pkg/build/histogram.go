@@ -1,8 +1,9 @@
 package build
 
 import (
+	"cmp"
 	"math"
-	"sort"
+	"slices"
 	"strconv"
 )
 
@@ -32,11 +33,8 @@ func classicQuantile(q float64, buckets []bucket) (float64, bool) {
 		return 0, false
 	}
 	// Work on a sorted copy so input order cannot affect the result (D6).
-	bs := make([]bucket, len(buckets))
-	copy(bs, buckets)
-	sort.SliceStable(bs, func(i, j int) bool {
-		return bs[i].le < bs[j].le
-	})
+	bs := slices.Clone(buckets)
+	slices.SortStableFunc(bs, func(a, b bucket) int { return cmp.Compare(a.le, b.le) })
 
 	// Require a +Inf terminal bucket and a non-zero total count.
 	if !math.IsInf(bs[len(bs)-1].le, 1) {

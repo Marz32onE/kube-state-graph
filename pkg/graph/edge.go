@@ -1,7 +1,8 @@
 package graph
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	"github.com/google/uuid"
 )
@@ -151,8 +152,7 @@ func (e *Edge) WithMetrics(m EdgeMetrics) *Edge {
 		return nil
 	}
 	cp := *e
-	mm := m
-	cp.Metrics = &mm
+	cp.Metrics = &m
 	return &cp
 }
 
@@ -163,14 +163,11 @@ func (e *Edge) WithIO(m IOMetrics) *Edge {
 		return nil
 	}
 	cp := *e
-	mm := m
-	cp.IO = &mm
+	cp.IO = &m
 	return &cp
 }
 
 // SortEdges orders edges deterministically by ID for stable output.
 func SortEdges(edges []*Edge) {
-	sort.SliceStable(edges, func(i, j int) bool {
-		return edges[i].ID < edges[j].ID
-	})
+	slices.SortStableFunc(edges, func(a, b *Edge) int { return cmp.Compare(a.ID, b.ID) })
 }

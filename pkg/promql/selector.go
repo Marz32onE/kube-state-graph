@@ -2,7 +2,7 @@ package promql
 
 import (
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -281,7 +281,7 @@ func normaliseValues(values []string) []string {
 		seen[v] = struct{}{}
 		out = append(out, v)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

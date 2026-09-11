@@ -1,8 +1,9 @@
 package graph
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -154,11 +155,8 @@ func SortedPodRefs(m map[PodRef]struct{}) []PodRef {
 	for r := range m {
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
-		}
-		return out[i].Name < out[j].Name
+	slices.SortFunc(out, func(a, b PodRef) int {
+		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name))
 	})
 	return out
 }

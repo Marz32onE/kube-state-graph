@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/prometheus/common/model"
@@ -238,7 +237,7 @@ func newVolumeMatcher(rw *VolumeKeyRewriter, claims []pvcVolume) *volumeMatcher 
 				m.lengths = append(m.lengths, len(t))
 			}
 		}
-		sort.Ints(m.lengths)
+		slices.Sort(m.lengths)
 	case VolumeMatchRegex:
 		m.res = make([]*regexp.Regexp, len(claims))
 		for i, t := range m.tokens {
@@ -369,6 +368,6 @@ func qosVolumeScope(pvcInfo, volumeLabels model.Vector, rw *VolumeKeyRewriter) [
 		seenVol[v] = true
 		out = append(out, v)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

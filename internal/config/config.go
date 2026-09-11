@@ -424,9 +424,8 @@ func (c Config) VolumeKeyRewriter() (*build.VolumeKeyRewriter, error) {
 }
 
 func splitAndTrimOn(v, sep string) []string {
-	parts := strings.Split(v, sep)
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
+	out := make([]string, 0, strings.Count(v, sep)+1)
+	for p := range strings.SplitSeq(v, sep) {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}
@@ -438,13 +437,5 @@ func splitAndTrim(v string) []string {
 	if v == "" {
 		return nil
 	}
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	return splitAndTrimOn(v, ",")
 }

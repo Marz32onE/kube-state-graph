@@ -34,8 +34,7 @@ func (e *Error) Unwrap() error { return e.Err }
 
 // AsReason returns the typed Reason of err, or "" if it is not a build.Error.
 func AsReason(err error) Reason {
-	var be *Error
-	if errors.As(err, &be) {
+	if be, ok := errors.AsType[*Error](err); ok {
 		return be.Reason
 	}
 	return ""

@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"log/slog"
+	"slices"
 
 	"github.com/prometheus/common/model"
 
@@ -308,7 +309,7 @@ func matchNodeShaped(idx alertIndex, m model.Metric, rawCluster, node string, cl
 	// No cluster label: the eligible kinds are BOTH, so uniqueness is tested
 	// over their union. Two candidates of the same kind are as ambiguous as one
 	// of each.
-	return matchUnique(append(append([]string(nil), idx.k8sNodesByName[node]...), idx.ctrlsByName[node]...))
+	return matchUnique(slices.Concat(idx.k8sNodesByName[node], idx.ctrlsByName[node]))
 }
 
 // matchAggr resolves the aggregate kind. Its `cluster` label is an ONTAP

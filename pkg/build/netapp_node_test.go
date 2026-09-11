@@ -1,7 +1,6 @@
 package build
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -447,7 +446,7 @@ func TestReadTopology_ControllerLegFailureDoesNotFailBuild(t *testing.T) {
 				"node": "n1", "aggr": "a1", "svm": "svm0",
 			}, Value: 1}), nil}
 
-			tp, err := readTopologyDefaults(context.Background(), legQuerier(t, legs))
+			tp, err := readTopologyDefaults(t.Context(), legQuerier(t, legs))
 			require.NoError(t, err, "%s is optional and must not fail the build", name)
 			require.Len(t, tp.NetAppNodes, 1, "%s failing must not cost the storage topology", name)
 			require.Contains(t, tp.RawSeriesCount, string(name),
