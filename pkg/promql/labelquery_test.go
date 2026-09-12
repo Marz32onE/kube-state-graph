@@ -66,7 +66,7 @@ func TestQueryLabels_UnknownFamilyErrorsWithoutCall(t *testing.T) {
 	fakes := fakesFor(tbl)
 	r := routerForTable(t, tbl, fakes)
 
-	_, err := r.QueryLabels(context.Background(), labelQueryAt(Family("metrics"), "kube_pod_info"))
+	_, err := r.QueryLabels(t.Context(), labelQueryAt(Family("metrics"), "kube_pod_info"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown family "metrics"`)
 	assertNoUpstreamCall(t, fakes)
@@ -78,7 +78,7 @@ func TestQueryLabels_MetricNameGrammar(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		fakes := fakesFor(tbl)
 		r := routerForTable(t, tbl, fakes)
-		_, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, "node_memory_MemAvailable_bytes"))
+		_, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, "node_memory_MemAvailable_bytes"))
 		require.NoError(t, err)
 		assert.NotEmpty(t, calledBackends(fakes))
 	})
@@ -86,7 +86,7 @@ func TestQueryLabels_MetricNameGrammar(t *testing.T) {
 	t.Run("brace injection", func(t *testing.T) {
 		fakes := fakesFor(tbl)
 		r := routerForTable(t, tbl, fakes)
-		_, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, "kube_pod_info} or up{"))
+		_, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, "kube_pod_info} or up{"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid metric name")
 		assertNoUpstreamCall(t, fakes)
@@ -101,7 +101,7 @@ func TestQueryLabels_LabelKeyGrammar(t *testing.T) {
 		r := routerForTable(t, tbl, fakes)
 		q := labelQueryAt(FamilyKSM, "kube_pod_info")
 		q.Filters = map[string]string{"foo-bar": "x"}
-		_, err := r.QueryLabels(context.Background(), q)
+		_, err := r.QueryLabels(t.Context(), q)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid label filter key")
 		assertNoUpstreamCall(t, fakes)
@@ -112,7 +112,7 @@ func TestQueryLabels_LabelKeyGrammar(t *testing.T) {
 		r := routerForTable(t, tbl, fakes)
 		q := labelQueryAt(FamilyKSM, "kube_pod_info")
 		q.Filters = map[string]string{model.MetricNameLabel: "other"}
-		_, err := r.QueryLabels(context.Background(), q)
+		_, err := r.QueryLabels(t.Context(), q)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), model.MetricNameLabel)
 		assert.Contains(t, err.Error(), "reserved")
@@ -172,7 +172,7 @@ func TestQueryLabels_ValueValidation(t *testing.T) {
 			r := routerForTable(t, tbl, fakes)
 			q := labelQueryAt(FamilyKSM, "kube_pod_info")
 			tc.mod(&q)
-			_, err := r.QueryLabels(context.Background(), q)
+			_, err := r.QueryLabels(t.Context(), q)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 			assertNoUpstreamCall(t, fakes)
@@ -185,7 +185,7 @@ func TestQueryLabels_ZeroInstantIsRequired(t *testing.T) {
 	fakes := fakesFor(tbl)
 	r := routerForTable(t, tbl, fakes)
 
-	_, err := r.QueryLabels(context.Background(), LabelQuery{
+	_, err := r.QueryLabels(t.Context(), LabelQuery{
 		Metric: "kube_pod_info",
 		Family: FamilyKSM,
 	})
@@ -204,7 +204,7 @@ func TestQueryLabels_AZKeyConflict(t *testing.T) {
 		q.AZ = "zone-a"
 		q.LabelKeys = LabelKeys{AZ: "zone"}
 		q.Filters = map[string]string{"zone": "zone-b"}
-		_, err := r.QueryLabels(context.Background(), q)
+		_, err := r.QueryLabels(t.Context(), q)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "conflicts with the AZ field")
 		assertNoUpstreamCall(t, fakes)
@@ -216,7 +216,7 @@ func TestQueryLabels_AZKeyConflict(t *testing.T) {
 		q := labelQueryAt(FamilyKSM, "kube_pod_info")
 		q.LabelKeys = LabelKeys{AZ: "zone"}
 		q.Filters = map[string]string{"zone": "zone-a"}
-		_, err := r.QueryLabels(context.Background(), q)
+		_, err := r.QueryLabels(t.Context(), q)
 		require.NoError(t, err)
 		qs := issuedQueries(fakes)
 		require.NotEmpty(t, qs)
@@ -237,7 +237,7 @@ func TestQueryLabels_AZRejectedOnUnroutedFamilies(t *testing.T) {
 				q.Metric = "traces_service_graph_request_total"
 			}
 			q.AZ = "zone-a"
-			_, err := r.QueryLabels(context.Background(), q)
+			_, err := r.QueryLabels(t.Context(), q)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), string(fam))
 			assert.Contains(t, err.Error(), "leave AZ empty")
@@ -254,7 +254,7 @@ func TestQueryLabels_HarvestAZRoutesWithoutMatcher(t *testing.T) {
 
 	q := labelQueryAt(FamilyHarvest, "volume_labels")
 	q.AZ = "zone-b"
-	_, err := r.QueryLabels(context.Background(), q)
+	_, err := r.QueryLabels(t.Context(), q)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"n-b"}, calledBackends(fakes))
@@ -280,7 +280,7 @@ func TestQueryLabels_AZMatcherUsesConfiguredKey(t *testing.T) {
 			q := labelQueryAt(fam, metric)
 			q.AZ = "zone-a"
 			q.LabelKeys = LabelKeys{AZ: "zone"}
-			_, err := r.QueryLabels(context.Background(), q)
+			_, err := r.QueryLabels(t.Context(), q)
 			require.NoError(t, err)
 			qs := issuedQueries(fakes)
 			require.NotEmpty(t, qs)
@@ -305,7 +305,7 @@ func TestQueryLabels_EmptyAZAppliesNoRestriction(t *testing.T) {
 			fakes := fakesFor(tbl)
 			r := routerForTable(t, tbl, fakes)
 			q := labelQueryAt(fam, metrics[fam])
-			got, err := r.QueryLabels(context.Background(), q)
+			got, err := r.QueryLabels(t.Context(), q)
 			require.NoError(t, err)
 			assert.Empty(t, got)
 			assert.Equal(t, []string{"zone-a", "zone-b"}, calledBackends(fakes))
@@ -380,7 +380,7 @@ func TestQueryLabels_SelectsZonedAndZonelessBackends(t *testing.T) {
 		r := routerForTable(t, tbl, fakes)
 		q := labelQueryAt(FamilyKSM, "kube_pod_info")
 		q.AZ = "zone-a"
-		_, err := r.QueryLabels(context.Background(), q)
+		_, err := r.QueryLabels(t.Context(), q)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"all", "k-a"}, calledBackends(fakes))
 	})
@@ -388,7 +388,7 @@ func TestQueryLabels_SelectsZonedAndZonelessBackends(t *testing.T) {
 	t.Run("zoneless", func(t *testing.T) {
 		fakes := fakesFor(tbl)
 		r := routerForTable(t, tbl, fakes)
-		_, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, "kube_pod_info"))
+		_, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, "kube_pod_info"))
 		require.NoError(t, err)
 		assert.Equal(t, []string{"all", "k-a", "k-b"}, calledBackends(fakes))
 	})
@@ -402,7 +402,7 @@ func TestQueryLabels_StripsMetricNameLabel(t *testing.T) {
 	}
 	r := routerForTable(t, tbl, fakes)
 
-	got, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, "kube_pod_info"))
+	got, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, "kube_pod_info"))
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, map[string]string{"namespace": "shop", "pod": "checkout"}, got[0])
@@ -424,7 +424,7 @@ func TestQueryLabels_OrderIndependentOfBackendArrival(t *testing.T) {
 			},
 		}
 		r := routerForTable(t, tbl, fakes)
-		got, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, "kube_pod_info"))
+		got, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, "kube_pod_info"))
 		require.NoError(t, err)
 		return got
 	}
@@ -452,7 +452,7 @@ func TestQueryLabels_ResultBound(t *testing.T) {
 		r := routerForTable(t, tbl, fakes)
 		q := labelQueryAt(FamilyKSM, "kube_pod_info")
 		q.Limit = 2
-		got, err := r.QueryLabels(context.Background(), q)
+		got, err := r.QueryLabels(t.Context(), q)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "result count 3 exceeds limit 2")
 		assert.Nil(t, got)
@@ -467,7 +467,7 @@ func TestQueryLabels_ResultBound(t *testing.T) {
 		r := routerForTable(t, tbl, fakes)
 		q := labelQueryAt(FamilyKSM, "kube_pod_info")
 		q.Limit = 2
-		got, err := r.QueryLabels(context.Background(), q)
+		got, err := r.QueryLabels(t.Context(), q)
 		require.NoError(t, err)
 		assert.Len(t, got, 2)
 	})
@@ -480,7 +480,7 @@ func TestQueryLabels_ResultBound(t *testing.T) {
 		r := routerForTable(t, tbl, fakes)
 		q := labelQueryAt(FamilyKSM, "kube_pod_info")
 		q.Limit = 1
-		got, err := r.QueryLabels(context.Background(), q)
+		got, err := r.QueryLabels(t.Context(), q)
 		require.NoError(t, err)
 		assert.Equal(t, []map[string]string{{"pod": "shared"}}, got)
 	})
@@ -501,7 +501,7 @@ func TestQueryLabels_DuplicateAcrossCatchAllAndZoneAppearsOnce(t *testing.T) {
 
 	q := labelQueryAt(FamilyKSM, "kube_pod_info")
 	q.AZ = "zone-a"
-	got, err := r.QueryLabels(context.Background(), q)
+	got, err := r.QueryLabels(t.Context(), q)
 	require.NoError(t, err)
 	assert.Equal(t, []map[string]string{{"pod": "shared"}}, got)
 	assert.Equal(t, []string{"all", "k-a"}, calledBackends(fakes))
@@ -515,7 +515,7 @@ func TestQueryLabels_UnservedFamilyErrorsWithoutCall(t *testing.T) {
 	fakes := fakesFor(tbl)
 	r := routerForTable(t, tbl, fakes)
 
-	_, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyAlerts, "ALERTS"))
+	_, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyAlerts, "ALERTS"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `family "alerts"`)
 	assert.Contains(t, err.Error(), "served by no backend")
@@ -530,7 +530,7 @@ func TestQueryLabels_UnmatchedZoneReturnsEmptyWithWarn(t *testing.T) {
 
 	q := labelQueryAt(FamilyKSM, "kube_pod_info")
 	q.AZ = "zone-z"
-	got, err := r.QueryLabels(context.Background(), q)
+	got, err := r.QueryLabels(t.Context(), q)
 	require.NoError(t, err)
 	assert.Empty(t, got)
 	assertNoUpstreamCall(t, fakes)
@@ -548,7 +548,7 @@ func TestQueryLabels_BackendErrorFailsClosed(t *testing.T) {
 	fakes["zone-b"].err = fmt.Errorf("connection refused")
 	r := routerForTable(t, tbl, fakes)
 
-	got, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, "kube_pod_info"))
+	got, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, "kube_pod_info"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `backend "zone-b"`)
 	assert.Contains(t, err.Error(), "connection refused")
@@ -589,7 +589,7 @@ func TestQueryLabels_FixedQueryNameOnMetrics(t *testing.T) {
 
 	const n = 1000
 	for i := range n {
-		_, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, fmt.Sprintf("metric_%d", i)))
+		_, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, fmt.Sprintf("metric_%d", i)))
 		require.NoError(t, err)
 	}
 
@@ -613,7 +613,7 @@ func TestQueryLabels_NoMatchIsEmptyNotError(t *testing.T) {
 	tbl := twoZoneTable(t)
 	fakes := fakesFor(tbl)
 	r := routerForTable(t, tbl, fakes)
-	got, err := r.QueryLabels(context.Background(), labelQueryAt(FamilyKSM, "kube_pod_info"))
+	got, err := r.QueryLabels(t.Context(), labelQueryAt(FamilyKSM, "kube_pod_info"))
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }
@@ -628,7 +628,7 @@ func TestQueryLabels_DocumentedExample(t *testing.T) {
 	}
 	r := routerForTable(t, tbl, fakes)
 
-	sets, err := r.QueryLabels(context.Background(), LabelQuery{
+	sets, err := r.QueryLabels(t.Context(), LabelQuery{
 		Metric: "kube_pod_info",
 		Family: FamilyKSM,
 		AZ:     "zone-a",
@@ -658,7 +658,7 @@ func TestQueryLabels_InvalidAZLabelKeyRejected(t *testing.T) {
 	q := labelQueryAt(FamilyKSM, "kube_pod_info")
 	q.AZ = "zone-a"
 	q.LabelKeys = LabelKeys{AZ: `az",foo="bar`}
-	_, err := r.QueryLabels(context.Background(), q)
+	_, err := r.QueryLabels(t.Context(), q)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid az label key")
 	assertNoUpstreamCall(t, fakes)
@@ -683,7 +683,7 @@ func TestQueryLabels_DeduplicatesByLabelSetNotFingerprint(t *testing.T) {
 
 	q := labelQueryAt(FamilyKSM, "kube_pod_info")
 	q.Limit = 1
-	got, err := r.QueryLabels(context.Background(), q)
+	got, err := r.QueryLabels(t.Context(), q)
 	require.NoError(t, err)
 	assert.Equal(t, []map[string]string{{"pod": "checkout"}}, got)
 }

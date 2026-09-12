@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -339,7 +339,7 @@ func (s *CH) validateSchema(ctx context.Context, database string) error {
 		}
 	}
 	if len(missing) > 0 {
-		sort.Strings(missing)
+		slices.Sort(missing)
 		return fmt.Errorf("route-store schema drift: missing %s (database %q); "+
 			"the store is written by the metadata-exporter and must carry every column this reader selects",
 			strings.Join(missing, ", "), database)
@@ -528,7 +528,7 @@ func (s *CH) ClustersWithIngressIP(ctx context.Context, ip string, at time.Time)
 			clusters = append(clusters, r.cluster)
 		}
 	}
-	sort.Strings(clusters)
+	slices.Sort(clusters)
 	return clusters, nil
 }
 

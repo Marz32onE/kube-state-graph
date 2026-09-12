@@ -123,7 +123,7 @@ func TestReadTopology_RoutedFanOutReachesEveryBackend(t *testing.T) {
 	require.NoError(t, err)
 	r := routerOver(t, tbl, map[string]*routedFake{"zone-a": fa, "zone-b": fb})
 
-	_, err = ReadTopology(context.Background(), r.QuerierFor(promql.Selector{}),
+	_, err = ReadTopology(t.Context(), r.QuerierFor(promql.Selector{}),
 		time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
 	require.NoError(t, err)
 
@@ -148,7 +148,7 @@ func TestReadTopology_ZoneScopedRequestNarrowsTheFanOut(t *testing.T) {
 
 	sel := promql.Selector{AZ: []string{"zone-a"}}
 	q := r.QuerierFor(sel)
-	_, err = ReadTopology(context.Background(), q, time.Minute, time.Unix(1, 0).UTC(), Options{}, sel)
+	_, err = ReadTopology(t.Context(), q, time.Minute, time.Unix(1, 0).UTC(), Options{}, sel)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, fa.calls(promql.QPodInfo))
@@ -157,7 +157,7 @@ func TestReadTopology_ZoneScopedRequestNarrowsTheFanOut(t *testing.T) {
 	assert.Zero(t, fb.calls(promql.QVolumeLabels), "Harvest is zone-routed like kube-state-metrics")
 
 	// The service-graph family accepts no dimension, so it still reaches both.
-	_, err = q.Instant(context.Background(), string(promql.QServiceGraphTotal), "q", time.Unix(1, 0))
+	_, err = q.Instant(t.Context(), string(promql.QServiceGraphTotal), "q", time.Unix(1, 0))
 	require.NoError(t, err)
 	assert.Equal(t, 1, fa.calls(promql.QServiceGraphTotal))
 	assert.Equal(t, 1, fb.calls(promql.QServiceGraphTotal))
@@ -199,7 +199,7 @@ func TestBuild_JoinsAcrossBackends(t *testing.T) {
 	r := routerOver(t, tbl, map[string]*routedFake{"k8s": k8s, "netapp": netapp})
 
 	b := New(r, Options{}, nil, nil)
-	g, err := b.Build(context.Background(), time.Minute, time.Unix(1000, 0).UTC(), promql.Selector{})
+	g, err := b.Build(t.Context(), time.Minute, time.Unix(1000, 0).UTC(), promql.Selector{})
 	require.NoError(t, err)
 
 	// Each installation was asked only for the families it serves.
@@ -258,7 +258,7 @@ func TestBuild_RetentionClassificationSkippedWhenABackendIsDown(t *testing.T) {
 	require.NoError(t, err)
 
 	g, err := New(r, Options{}, nil, nil).
-		Build(context.Background(), time.Minute, time.Unix(1000, 0).UTC(), promql.Selector{})
+		Build(t.Context(), time.Minute, time.Unix(1000, 0).UTC(), promql.Selector{})
 	require.NoError(t, err, "an unconfirmable empty graph is an empty graph, not a retention error")
 	assert.Empty(t, g.NodesByID)
 	assert.Equal(t, 1, down.calls(promql.QUpProbe), "the probe still reaches every backend")
@@ -285,7 +285,7 @@ func TestBuild_RetentionClassificationStillFiresWhenAllBackendsAnswer(t *testing
 	require.NoError(t, err)
 
 	_, err = New(r, Options{}, nil, nil).
-		Build(context.Background(), time.Minute, time.Unix(1000, 0).UTC(), promql.Selector{})
+		Build(t.Context(), time.Minute, time.Unix(1000, 0).UTC(), promql.Selector{})
 	require.Error(t, err)
 	var be *Error
 	require.ErrorAs(t, err, &be)
@@ -352,7 +352,7 @@ func TestRoutedBuild_ZoneMatcherStillRendered(t *testing.T) {
 	require.NoError(t, err)
 
 	sel := promql.Selector{AZ: []string{"zone-a"}}
-	_, err = ReadTopology(context.Background(), r.QuerierFor(sel),
+	_, err = ReadTopology(t.Context(), r.QuerierFor(sel),
 		time.Minute, time.Unix(1, 0).UTC(), Options{}, sel)
 	require.NoError(t, err)
 
@@ -412,7 +412,7 @@ func TestRoutedBuild_HarvestLegsAreUnfilteredOnZoneAndCatchAllBackends(t *testin
 	require.NoError(t, err)
 
 	sel := promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}}
-	_, err = ReadTopology(context.Background(), r.QuerierFor(sel),
+	_, err = ReadTopology(t.Context(), r.QuerierFor(sel),
 		time.Minute, time.Unix(1, 0).UTC(), Options{}, sel)
 	require.NoError(t, err)
 
@@ -458,7 +458,7 @@ func TestRoutedBuild_NamespaceFilterDoesNotRoute(t *testing.T) {
 	require.NoError(t, err)
 
 	sel := promql.Selector{Namespace: []string{"shop"}, Cluster: []string{"alpha"}, Env: []string{"prod"}}
-	_, err = ReadTopology(context.Background(), r.QuerierFor(sel),
+	_, err = ReadTopology(t.Context(), r.QuerierFor(sel),
 		time.Minute, time.Unix(1, 0).UTC(), Options{}, sel)
 	require.NoError(t, err)
 
@@ -510,7 +510,7 @@ func TestRoutedBuild_OptionalLegDegradesOnBackendError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tp, err := ReadTopology(context.Background(), r.QuerierFor(promql.Selector{}),
+	tp, err := ReadTopology(t.Context(), r.QuerierFor(promql.Selector{}),
 		time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
 	require.NoError(t, err, "an optional leg's backend failure must not fail the build")
 	assert.NotNil(t, tp)
@@ -536,7 +536,7 @@ func TestRoutedBuild_RequiredLegFailsOnBackendError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = ReadTopology(context.Background(), r.QuerierFor(promql.Selector{}),
+	_, err = ReadTopology(t.Context(), r.QuerierFor(promql.Selector{}),
 		time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `backend "zone-b"`)
@@ -598,7 +598,7 @@ func TestRoutedBuild_UnfilteredHarvestMergesAcrossBackends(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tp, err := ReadTopology(context.Background(), r.QuerierFor(promql.Selector{}),
+	tp, err := ReadTopology(t.Context(), r.QuerierFor(promql.Selector{}),
 		time.Minute, time.Unix(1, 0).UTC(), Options{}, promql.Selector{})
 	require.NoError(t, err)
 

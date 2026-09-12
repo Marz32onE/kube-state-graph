@@ -38,7 +38,7 @@ func TestInit_EnabledByEndpoint(t *testing.T) {
 	providers, err := Init(t.Context(), "test")
 	require.NoError(t, err)
 	defer func() {
-		shutdownCtx, cancel := context.WithCancel(context.Background())
+		shutdownCtx, cancel := context.WithCancel(t.Context())
 		cancel()
 		_ = providers.Shutdown(shutdownCtx)
 	}()
@@ -58,7 +58,7 @@ func TestSlogHandler_TraceCorrelation(t *testing.T) {
 
 	tracer := otel.Tracer("test")
 	// noop tracer's span context is not valid; but the handler must not crash.
-	ctx, span := tracer.Start(context.Background(), "op")
+	ctx, span := tracer.Start(t.Context(), "op")
 	logger.InfoContext(ctx, "no-span-correlation")
 	span.End()
 
@@ -94,10 +94,10 @@ func TestInit_ErrorPathReturnsCallableShutdown(t *testing.T) {
 	providers, err := Init(t.Context(), "test")
 	require.Error(t, err, "malformed OTEL_RESOURCE_ATTRIBUTES must surface an Init error")
 	require.NotNil(t, providers.Shutdown, "error-path Providers must carry a callable Shutdown")
-	require.NoError(t, providers.Shutdown(context.Background()))
+	require.NoError(t, providers.Shutdown(t.Context()))
 
 	// Also safe with an already-cancelled context (mirrors SIGTERM teardown).
-	cancelled, cancel := context.WithCancel(context.Background())
+	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
 	require.NoError(t, providers.Shutdown(cancelled))
 }

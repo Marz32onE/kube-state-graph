@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -232,6 +232,6 @@ func backendNames(bs []Backend) []string {
 	for i, b := range bs {
 		out[i] = b.Name()
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

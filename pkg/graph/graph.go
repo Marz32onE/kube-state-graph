@@ -2,7 +2,7 @@ package graph
 
 import (
 	"log/slog"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -117,7 +117,7 @@ func (g *Graph) ClusterNames() []string {
 	for c := range seen {
 		out = append(out, c)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

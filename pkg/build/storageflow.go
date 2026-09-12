@@ -1,7 +1,8 @@
 package build
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	"github.com/akira-core/kube-state-graph/pkg/graph"
 )
@@ -139,7 +140,7 @@ func storageChains(topology Topology) []storageChain {
 		}
 		out = append(out, c)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].pvcID < out[j].pvcID })
+	slices.SortFunc(out, func(a, b storageChain) int { return cmp.Compare(a.pvcID, b.pvcID) })
 	return out
 }
 
@@ -174,7 +175,7 @@ func storageFlowEdges(chains []storageChain, bindings []PodPVCBinding, nodeOf ma
 		mountersOf[b.PVCID] = append(mountersOf[b.PVCID], b.PodID)
 	}
 	for pvcID := range mountersOf {
-		sort.Strings(mountersOf[pvcID])
+		slices.Sort(mountersOf[pvcID])
 	}
 
 	var out []*graph.Edge

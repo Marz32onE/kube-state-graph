@@ -1,7 +1,8 @@
 package graph
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 )
 
@@ -243,11 +244,8 @@ func SortAlerts(alerts []Alert) []Alert {
 	if len(alerts) == 0 {
 		return nil
 	}
-	sort.SliceStable(alerts, func(i, j int) bool {
-		if alerts[i].Name != alerts[j].Name {
-			return alerts[i].Name < alerts[j].Name
-		}
-		return alerts[i].Severity < alerts[j].Severity
+	slices.SortStableFunc(alerts, func(a, b Alert) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Severity, b.Severity))
 	})
 	out := alerts[:0]
 	type key struct{ name, severity string }
@@ -538,9 +536,7 @@ func (n *NetAppSVMNode) isGraphNode()              {}
 
 // SortNodes orders nodes deterministically by ID for stable output.
 func SortNodes(nodes []GraphNode) {
-	sort.SliceStable(nodes, func(i, j int) bool {
-		return nodes[i].ID() < nodes[j].ID()
-	})
+	slices.SortStableFunc(nodes, func(a, b GraphNode) int { return cmp.Compare(a.ID(), b.ID()) })
 }
 
 // PodID returns the cluster-scoped pod ID.

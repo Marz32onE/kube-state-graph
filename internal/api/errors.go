@@ -89,8 +89,7 @@ func (s *Server) mapBuildError(c *gin.Context, err error) {
 // ("build timeout", "cluster discovery timed out", …) — never the cause
 // chain, whose url.Error text embeds the internal upstream URL.
 func timeoutMessage(err error) string {
-	var be *build.Error
-	if errors.As(err, &be) && be.Message != "" {
+	if be, ok := errors.AsType[*build.Error](err); ok && be.Message != "" {
 		return be.Message
 	}
 	return "request timed out"

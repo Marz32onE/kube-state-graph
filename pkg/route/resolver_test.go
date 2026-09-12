@@ -1,7 +1,6 @@
 package route
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -73,7 +72,7 @@ func TestResolveRoute_NoIPsMissesWithoutStoreCall(t *testing.T) {
 	st := storemocks.NewMockStore(t) // no expectations: any call fails the test
 	r := NewResolver(st, matchcheck.Runner{})
 
-	dest, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01"))
+	dest, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteNoIngress, outcome)
 	assert.Equal(t, build.RouteDestination{}, dest)
@@ -90,7 +89,7 @@ func TestResolveRoute_SelectionMissShortCircuitsBeforeWindowLoad(t *testing.T) {
 		Return([]string{"staging-01"}, nil).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	_, outcome, err := r.ResolveRoute(context.Background(),
+	_, outcome, err := r.ResolveRoute(t.Context(),
 		testRequest("prod-01", "198.51.100.7", "198.51.100.8"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteAmbiguousIngress, outcome)
@@ -103,7 +102,7 @@ func TestResolveRoute_NoIngressAnywhere(t *testing.T) {
 		Return(nil, nil).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	_, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01", "198.51.100.7"))
+	_, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01", "198.51.100.7"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteNoIngress, outcome)
 }
@@ -122,7 +121,7 @@ func TestResolveRoute_LockedClusterScopesSnapshotLoads(t *testing.T) {
 	}
 	r := NewResolver(st, matchcheck.Runner{})
 
-	_, outcome, err := r.ResolveRoute(context.Background(),
+	_, outcome, err := r.ResolveRoute(t.Context(),
 		testRequest("prod-01", "198.51.100.7", "198.51.100.8"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteNoGateway, outcome,
@@ -193,7 +192,7 @@ func TestLoadSnapshot_DedupsOverlappingPerIPLoads(t *testing.T) {
 	}
 	r := NewResolver(st, matchcheck.Runner{})
 
-	got, err := r.loadSnapshot(context.Background(), "prod-01",
+	got, err := r.loadSnapshot(t.Context(), "prod-01",
 		testRequest("prod-01", "198.51.100.7", "2001:db8::7"))
 	require.NoError(t, err)
 	assert.Len(t, got.Services, 1, "same Service version loaded via two IPs must appear once")
@@ -219,7 +218,7 @@ func TestLoadSnapshot_KeepsDistinctVersionsOfOneResource(t *testing.T) {
 		Return(store.TrafficSnapshot{Gateways: []store.GatewayRow{older, newer}}, nil).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	got, err := r.loadSnapshot(context.Background(), "prod-01", testRequest("prod-01", "198.51.100.7"))
+	got, err := r.loadSnapshot(t.Context(), "prod-01", testRequest("prod-01", "198.51.100.7"))
 	require.NoError(t, err)
 	assert.Len(t, got.Gateways, 2, "two version slots of one gateway are not duplicates")
 }
@@ -280,7 +279,7 @@ func TestResolveRoute_HostNotServedByAnyServerOnPort(t *testing.T) {
 
 	req := testRequest("prod-01", "198.51.100.7")
 	req.Host = "other.example.com"
-	_, outcome, err := r.ResolveRoute(context.Background(), req)
+	_, outcome, err := r.ResolveRoute(t.Context(), req)
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteNoServerForHost, outcome)
 }
@@ -330,7 +329,7 @@ func TestResolveRoute_CrossNamespaceGatewayNotACandidate(t *testing.T) {
 		Return(snap, nil).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	dest, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01", "198.51.100.7"))
+	dest, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01", "198.51.100.7"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteIngressLBService, outcome,
 		"cross-namespace gateway must not be a candidate; the no-gateway miss feeds the LB fallback")
@@ -396,7 +395,7 @@ func TestResolveRoute_UsesVersionLiveAtInstant(t *testing.T) {
 		Return(snap, nil).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	_, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01", "198.51.100.7"))
+	_, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01", "198.51.100.7"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteNoServerForHost, outcome,
 		"the version live at the instant decides; the superseded one must be invisible")
@@ -436,7 +435,7 @@ func TestResolveRoute_NginxIngressFallsBackToLBService(t *testing.T) {
 		Return(nginxSnapshot(), nil).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	dest, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01", "198.51.100.7"))
+	dest, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01", "198.51.100.7"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteIngressLBService, outcome)
 	assert.Equal(t, build.RouteDestination{
@@ -460,7 +459,7 @@ func TestResolveRoute_AmbiguousLBServiceOnOneIP(t *testing.T) {
 		Return(w, nil).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	dest, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01", "198.51.100.7"))
+	dest, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01", "198.51.100.7"))
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteAmbiguousIngressService, outcome)
 	assert.Equal(t, build.RouteDestination{}, dest)
@@ -475,7 +474,7 @@ func TestResolveRoute_ProbeErrorPropagates(t *testing.T) {
 		Return(nil, probeErr).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	_, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01", "198.51.100.7"))
+	_, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01", "198.51.100.7"))
 	require.ErrorIs(t, err, probeErr)
 	// An infrastructure failure must not also claim a routing outcome —
 	// RouteNoGateway is the ingress-LB-fallback gate, so a store outage would
@@ -493,7 +492,7 @@ func TestResolveRoute_SnapshotLoadErrorCarriesNoOutcome(t *testing.T) {
 		Return(store.TrafficSnapshot{}, loadErr).Once()
 	r := NewResolver(st, matchcheck.Runner{})
 
-	_, outcome, err := r.ResolveRoute(context.Background(), testRequest("prod-01", "198.51.100.7"))
+	_, outcome, err := r.ResolveRoute(t.Context(), testRequest("prod-01", "198.51.100.7"))
 	require.ErrorIs(t, err, loadErr)
 	assert.Empty(t, outcome)
 }
@@ -524,7 +523,7 @@ func TestBuildScoped_ProbeMemoised(t *testing.T) {
 	req2.Host = "other.example.com"
 
 	for _, req := range []build.RouteRequest{req1, req2} {
-		_, outcome, err := scope.ResolveRoute(context.Background(), req)
+		_, outcome, err := scope.ResolveRoute(t.Context(), req)
 		require.NoError(t, err)
 		assert.Equal(t, build.RouteNoIngress, outcome)
 	}
@@ -546,10 +545,10 @@ func TestBuildScoped_ProbeErrorNotCached(t *testing.T) {
 
 	req := testRequest("prod-01", "198.51.100.7")
 
-	_, _, err := scope.ResolveRoute(context.Background(), req)
+	_, _, err := scope.ResolveRoute(t.Context(), req)
 	require.ErrorIs(t, err, probeErr)
 
-	_, outcome, err := scope.ResolveRoute(context.Background(), req)
+	_, outcome, err := scope.ResolveRoute(t.Context(), req)
 	require.NoError(t, err)
 	assert.Equal(t, build.RouteNoGateway, outcome)
 }

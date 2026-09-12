@@ -58,7 +58,7 @@ func TestClient_SpanCarriesBackendName(t *testing.T) {
 	c, err := New(closedPortURL, nil, WithBackendName("zone-b"))
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	_, qerr := c.Instant(ctx, string(QPodInfo), "kube_pod_info", time.Unix(0, 0))
 	require.Error(t, qerr, "the port is closed; only the span is under test")
@@ -90,7 +90,7 @@ func TestClient_SpanOmitsBackendWhenUnrouted(t *testing.T) {
 	c, err := New(closedPortURL, nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	_, qerr := c.Instant(ctx, string(QPodInfo), "kube_pod_info", time.Unix(0, 0))
 	require.Error(t, qerr)

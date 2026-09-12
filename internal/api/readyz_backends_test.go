@@ -168,7 +168,7 @@ func TestReadyz_ProbesRunConcurrently(t *testing.T) {
 	require.NoError(t, err)
 
 	start := time.Now()
-	require.NoError(t, r.ProbeAll(context.Background(), time.Unix(0, 0)))
+	require.NoError(t, r.ProbeAll(t.Context(), time.Unix(0, 0)))
 	elapsed := time.Since(start)
 
 	assert.Less(t, elapsed, backends*80*time.Millisecond/2,

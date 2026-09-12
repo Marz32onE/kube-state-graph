@@ -58,12 +58,12 @@ func TestShutdown_FlushesPendingSpans(t *testing.T) {
 
 	const want = 3
 	for range want {
-		_, span := tp.Tracer("test").Start(context.Background(), "shutdown-flush")
+		_, span := tp.Tracer("test").Start(t.Context(), "shutdown-flush")
 		span.End()
 	}
 	require.Zero(t, exporter.count.Load(), "batcher must not auto-flush before Shutdown with hour-long batch timeout")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	require.NoError(t, providers.Shutdown(ctx))
 
@@ -82,7 +82,7 @@ func TestShutdown_NoopWhenDisabled(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, providers.Enabled)
 
-	cancelled, cancel := context.WithCancel(context.Background())
+	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
 	assert.NoError(t, providers.Shutdown(cancelled))
 }
@@ -97,7 +97,7 @@ func TestShutdown_ContextDeadlineRespected(t *testing.T) {
 	otel.SetTracerProvider(tp)
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 
-	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-1*time.Second))
+	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-1*time.Second))
 	defer cancel()
 
 	// Shutdown returns once batches are exported OR the context expires.

@@ -1,7 +1,8 @@
 package graph
 
 import (
-	"sort"
+	"maps"
+	"slices"
 )
 
 // Scope describes the projection filter applied at response time, over the
@@ -62,10 +63,10 @@ func stringSet(values []string) map[string]struct{} {
 
 // SortedKeys returns keys of a map[string]struct{} in deterministic order.
 func SortedKeys(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	// Collected into a non-nil slice rather than slices.Sorted, which returns
+	// nil for an empty map: an exported result may be JSON-encoded, where nil
+	// renders as null instead of [].
+	out := slices.AppendSeq(make([]string, 0, len(m)), maps.Keys(m))
+	slices.Sort(out)
 	return out
 }

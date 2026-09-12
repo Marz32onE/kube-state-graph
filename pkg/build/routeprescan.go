@@ -1,10 +1,12 @@
 package build
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -389,18 +391,13 @@ func collectRouteQueriesWith(vec model.Vector, r *sgResolver) []routeKey {
 		}
 	}
 	// Deterministic resolution order (D6): sorted, not vector-arrival order.
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.callerCluster != b.callerCluster {
-			return a.callerCluster < b.callerCluster
-		}
-		if a.host != b.host {
-			return a.host < b.host
-		}
-		if a.port != b.port {
-			return a.port < b.port
-		}
-		return a.ips < b.ips
+	slices.SortFunc(keys, func(a, b routeKey) int {
+		return cmp.Or(
+			cmp.Compare(a.callerCluster, b.callerCluster),
+			cmp.Compare(a.host, b.host),
+			cmp.Compare(a.port, b.port),
+			cmp.Compare(a.ips, b.ips),
+		)
 	})
 	return keys
 }
@@ -422,6 +419,11 @@ const (
 	routeResolveConcurrency = 4
 	maxRouteKeys            = 512
 )
+
+// errRouteCallTimeout is the cause stamped on each per-key resolution context,
+// so a failed call's debug line tells its own timeout apart from the build's
+// deadline, whose cause propagates down to the per-call context.
+var errRouteCallTimeout = errors.New("route resolution exceeded its per-call timeout")
 
 // resolveRouteQueries answers the prescan's keys against the injected
 // RouteResolver with bounded concurrency, each call bounded by perCallTimeout
@@ -471,15 +473,18 @@ func resolveRouteQueries(ctx context.Context, resolver RouteResolver, perCallTim
 		g.Go(func() error {
 			callCtx, cancel := ctx, context.CancelFunc(func() {})
 			if perCallTimeout > 0 {
-				callCtx, cancel = context.WithTimeout(ctx, perCallTimeout)
+				callCtx, cancel = context.WithTimeoutCause(ctx, perCallTimeout, errRouteCallTimeout)
 			}
 			dest, outcome, err := resolver.ResolveRoute(callCtx, k.request(at))
+			// Read before cancel(), which would otherwise stamp context.Canceled.
+			cause := context.Cause(callCtx)
 			cancel()
 
 			entry, record := routeEntry{dest: dest, outcome: outcome}, true
 			if err != nil {
 				slog.Debug("route-engine resolution errored (endpoint degrades to external)",
-					"caller_cluster", k.callerCluster, "host", k.host, "port", k.port, "ips", k.ips, "error", err)
+					"caller_cluster", k.callerCluster, "host", k.host, "port", k.port, "ips", k.ips,
+					"error", err, "cause", cause)
 				// A build-deadline cancellation is not an engine failure:
 				// record nothing, so the endpoint keeps the pre-change external
 				// reason a key the loop never reached would have had.

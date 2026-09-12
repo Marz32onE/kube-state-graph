@@ -123,7 +123,7 @@ func TestFanout_ResponseOrderIndependentOfBackendLatency(t *testing.T) {
 			delay: delayB,
 		}
 		r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
-		got, err := r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+		got, err := r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 		require.NoError(t, err)
 		return got.String()
 	}
@@ -144,7 +144,7 @@ func TestFanout_DuplicateWinnerIndependentOfArrivalOrder(t *testing.T) {
 		fa := &fakeBackend{vec: model.Vector{sample("kube_pod_info", dup, 7)}, delay: delayA}
 		fb := &fakeBackend{vec: model.Vector{sample("kube_pod_info", dup, 9)}, delay: delayB}
 		r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
-		got, err := r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+		got, err := r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 		require.NoError(t, err)
 		return got
 	}
@@ -200,7 +200,7 @@ func TestFanout_IdenticalQueryStringToEveryBackend(t *testing.T) {
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
 	const rendered = `last_over_time(kube_pod_info[5m])`
-	got, err := r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), rendered, time.Unix(0, 0))
+	got, err := r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), rendered, time.Unix(0, 0))
 	require.NoError(t, err)
 	assert.Len(t, got, 2, "both backends contribute")
 
@@ -217,7 +217,7 @@ func TestFanout_DeduplicatesAcrossBackends(t *testing.T) {
 	fb := &fakeBackend{vec: model.Vector{sample("kube_pod_info", shared, 1)}}
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
-	got, err := r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	got, err := r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 }
@@ -228,7 +228,7 @@ func TestFanout_ZoneSelectsOneBackend(t *testing.T) {
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
 	_, err := r.QuerierFor(Selector{AZ: []string{"zone-a"}}).
-		Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+		Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 
 	callsA, _ := fa.seen()
@@ -246,7 +246,7 @@ func TestFanout_ServiceGraphIgnoresZone(t *testing.T) {
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
 	_, err := r.QuerierFor(Selector{AZ: []string{"zone-a"}}).
-		Instant(context.Background(), string(QServiceGraphTotal), "q", time.Unix(0, 0))
+		Instant(t.Context(), string(QServiceGraphTotal), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 
 	callsA, _ := fa.seen()
@@ -260,7 +260,7 @@ func TestFanout_BackendErrorFailsTheQueryAndNamesIt(t *testing.T) {
 	fb := &fakeBackend{err: errors.New("connection refused")}
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
-	got, err := r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	got, err := r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `backend "zone-b"`)
 	assert.Contains(t, err.Error(), "connection refused")
@@ -273,7 +273,7 @@ func TestFanout_UnmatchedZoneReturnsEmptyWithoutQuerying(t *testing.T) {
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
 	got, err := r.QuerierFor(Selector{AZ: []string{"zone-z"}}).
-		Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+		Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err, "an empty filtered result is a legitimate empty graph, not an error")
 	assert.Empty(t, got)
 
@@ -287,7 +287,7 @@ func TestFanout_UnknownQueryNameFailsLoudly(t *testing.T) {
 	r := routerWithFakes(t, twoZoneTable(t),
 		map[string]*fakeBackend{"zone-a": {}, "zone-b": {}}, nil)
 
-	_, err := r.QuerierFor(Selector{}).Instant(context.Background(), "not_a_metric", "q", time.Unix(0, 0))
+	_, err := r.QuerierFor(Selector{}).Instant(t.Context(), "not_a_metric", "q", time.Unix(0, 0))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no upstream family declared")
 }
@@ -323,7 +323,7 @@ func TestRouterMetrics_PlainMetricsIsANoop(t *testing.T) {
 		map[string]*fakeBackend{"zone-a": {}, "zone-b": fb}, m)
 
 	// Must not panic, and must record nothing routing-specific.
-	_, err := r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	_, err := r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.Error(t, err)
 	assert.Zero(t, m.failures, "the fan-out records backend failures on the optional interface only")
 }
@@ -336,7 +336,7 @@ func TestRouterMetrics_UpgradeRecorded(t *testing.T) {
 
 	assert.Equal(t, []string{"zone-a", "zone-b"}, m.backends, "the backends are recorded at construction")
 
-	_, err := r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	_, err := r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.Error(t, err)
 	assert.Equal(t, []string{"zone-b"}, m.backendFails)
 }

@@ -1,9 +1,10 @@
 package promql
 
 import (
+	"cmp"
 	"fmt"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -31,8 +32,8 @@ func NewBackend(name, rawURL string, families []Family, zones []string, username
 	return Backend{
 		name:     name,
 		url:      rawURL,
-		families: append([]Family(nil), families...),
-		zones:    append([]string(nil), zones...),
+		families: slices.Clone(families),
+		zones:    slices.Clone(zones),
 		username: username,
 		password: password,
 	}
@@ -46,11 +47,11 @@ func (b Backend) Name() string { return b.name }
 func (b Backend) URL() string { return b.url }
 
 // Families returns the families this backend serves.
-func (b Backend) Families() []Family { return append([]Family(nil), b.families...) }
+func (b Backend) Families() []Family { return slices.Clone(b.families) }
 
 // Zones returns the availability zones this backend holds. An empty result
 // means EVERY zone — a catch-all backend.
-func (b Backend) Zones() []string { return append([]string(nil), b.zones...) }
+func (b Backend) Zones() []string { return slices.Clone(b.zones) }
 
 // Credentials returns the resolved basic-auth pair. Both empty means the
 // backend issues unauthenticated requests.
@@ -180,7 +181,7 @@ func NewTable(backends []Backend) (*Table, error) {
 		}
 	}
 
-	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	slices.SortFunc(out, func(a, b Backend) int { return cmp.Compare(a.name, b.name) })
 	return &Table{backends: out}, nil
 }
 
@@ -205,8 +206,8 @@ func validateBackendURL(name, raw string) error {
 // tables differing only in declaration order are indistinguishable — the same
 // property Selector.render depends on for query determinism.
 func normaliseBackend(b Backend) Backend {
-	fams := append([]Family(nil), b.families...)
-	sort.Slice(fams, func(i, j int) bool { return fams[i] < fams[j] })
+	fams := slices.Clone(b.families)
+	slices.Sort(fams)
 	b.families = fams
 
 	seen := make(map[string]struct{}, len(b.zones))
@@ -218,7 +219,7 @@ func normaliseBackend(b Backend) Backend {
 		seen[z] = struct{}{}
 		zones = append(zones, z)
 	}
-	sort.Strings(zones)
+	slices.Sort(zones)
 	b.zones = zones
 	return b
 }
@@ -229,7 +230,7 @@ func (t *Table) Backends() []Backend {
 	if t == nil {
 		return nil
 	}
-	return append([]Backend(nil), t.backends...)
+	return slices.Clone(t.backends)
 }
 
 // Len reports how many backends the table holds. It is what the

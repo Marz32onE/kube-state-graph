@@ -1,9 +1,10 @@
 package build
 
 import (
+	"cmp"
 	"context"
 	"errors"
-	"sort"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -52,15 +53,12 @@ func (f *fakeRouteResolver) requests() []RouteRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := append([]RouteRequest(nil), f.seen...)
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.CallerCluster != b.CallerCluster {
-			return a.CallerCluster < b.CallerCluster
-		}
-		if a.Host != b.Host {
-			return a.Host < b.Host
-		}
-		return a.Port < b.Port
+	slices.SortFunc(out, func(a, b RouteRequest) int {
+		return cmp.Or(
+			cmp.Compare(a.CallerCluster, b.CallerCluster),
+			cmp.Compare(a.Host, b.Host),
+			cmp.Compare(a.Port, b.Port),
+		)
 	})
 	return out
 }
@@ -98,7 +96,7 @@ func TestResolveRouteQueries_UpgradesToBuildScoped(t *testing.T) {
 	}
 	at := time.Unix(1_700_000_300, 0).UTC()
 
-	idx := resolveRouteQueries(context.Background(), res, 0, keys, at)
+	idx := resolveRouteQueries(t.Context(), res, 0, keys, at)
 
 	require.Len(t, idx, len(keys))
 	assert.Equal(t, 1, res.scopedCalls, "exactly one scope minted per build")
@@ -151,7 +149,7 @@ func TestResolveRouteQueries_ConcurrentIndexMatchesSerial(t *testing.T) {
 		close(release)
 	}()
 
-	got := resolveRouteQueries(context.Background(),
+	got := resolveRouteQueries(t.Context(),
 		&fakeRouteResolver{fn: gate}, 0, keys, at)
 
 	assert.Equal(t, want, got)
@@ -172,7 +170,7 @@ func TestResolveRouteQueries_CapsKeySet(t *testing.T) {
 		return RouteDestination{}, RouteNoIngress, nil
 	}}
 
-	idx := resolveRouteQueries(context.Background(), resolver, 0, keys,
+	idx := resolveRouteQueries(t.Context(), resolver, 0, keys,
 		time.Unix(1_700_000_300, 0).UTC())
 
 	assert.Len(t, idx, maxRouteKeys)
@@ -614,7 +612,7 @@ func TestReadServiceGraph_ResolverErrorDegradesToExternal(t *testing.T) {
 		return RouteDestination{}, RouteNoGateway, errors.New("store unreachable")
 	}}
 
-	res, err := ReadServiceGraph(context.Background(), q,
+	res, err := ReadServiceGraph(t.Context(), q,
 		5*time.Minute, end, sampleTopologyWithServices(), resolver, time.Second, false)
 	require.NoError(t, err, "a resolver error must never fail the read")
 	require.Len(t, resolver.requests(), 1, "the prescan collected the endpoint")
@@ -635,7 +633,7 @@ func TestReadServiceGraph_ResolverHitProducesServiceNode(t *testing.T) {
 		return RouteDestination{Cluster: "cluster-alpha", Namespace: "shop", Service: "payments", Port: 8080}, RouteHit, nil
 	}}
 
-	res, err := ReadServiceGraph(context.Background(), q,
+	res, err := ReadServiceGraph(t.Context(), q,
 		window, end, sampleTopologyWithServices(), resolver, time.Second, false)
 	require.NoError(t, err)
 	require.Len(t, resolver.requests(), 1)
@@ -669,7 +667,7 @@ func TestReadServiceGraph_NoDNSAnswersNeverConsultsResolver(t *testing.T) {
 		return RouteDestination{}, RouteNoGateway, nil
 	}}
 
-	res, err := ReadServiceGraph(context.Background(), q,
+	res, err := ReadServiceGraph(t.Context(), q,
 		5*time.Minute, end, sampleTopologyWithServices(), resolver, time.Second, false)
 	require.NoError(t, err)
 	assert.Empty(t, resolver.requests(), "no engine call for an IP-less endpoint")
@@ -686,7 +684,7 @@ func TestReadServiceGraph_NilResolverNeverPrescans(t *testing.T) {
 	q := promqlmocks.NewMockQuerier(t)
 	expectServiceGraphQueries(q, end, vec)
 
-	res, err := ReadServiceGraph(context.Background(), q,
+	res, err := ReadServiceGraph(t.Context(), q,
 		5*time.Minute, end, sampleTopologyWithServices(), nil, 0, false)
 	require.NoError(t, err)
 	require.Len(t, res.ExternalNodes, 1, "feature off: pre-change external fallback")

@@ -165,8 +165,7 @@ func parseActuals(out []byte, n int) ([]string, error) {
 			}
 			continue
 		}
-		if i := bytes.Index(s, actualMarker); i >= 0 && cur >= 0 {
-			rest := s[i+len(actualMarker):]
+		if _, rest, ok := bytes.Cut(s, actualMarker); ok && cur >= 0 {
 			if j := bytes.IndexByte(rest, ']'); j >= 0 {
 				if !filled[cur] {
 					res[cur] = string(rest[:j])

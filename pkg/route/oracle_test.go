@@ -21,7 +21,6 @@
 package route
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -94,7 +93,8 @@ func oSvc(fqdn, ns string) *model.Service {
 // oScopedFor builds gateway i's scoped translate input: its Gateway CR + vsPerGW
 // VirtualServices + the 4*vsPerGW backend Services those VS route to.
 func oScopedFor(i, vsPerGW int) translate.ScopedInput {
-	cfgs := []config.Config{{
+	cfgs := make([]config.Config, 0, 1+vsPerGW)
+	cfgs = append(cfgs, config.Config{
 		Meta: config.Meta{GroupVersionKind: gvk.Gateway, Name: oGwName(i), Namespace: oracleGwNS},
 		Spec: &networking.Gateway{
 			Selector: map[string]string{"istio": oGwName(i)},
@@ -103,9 +103,9 @@ func oScopedFor(i, vsPerGW int) translate.ScopedInput {
 				Hosts: []string{oGwHostPat(i)},
 			}},
 		},
-	}}
-	var svcs []*model.Service
-	for j := 0; j < vsPerGW; j++ {
+	})
+	svcs := make([]*model.Service, 0, 4*vsPerGW)
+	for j := range vsPerGW {
 		cfgs = append(cfgs, config.Config{
 			Meta: config.Meta{GroupVersionKind: gvk.VirtualService, Name: "vs-" + pad3(i) + "-" + pad2(j), Namespace: oVsNS(i)},
 			Spec: &networking.VirtualService{
@@ -147,7 +147,7 @@ func oCases(i, vsPerGW int) []oracleCase {
 		"default": func(j int) string { return fmt.Sprintf("/misc/%d", j) },
 	}
 	out := make([]oracleCase, 0, vsPerGW)
-	for j := 0; j < vsPerGW; j++ {
+	for j := range vsPerGW {
 		rule := rules[(i+j)%len(rules)]
 		out = append(out, oracleCase{
 			host:     oVsHost(i, j),
@@ -179,16 +179,16 @@ func TestOracle(t *testing.T) {
 	// gwresolve over the whole corpus + a broad overlapping wildcard, so
 	// most-specific disambiguation is exercised on every case.
 	gws := make([]gwresolve.Gateway, 0, numGW+1)
-	for i := 0; i < numGW; i++ {
+	for i := range numGW {
 		gws = append(gws, gwresolve.Gateway{Name: oGwName(i), Hosts: []string{oGwHostPat(i)}})
 	}
 	gws = append(gws, gwresolve.Gateway{Name: "gw-broad-all", Hosts: []string{"*.example.com"}})
 	resolver := gwresolve.New(gws)
 
 	tr := translate.NewTranslator()
-	ctx := context.Background()
+	ctx := t.Context()
 	mismatches := 0
-	for i := 0; i < numGW; i++ {
+	for i := range numGW {
 		cases := oCases(i, vsPerGW)
 
 		// Every case's host must resolve to ITS gateway (not the broad one).

@@ -1,7 +1,6 @@
 package promql
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -66,7 +65,7 @@ func TestRouter_InstantRoutesAsUnfiltered(t *testing.T) {
 	fb := &fakeBackend{}
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
-	_, err := r.Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	_, err := r.Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 	callsA, _ := fa.seen()
 	callsB, _ := fb.seen()
@@ -81,7 +80,7 @@ func TestRouter_ProbeReachesEveryBackendAndNamesTheFailure(t *testing.T) {
 	fb := &fakeBackend{err: errors.New("connection refused")}
 	r := routerWithFakes(t, twoZoneTable(t), map[string]*fakeBackend{"zone-a": fa, "zone-b": fb}, nil)
 
-	_, err := r.Instant(context.Background(), string(QUpProbe), "up", time.Unix(0, 0))
+	_, err := r.Instant(t.Context(), string(QUpProbe), "up", time.Unix(0, 0))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `backend "zone-b"`)
 
@@ -107,7 +106,7 @@ func TestRouter_SwapChangesRouting(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, r.Swap(next))
 
-	_, err = r.Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	_, err = r.Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 	callsB, _ := fakes["b"].seen()
 	assert.Equal(t, 1, callsB, "the new backend serves after the swap")
@@ -136,7 +135,7 @@ func TestRouter_RejectedSwapKeepsPreviousTable(t *testing.T) {
 	require.Error(t, r.Swap(next))
 	assert.Equal(t, 1, r.Table().Len(), "the previous table still serves")
 
-	_, err = r.Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	_, err = r.Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 	calls, _ := fa.seen()
 	assert.Equal(t, 1, calls)
@@ -255,14 +254,14 @@ func TestRouter_BoundQuerierIgnoresLaterSwap(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, r.Swap(next))
 
-	_, err = bound.Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	_, err = bound.Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 
 	callsB, _ := fakes["b"].seen()
 	assert.Zero(t, callsB, "a build in flight keeps the table it started with")
 
 	// A build starting after the swap does see the new backend.
-	_, err = r.QuerierFor(Selector{}).Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
+	_, err = r.QuerierFor(Selector{}).Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
 	require.NoError(t, err)
 	callsB, _ = fakes["b"].seen()
 	assert.Equal(t, 1, callsB)
@@ -276,15 +275,12 @@ func TestRouter_ConcurrentSwapAndDispatch(t *testing.T) {
 	tables := []*Table{twoZoneTable(t), twoZoneTable(t)}
 	var wg sync.WaitGroup
 	for i := range 8 {
-		wg.Add(2)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = r.Swap(tables[i%len(tables)])
-		}(i)
-		go func() {
-			defer wg.Done()
-			_, _ = r.Instant(context.Background(), string(QPodInfo), "q", time.Unix(0, 0))
-		}()
+		})
+		wg.Go(func() {
+			_, _ = r.Instant(t.Context(), string(QPodInfo), "q", time.Unix(0, 0))
+		})
 	}
 	wg.Wait()
 	assert.Equal(t, 2, r.Table().Len())

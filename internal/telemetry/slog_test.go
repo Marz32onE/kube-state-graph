@@ -28,7 +28,7 @@ func TestSpanCorrelatedHandler_RecordsTraceID(t *testing.T) {
 	logger := slog.New(handler)
 
 	tracer := tp.Tracer("test")
-	ctx, span := tracer.Start(context.Background(), "op")
+	ctx, span := tracer.Start(t.Context(), "op")
 	logger.InfoContext(ctx, "with-span")
 	wantTraceID := span.SpanContext().TraceID().String()
 	wantSpanID := span.SpanContext().SpanID().String()
@@ -47,7 +47,7 @@ func TestSpanCorrelatedHandler_NoSpanContext(t *testing.T) {
 	local := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	logger := slog.New(&spanCorrelatedHandler{inner: local})
 
-	logger.InfoContext(context.Background(), "no-span")
+	logger.InfoContext(t.Context(), "no-span")
 
 	var line map[string]any
 	require.NoError(t, json.NewDecoder(&buf).Decode(&line))

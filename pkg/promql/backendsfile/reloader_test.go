@@ -240,7 +240,7 @@ func TestStart_RunsUntilTheContextIsCancelled(t *testing.T) {
 	m := &recordingMetrics{}
 	r, _ := newTestReloader(t, path, m, quietLogger())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	armed := Start(ctx, r, ReloaderOptions{Path: path, Lookup: noEnv(), Logger: quietLogger(), Metrics: m}, 5*time.Millisecond)
 	require.True(t, armed)
 
@@ -259,7 +259,7 @@ func TestStart_NotArmedWithoutAPathOrInterval(t *testing.T) {
 	m := &recordingMetrics{}
 	r, _ := newTestReloader(t, path, m, quietLogger())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	assert.False(t, Start(ctx, r, ReloaderOptions{Path: path, Metrics: m}, 0))

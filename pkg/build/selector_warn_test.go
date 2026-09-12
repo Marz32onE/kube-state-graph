@@ -1,7 +1,6 @@
 package build
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +23,7 @@ func TestWarnSelectorFamilyEmpty_NeverBlamesHarvest(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			buf := captureLogs(t)
-			warnSelectorFamilyEmpty(context.Background(), sel, promql.LabelKeys{}, raw)
+			warnSelectorFamilyEmpty(t.Context(), sel, promql.LabelKeys{}, raw)
 
 			out := buf.String()
 			assert.Contains(t, out, "selector_family_empty", "the kubelet family is reached and empty")
@@ -64,7 +63,7 @@ func TestWarnSelectorFamilyEmpty_NeverBlamesAlerts(t *testing.T) {
 				"%s reaches ALERTS, so the exclusion cannot be an accident of Reaches", name)
 
 			buf := captureLogs(t)
-			warnSelectorFamilyEmpty(context.Background(), sel, promql.LabelKeys{}, raw)
+			warnSelectorFamilyEmpty(t.Context(), sel, promql.LabelKeys{}, raw)
 
 			assert.Empty(t, buf.String(),
 				"an empty alert vector under %s is the healthy estate, not a labelling mistake", name)

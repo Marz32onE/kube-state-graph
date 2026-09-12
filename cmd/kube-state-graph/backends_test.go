@@ -197,7 +197,7 @@ func TestStartBackendReload_SwapsThroughTheLiveRouter(t *testing.T) {
 	cfg.BackendsFile = path
 	cfg.BackendsReloadInterval = 5 * time.Millisecond
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	startBackendReload(ctx, r, cfg, quietLogger(), m, noEnv)
 
@@ -216,7 +216,7 @@ func TestStartBackendReload_DisabledByZeroInterval(t *testing.T) {
 	cfg.BackendsFile = path
 	cfg.BackendsReloadInterval = 0
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	startBackendReload(ctx, r, cfg, quietLogger(), m, noEnv)
 
@@ -237,7 +237,7 @@ func TestStartBackendReload_DisabledWithoutAFile(t *testing.T) {
 	cfg.BackendsFile = ""
 	cfg.BackendsReloadInterval = time.Millisecond
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	startBackendReload(ctx, r, cfg, quietLogger(), m, noEnv)
 
@@ -255,7 +255,7 @@ func TestStartBackendReload_StopsWithContext(t *testing.T) {
 	cfg.BackendsFile = path
 	cfg.BackendsReloadInterval = 5 * time.Millisecond
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	startBackendReload(ctx, r, cfg, quietLogger(), m, noEnv)
 	require.Eventually(t, func() bool { return m.reloadCount() > 0 }, time.Second, 5*time.Millisecond)
 	cancel()

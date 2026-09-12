@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -185,7 +186,7 @@ type buildFunc func(ctx context.Context, window time.Duration, end time.Time, se
 // context.DeadlineExceeded the error is normalised to ReasonTimeout (504) so
 // the handler-side mapBuildError surfaces the RFC 9110 §15.6.5 status.
 func (s *Server) runBuild(ctx context.Context, start, end time.Time, sel promql.Selector, run buildFunc) (*graph.Graph, error) {
-	buildCtx, cancel := context.WithTimeout(ctx, s.cfg.BuildTimeout)
+	buildCtx, cancel := context.WithTimeoutCause(ctx, s.cfg.BuildTimeout, errBuildTimeout)
 	defer cancel()
 
 	began := time.Now()
@@ -194,12 +195,24 @@ func (s *Server) runBuild(ctx context.Context, start, end time.Time, sel promql.
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			s.metrics.BuildRejected.WithLabelValues("timeout").Inc()
+			// Every nested deadline surfaces as DeadlineExceeded; the cause
+			// names the budget that ran out in the server-side log. The
+			// response still carries only the static message.
+			if cause := context.Cause(buildCtx); cause != nil && !errors.Is(err, cause) {
+				err = fmt.Errorf("%w: %w", cause, err)
+			}
 			return nil, build.NewError(build.ReasonTimeout, "build timeout", err)
 		}
 		return nil, err
 	}
 	return g, nil
 }
+
+// Causes stamped on this package's own timeout contexts.
+var (
+	errBuildTimeout  = errors.New("build exceeded --build-timeout")
+	errReadyzTimeout = errors.New("readiness probe exceeded --api-timeout")
+)
 
 // parseStorageGraphRequest delegates to the shared kubegraph.ParseStorageValues
 // and maps a *kubegraph.ParseError to the HTTP 400 response exactly as
@@ -237,7 +250,7 @@ func (s *Server) handleLivez(c *gin.Context) {
 //	@Failure	503	{object}	errorBody
 //	@Router		/readyz [get]
 func (s *Server) handleReadyz(c *gin.Context) {
-	probeCtx, cancel := context.WithTimeout(c.Request.Context(), s.cfg.APITimeout)
+	probeCtx, cancel := context.WithTimeoutCause(c.Request.Context(), s.cfg.APITimeout, errReadyzTimeout)
 	defer cancel()
 
 	err := s.probeUpstream(probeCtx)
@@ -251,11 +264,11 @@ func (s *Server) handleReadyz(c *gin.Context) {
 		// URL, host, or IP. With several upstreams, "upstream probe failed" is
 		// not actionable on its own.
 		message := "upstream probe failed"
-		var probeErr *promql.ProbeError
-		if errors.As(err, &probeErr) && len(probeErr.Failed) > 0 {
+		if probeErr, ok := errors.AsType[*promql.ProbeError](err); ok && len(probeErr.Failed) > 0 {
 			message += ": " + strings.Join(probeErr.Failed, ", ")
 		}
-		s.logger.WarnContext(c.Request.Context(), "readyz upstream probe failed", "err", err)
+		s.logger.WarnContext(c.Request.Context(), "readyz upstream probe failed",
+			"err", err, "cause", context.Cause(probeCtx))
 		writeError(c, http.StatusServiceUnavailable, "upstream_unreachable", message)
 		return
 	}
@@ -308,8 +321,7 @@ func (s *Server) parseGraphRequest(c *gin.Context) (graphRequest, error) {
 // *kubegraph.ParseError carries its stable reason code, anything else is the
 // generic invalid_request.
 func writeParseError(c *gin.Context, err error) {
-	var pe *kubegraph.ParseError
-	if errors.As(err, &pe) {
+	if pe, ok := errors.AsType[*kubegraph.ParseError](err); ok {
 		writeError(c, http.StatusBadRequest, pe.Reason, pe.Message)
 		return
 	}

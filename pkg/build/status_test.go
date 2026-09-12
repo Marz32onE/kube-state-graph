@@ -1,7 +1,6 @@
 package build
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -65,11 +64,11 @@ func TestBuildPaths_AttachStatusBeforeGraphFreeze(t *testing.T) {
 
 	builders := map[string]func(*Builder) (*graph.Graph, error){
 		"graph": func(b *Builder) (*graph.Graph, error) {
-			return b.Build(context.Background(), time.Minute, time.Unix(1, 0).UTC(),
+			return b.Build(t.Context(), time.Minute, time.Unix(1, 0).UTC(),
 				promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}})
 		},
 		"storage": func(b *Builder) (*graph.Graph, error) {
-			return b.BuildStorage(context.Background(), time.Minute, time.Unix(1, 0).UTC(),
+			return b.BuildStorage(t.Context(), time.Minute, time.Unix(1, 0).UTC(),
 				promql.Selector{AZ: []string{"zone-a"}, Env: []string{"prod"}})
 		},
 	}

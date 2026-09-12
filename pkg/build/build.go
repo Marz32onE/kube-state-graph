@@ -368,13 +368,21 @@ func (b *Builder) upProbe(ctx context.Context, q promql.Querier) (bool, error) {
 	// skipping outside-retention classification) for a zero-value embedder.
 	if b.opts.APITimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, b.opts.APITimeout)
+		ctx, cancel = context.WithTimeoutCause(ctx, b.opts.APITimeout, errProbeTimeout)
 		defer cancel()
 	}
 	vec, err := q.Instant(ctx, string(promql.QUpProbe),
 		promql.Render(promql.QUpProbe, 0, promql.LabelKeys{}, promql.Selector{}), b.clk.Now().UTC())
 	if err != nil {
+		// Name the budget that ran out — the probe's own, or an ancestor's
+		// whose cause propagated down — since both surface as DeadlineExceeded.
+		if cause := context.Cause(ctx); cause != nil && !errors.Is(err, cause) {
+			err = fmt.Errorf("%w: %w", cause, err)
+		}
 		return false, err
 	}
 	return len(vec) > 0, nil
 }
+
+// errProbeTimeout is the cause stamped on the up{} probe's own context.
+var errProbeTimeout = errors.New("up probe exceeded Options.APITimeout")

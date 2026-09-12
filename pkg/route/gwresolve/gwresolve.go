@@ -5,7 +5,8 @@
 package gwresolve
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 
 	"istio.io/istio/pkg/config/host"
@@ -75,17 +76,13 @@ func newPats(key string, idx int, hosts []string) []pat {
 // The idx comparison is numeric, never stringified (else 10 would sort
 // before 2). Under New all idx are 0, so that branch is a no-op there.
 func sortPats(pats []pat) {
-	sort.SliceStable(pats, func(a, b int) bool {
-		if pats[a].score != pats[b].score {
-			return pats[a].score > pats[b].score
-		}
-		if pats[a].pattern != pats[b].pattern {
-			return pats[a].pattern < pats[b].pattern // deterministic tie-break
-		}
-		if pats[a].gw != pats[b].gw {
-			return pats[a].gw < pats[b].gw // lexically-smallest gateway wins
-		}
-		return pats[a].idx < pats[b].idx
+	slices.SortStableFunc(pats, func(a, b pat) int {
+		return cmp.Or(
+			cmp.Compare(b.score, a.score),     // most specific first
+			cmp.Compare(a.pattern, b.pattern), // deterministic tie-break
+			cmp.Compare(a.gw, b.gw),           // lexically-smallest gateway wins
+			cmp.Compare(a.idx, b.idx),
+		)
 	})
 }
 
